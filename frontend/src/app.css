@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted-panel);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent-blue);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 8px);
+  --radius-md: calc(var(--radius) - 6px);
+  --radius-lg: calc(var(--radius) - 2px);
+  --radius-xl: var(--radius);
+}
+
+:root,
+.dark {
+  color-scheme: dark;
+  --background: #07111f;
+  --foreground: #e2e8f0;
+  --card: rgba(9, 18, 35, 0.9);
+  --card-foreground: #e2e8f0;
+  --popover: rgba(9, 18, 35, 0.96);
+  --popover-foreground: #e2e8f0;
+  --primary: #5eead4;
+  --primary-foreground: #04111d;
+  --secondary: rgba(255, 255, 255, 0.04);
+  --secondary-foreground: #e2e8f0;
+  --muted-panel: rgba(11, 19, 35, 0.88);
+  --muted-foreground: #a7b4c8;
+  --accent-blue: #60a5fa;
+  --accent-foreground: #04111d;
+  --destructive: #fb7185;
+  --destructive-foreground: #04111d;
+  --border: rgba(148, 163, 184, 0.16);
+  --input: rgba(148, 163, 184, 0.18);
+  --ring: #60a5fa;
+  --radius: 20px;
+}

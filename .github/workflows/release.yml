@@ -1,0 +1,132 @@
+name: GitHub Release 发版包自动化
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "要发布的标签名，例如 v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+
+jobs:
+  windows-amd64:
+    name: Windows amd64 发版包
+    runs-on: windows-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.1"
+          cache-dependency-path: backend/go.sum
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: frontend
+        run: npm ci
+
+      - name: 构建并验证 Windows amd64
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -Platform windows-amd64
+
+      - name: 上传 Windows amd64 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-amd64
+          if-no-files-found: error
+          path: dist/release/agenttoolgate-windows-amd64.zip
+
+  linux-amd64:
+    name: Linux amd64 发版包
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.1"
+          cache-dependency-path: backend/go.sum
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: frontend
+        run: npm ci
+
+      - name: 构建并验证 Linux amd64
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-release.ps1 -Platform linux-amd64
+
+      - name: 上传 Linux amd64 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-amd64
+          if-no-files-found: error
+          path: dist/release/agenttoolgate-linux-amd64.tar.gz
+
+  release:
+    name: 创建 GitHub Release
+    runs-on: ubuntu-latest
+    needs:
+      - windows-amd64
+      - linux-amd64
+    steps:
+      - name: 下载平台产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist/release
+          merge-multiple: true
+
+      - name: 生成统一 SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist/release
+          sha256sum agenttoolgate-windows-amd64.zip agenttoolgate-linux-amd64.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: AgentToolGate ${{ env.RELEASE_TAG }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
+          generate_release_notes: true
+          files: |
+            dist/release/agenttoolgate-windows-amd64.zip
+            dist/release/agenttoolgate-linux-amd64.tar.gz
+            dist/release/SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

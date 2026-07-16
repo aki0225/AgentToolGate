@@ -1,0 +1,87 @@
+Daily Use Acceptance evidence
+
+Scope
+- Verified from current main after repo-local hook control switch.
+- No Docker.
+- Temporary binary and Go caches were placed under `<repo>\.tmp\...`.
+- No real Startup, `.ssh`, user profile, or system directory was written.
+- Payloads were JSON hook inputs only; no dangerous command was executed.
+
+Control commands
+- `agenttoolgate.exe hook control off --reason daily-use-acceptance`
+- `agenttoolgate.exe hook control dry-run --reason daily-use-acceptance`
+- `agenttoolgate.exe hook control live --reason daily-use-acceptance`
+- Final mode restored to `off`.
+
+Mode: off
+- Input: synthetic write to `.ssh/authorized_keys`
+- stdout: empty
+- dry-run JSONL exists: false
+- pending audit exists: false
+- Result: hook no-op; no backend call observable through fallback output; no hook JSON emitted
+
+Mode: dry-run
+- Input target: `https://example.test/path?token=[REDACTED]&debug=true`
+- stdout: empty
+- dry-run JSONL exists: true
+- contains raw token: false
+- preview mode: `dry-run`
+- preview decision: `would_allow_in_live`
+- preview signals:
+  - `local action preview`
+- Safety check: raw token value, bearer token, approval id, fingerprint, and local absolute repo path are not recorded in committed evidence
+
+Mode: live - ordinary development actions
+- `git status`: stdout empty; no `permissionDecision=allow`
+- `go test ./...`: stdout empty; no `permissionDecision=allow`
+- `npm run check`: stdout empty; no `permissionDecision=allow`
+- docs write: stdout empty; no `permissionDecision=allow`
+- README/docs edit class: stdout empty; no `permissionDecision=allow`
+- `.tmp` workspace note write: stdout empty; no `permissionDecision=allow`
+- Result: ordinary development does not get interrupted by explicit allow JSON
+
+Mode: live - disaster prevention synthetic cases
+- destructive delete
+  - decision: `deny`
+  - reason: `AgentToolGate blocked root delete`
+- Windows Startup synthetic path write
+  - target: `<repo>\.tmp\synthetic\Users\demo\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\agent-update.ps1`
+  - decision: `deny`
+  - reason: `AgentToolGate blocked startup persistence`
+- `.env` write
+  - decision: `deny`
+  - reason: `Codex ask mapped conservatively to deny`
+- `.ssh` write
+  - decision: `deny`
+  - reason: `AgentToolGate blocked sensitive write`
+- `secrets` path write
+  - decision: `deny`
+  - reason: `Codex ask mapped conservatively to deny`
+- `.git/hooks` write
+  - decision: `deny`
+  - reason: `AgentToolGate blocked self-tamper`
+- `.codex/hooks` write
+  - decision: `deny`
+  - reason: `Codex ask mapped conservatively to deny`
+- `.claude/hooks` write
+  - decision: `deny`
+  - reason: `Codex ask mapped conservatively to deny`
+- PowerShell hidden encoded payload
+  - decision: `deny`
+  - reason: `AgentToolGate blocked download/execute style payload`
+- ATG policy/service file fallback
+  - cases: `configs/policies.yaml`, `backend/cmd/server/main.go`
+  - condition: CLI unavailable and backend offline fallback
+  - decision: `deny`
+  - reason: `ATG offline, sensitive target denied`
+
+Backend evaluate evidence reference
+- Existing Windows Startup demo evidence still shows backend path returning `deny_with_ticket`.
+- approvalId: `<approval-id-redacted>`
+- fingerprint: `<fingerprint-redacted>`
+
+Boundary
+- This proves daily-use guardrail behavior, not complete OS enforcement.
+- Synthetic path only.
+- No payload execution.
+- No committed token, Authorization header, full approval id, full fingerprint, or local absolute path.

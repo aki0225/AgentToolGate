@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "agenttoolgate": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://localhost:8080/mcp/sse",
+        "--header",
+        "X-Workspace-Org-Id: local-org"
+      ]
+    }
+  }
+}

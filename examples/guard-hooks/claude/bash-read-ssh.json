@@ -1,0 +1,9 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Read",
+  "cwd": "F:\\workspace\\AgentToolGate",
+  "project_root": "F:\\workspace\\AgentToolGate",
+  "tool_input": {
+    "file_path": "C:\\Users\\demo\\.ssh\\id_rsa"
+  }
+}

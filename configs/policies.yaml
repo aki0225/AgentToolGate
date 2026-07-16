@@ -1,0 +1,153 @@
+rules:
+  - name: disabled-tool-deny
+    priority: 1000
+    match:
+      tool_enabled: false
+    effect: deny
+    reason: tool is disabled
+
+  - name: unsupported-tool-deny
+    priority: 950
+    match:
+      supported_tool: false
+    effect: deny
+    reason: only mock tools, database.query, supported github tools, http.request and synced mcp connector tools are executable in the current skeleton
+
+  - name: operation-deny
+    priority: 900
+    match:
+      operation_type: deny
+    effect: deny
+    reason: operation type is deny
+
+  - name: write-operation-requires-approval
+    priority: 800
+    match:
+      operation_type: write
+    effect: require_approval
+    reason: write operation requires approval
+
+  - name: create-operation-requires-approval
+    priority: 790
+    match:
+      operation_type: create
+    effect: require_approval
+    reason: write operation requires approval
+
+  - name: update-operation-requires-approval
+    priority: 780
+    match:
+      operation_type: update
+    effect: require_approval
+    reason: write operation requires approval
+
+  - name: delete-operation-requires-approval
+    priority: 770
+    match:
+      operation_type: delete
+    effect: require_approval
+    reason: write operation requires approval
+
+  - name: patch-operation-requires-approval
+    priority: 760
+    match:
+      operation_type: patch
+    effect: require_approval
+    reason: write operation requires approval
+
+  - name: post-operation-requires-approval
+    priority: 750
+    match:
+      operation_type: post
+    effect: require_approval
+    reason: write operation requires approval
+
+  - name: exec-operation-requires-approval
+    priority: 745
+    match:
+      operation_type: exec
+    effect: require_approval
+    reason: execution operation requires approval
+
+  - name: agent-guard-sensitive-target-requires-approval
+    priority: 880
+    match:
+      tool_namespace: agent_guard
+      tool_name: evaluate
+      target_category: sensitive
+      user_role: "*"
+    effect: require_approval
+    reason: sensitive target requires approval
+
+  - name: agent-guard-self-tamper-requires-approval
+    priority: 875
+    match:
+      tool_namespace: agent_guard
+      tool_name: evaluate
+      target_category: self_tamper
+      user_role: "*"
+    effect: require_approval
+    reason: self tamper target requires approval
+
+  - name: agent-guard-sensitive-content-requires-approval
+    priority: 870
+    match:
+      tool_namespace: agent_guard
+      tool_name: evaluate
+      content_sensitive: true
+      user_role: "*"
+    effect: require_approval
+    reason: sensitive content requires approval
+
+  - name: critical-risk-requires-approval
+    priority: 860
+    match:
+      risk_level: critical
+    effect: require_approval
+    reason: high risk tool requires approval
+
+  - name: high-risk-requires-approval
+    priority: 855
+    match:
+      risk_level: high
+    effect: require_approval
+    reason: high risk tool requires approval
+
+  - name: agent-guard-safe-workspace-write-allow
+    priority: 850
+    match:
+      tool_namespace: agent_guard
+      tool_name: evaluate
+      operation_type: write
+      action_type: write
+      target_category: workspace
+      content_sensitive: false
+      user_role: "*"
+    effect: allow
+    reason: safe workspace edits are allowed
+
+  - name: agent-guard-safe-workspace-exec-allow
+    priority: 845
+    match:
+      tool_namespace: agent_guard
+      tool_name: evaluate
+      operation_type: exec
+      action_type: exec
+      target_category: workspace
+      content_sensitive: false
+      user_role: "*"
+    effect: allow
+    reason: safe workspace exec is allowed
+
+  - name: configured-approval-required
+    priority: 650
+    match:
+      requires_approval: true
+    effect: require_approval
+    reason: tool is configured to require approval
+
+  - name: default-executable-allow
+    priority: 100
+    match:
+      supported_tool: true
+    effect: allow
