@@ -2,11 +2,11 @@
 
 [![CI](https://github.com/aki0225/AgentToolGate/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aki0225/AgentToolGate/actions/workflows/ci.yml)
 
-AgentToolGate 是一个本地 AI Agent 工具治理网关。它不试图阻止提示词注入发生，而是在 Agent 准备调用真实工具时，把数据库、GitHub、HTTP、MCP 和本地高危动作先收进 policy、approval、secret injection、audit 与 telemetry 链路。
+AgentToolGate（下面简称 ATG）是一个跑在本地的 AI Agent 工具调用治理网关。
 
-一句话：**不防提示词注入发生，防注入得逞后的高危工具调用后果。**
+做它的出发点：提示词注入和模型幻觉在应用层防不完，但 Agent 被注入之后拿着工具去干坏事的那一步，是可以拦的。所以 ATG 不做"防注入"，只管一件事——数据库、GitHub、HTTP、外部 MCP 和本地高危动作在真正执行之前，先过 policy、审批、密钥注入和审计这一道。
 
-ATG 是 guardrail，不是 OS sandbox、EDR、企业 DLP 或完整 enforcement boundary。真实高风险使用仍需要最小权限账户、系统 sandbox、网络策略和上游服务自己的权限边界。
+它是 guardrail，不是操作系统沙箱，也不是 EDR 或企业 DLP。真要跑高风险场景，最小权限账户、系统沙箱、网络策略和上游服务自己的权限边界仍然缺一不可，ATG 替代不了它们。
 
 ## 架构总览
 
@@ -35,12 +35,12 @@ flowchart TD
     Audit --> Trace
 ```
 
-关键事实：
+图里几条主线：
 
 - REST 主链路是 `POST /api/tool-calls -> createToolCall -> Policy / Approval / Audit / Connector Runtime / OTel`。
-- MCP Inbound 同时提供 Streamable HTTP `/mcp` 和 SSE fallback `/mcp/sse`；`tools/call` 复用 `createToolCall`，不是旁路。
-- MCP Outbound 会把外部 MCP Server 的工具同步成 `mcp_<connector>.<tool>`，再进入同一治理链路。
-- Local Action Firewall 通过 `/api/agent-guard/evaluate` 对 Claude / Codex 的本地动作做风险分类、审计和 `deny_with_ticket` 闭环。
+- MCP Inbound 提供 Streamable HTTP `/mcp`，SSE `/mcp/sse` 做 fallback。`tools/call` 走的也是 `createToolCall`，没有旁路。
+- MCP Outbound 把外部 MCP Server 的工具同步成 `mcp_<connector>.<tool>`，进同一条治理链路。
+- 本地动作防火墙走独立入口 `/api/agent-guard/evaluate`，对 Claude / Codex 的本地动作做风险分类、审计和 `deny_with_ticket` 闭环。
 
 ## 快速开始
 
@@ -64,7 +64,7 @@ flowchart TD
 .\agenttoolgate.exe up --open
 ```
 
-Linux 使用不带 `.exe` 的 `./agenttoolgate`，参数相同。`init` 只生成项目级 `.agenttoolgate/` 配置和客户端片段，不会自动修改用户全局 Codex / Claude Code 配置、系统策略、注册表或 shell profile。默认 hook mode 是 `dry-run`，不会直接进入真实阻断。
+Linux 用不带 `.exe` 的 `./agenttoolgate`，参数一样。`init` 只在项目里生成 `.agenttoolgate/` 配置和客户端片段，不碰全局的 Codex / Claude Code 配置，也不碰系统策略、注册表和 shell profile。hook 默认 `dry-run`，不会一上来就真阻断。
 
 也可以从源码构建单二进制（需要 Go 1.26+ 与 Node.js 20+）：
 
@@ -73,34 +73,34 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 .\dist\agenttoolgate.exe doctor
 ```
 
-更多本地使用说明见 [docs/local-daily-use.md](docs/local-daily-use.md)，AI 客户端接入说明见 [docs/ai-client-integration.md](docs/ai-client-integration.md)。
+日常使用说明见 [docs/local-daily-use.md](docs/local-daily-use.md)，AI 客户端接入见 [docs/ai-client-integration.md](docs/ai-client-integration.md)。
 
 ## 能防什么
 
-ATG 当前覆盖两条互补路径：
+两条互补的路径：
 
-- **工具治理网关**：Agent 调用 `database.query`、`github.*`、`http.request` 或 `mcp_<connector>.<tool>` 前，先经过 workspace policy、approval、rate limit、secret injection、脱敏审计和 OTel trace。
-- **本地动作防火墙**：Claude / Codex 准备写 Startup、`.ssh`、`.env`、`.git/hooks`、ATG 自身 hook/config，或执行 `ExecutionPolicy Bypass`、`WindowStyle Hidden`、encoded payload 等高危脚本特征时，先进入 guard 评估。
+- **工具治理网关**：`database.query`、`github.*`、`http.request`、`mcp_<connector>.<tool>` 在执行前过 workspace policy、审批、限流、密钥注入、脱敏审计和 OTel trace。
+- **本地动作防火墙**：Claude / Codex 要写 Startup、`.ssh`、`.env`、`.git/hooks` 或 ATG 自身的 hook/config，或者脚本里出现 `ExecutionPolicy Bypass`、`WindowStyle Hidden`、encoded payload 这类特征时，先进 guard 评估。
 
-适合拦住的后果：
+它拦的是这类后果：
 
-- 写操作或高风险工具未经 approval 就触达 GitHub、HTTP、数据库或外部 MCP。
-- Agent 直接持有或回显上游 token、Authorization header、cookie、DSN 密码或 MCP session。
-- 被提示注入诱导后写持久化脚本、修改 git hooks、读取凭据路径或破坏项目文件。
-- 审批、拒绝、失败和执行结果无法追踪。
+- 写操作、高风险工具没经审批就打到 GitHub、HTTP、数据库或外部 MCP。
+- Agent 直接拿到或回显上游 token、Authorization header、cookie、DSN 密码、MCP session。
+- 被注入之后写持久化脚本、改 git hooks、摸凭据路径、破坏项目文件。
+- 审批、拒绝、失败和执行结果没有留痕，出了事查不了。
 
 ## 不能防什么
 
-ATG 明确不覆盖这些边界：
+这些边界说在前面：
 
-- 不阻止提示词注入、模型幻觉或恶意上下文出现，只处理工具调用即将落地时的后果。
-- 不替代 OS sandbox、容器、EDR、最小权限用户、网络隔离或云 IAM。
-- Codex hook bridge 不提供完整交互式 ask 体验；当前 Codex 运行时对需确认动作采用保守 `deny` / no-op 映射，不能宣传成完整审批弹窗。
-- Claude Code 可以保留 ask/confirm 心智模型，但仍只是 hook guardrail，不是 OS enforcement boundary。
-- Secret 当前是 env-backed `valueRef`，不是 KMS、Vault 或云 Secret Manager。
-- GitHub 当前适合 PAT/demo token，不是完整 GitHub App installation token 生产闭环。
-- HTTP SSRF guard 仍未覆盖 DNS rebinding、解析后私网网段判定和 redirect 后 DNS 复检。
-- RBAC、版本化迁移、备份、告警、SLO、灾备和组织级策略发布/回滚仍是生产化前提。
+- 提示词注入、幻觉、恶意上下文本身，ATG 不拦——它只管工具调用落地那一刻。
+- 它替代不了 OS 沙箱、容器、EDR、最小权限用户、网络隔离和云 IAM。
+- Codex hook bridge 没有完整的交互式 ask 体验，需要确认的动作目前按保守 `deny` / no-op 处理，不能当成完整的审批弹窗。
+- Claude Code 侧可以保留 ask/confirm 心智，但它仍然只是 hook guardrail，不是 OS 级 enforcement。
+- Secret 目前是 env-backed `valueRef`，不是 KMS、Vault 或云 Secret Manager。
+- GitHub 集成适合 PAT / demo token，不是 GitHub App installation token 的生产闭环。
+- HTTP 的 SSRF guard 还没覆盖 DNS rebinding、解析后私网网段判定和 redirect 后的 DNS 复检。
+- RBAC、版本化迁移、备份、告警、SLO、灾备和组织级策略发布/回滚，这些生产化前提都还没有。
 
 ## 深入文档
 
@@ -123,7 +123,7 @@ ATG 明确不覆盖这些边界：
 | `http.request` | host allowlist、SSRF guard、method 派生审批、header/body/output 脱敏 |
 | `mcp_<connector>.<tool>` | 外部 MCP 工具同步后纳入 Tool Registry；读工具可直通，写/未知/破坏性工具 approval |
 
-本地动作防火墙使用独立入口 `POST /api/agent-guard/evaluate`，用于 Claude / Codex hook 的本地动作风险分类、解释、审计和一次性 approval ticket。它不是普通 Tool Registry 工具。
+本地动作防火墙不在这张表里——它走独立入口 `POST /api/agent-guard/evaluate`，给 Claude / Codex hook 做本地动作的风险分类、解释、审计和一次性 approval ticket，不是普通的 Tool Registry 工具。
 
 ## 技术栈
 
