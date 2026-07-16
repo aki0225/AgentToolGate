@@ -66,6 +66,13 @@ flowchart TD
 
 Linux 使用不带 `.exe` 的 `./agenttoolgate`，参数相同。`init` 只生成项目级 `.agenttoolgate/` 配置和客户端片段，不会自动修改用户全局 Codex / Claude Code 配置、系统策略、注册表或 shell profile。默认 hook mode 是 `dry-run`，不会直接进入真实阻断。
 
+也可以从源码构建单二进制（需要 Go 1.26+ 与 Node.js 20+）：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
+.\dist\agenttoolgate.exe doctor
+```
+
 更多本地使用说明见 [docs/local-daily-use.md](docs/local-daily-use.md)，AI 客户端接入说明见 [docs/ai-client-integration.md](docs/ai-client-integration.md)。
 
 ## 能防什么
