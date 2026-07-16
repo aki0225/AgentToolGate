@@ -1,0 +1,18 @@
+{
+  "env": {
+    "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agenttoolgate.exe guard hook claude --input -",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "event": "pre_tool_use",
+  "tool_name": "shell",
+  "cwd": "F:\\workspace\\AgentToolGate",
+  "project_root": "F:\\workspace\\AgentToolGate",
+  "args": {
+    "command": "Remove-Item -Recurse ."
+  }
+}

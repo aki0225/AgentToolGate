@@ -1,0 +1,38 @@
+# Go
+backend/bin/
+backend/dist/
+*.exe
+vendor/
+
+# Node
+node_modules/
+dist/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.playwright-browsers/
+*.tsbuildinfo
+
+# Test output
+coverage/
+frontend/playwright-report/
+frontend/test-results/
+
+# Environment
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
+!backend/.env.example
+!frontend/.env.example
+
+# Misc
+.DS_Store
+*.log
+.tmp/
+.playwright-mcp/
+**/__pycache__/
+*.pyc
