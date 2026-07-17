@@ -1,12 +1,32 @@
+<div align="center">
+
+<img src="docs/assets/atg-hero.jpg" width="100%" alt="AgentToolGate：工具调用在真正执行之前，先过治理闸门">
+
 # AgentToolGate
 
-[![CI](https://github.com/aki0225/AgentToolGate/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aki0225/AgentToolGate/actions/workflows/ci.yml)
+<h3>提示词注入在应用层防不完，但 Agent 拿着工具去干坏事的那一步，可以拦。</h3>
 
-AgentToolGate（下面简称 ATG）是一个跑在本地的 AI Agent 工具调用治理网关。
+<p>
+  <a href="https://github.com/aki0225/AgentToolGate/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/aki0225/AgentToolGate/ci.yml?branch=main&style=for-the-badge&label=CI" alt="CI"></a>
+  <img src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.26+">
+  <img src="https://img.shields.io/badge/Platforms-Windows%20%7C%20Linux-8B5CF6?style=for-the-badge" alt="Windows / Linux">
+  <a href="https://github.com/aki0225/AgentToolGate/releases"><img src="https://img.shields.io/badge/Release-amd64%20%2B%20SHA256-22C55E?style=for-the-badge" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-F8FAFC?style=for-the-badge" alt="MIT License"></a>
+</p>
 
-做它的出发点：提示词注入和模型幻觉在应用层防不完，但 Agent 被注入之后拿着工具去干坏事的那一步，是可以拦的。所以 ATG 不做"防注入"，只管一件事——数据库、GitHub、HTTP、外部 MCP 和本地高危动作在真正执行之前，先过 policy、审批、密钥注入和审计这一道。
+**[架构总览](#架构总览)** ·
+**[快速开始](#快速开始)** ·
+**[能防什么](#能防什么)** ·
+**[不能防什么](#不能防什么)** ·
+**[深入文档](#深入文档)** ·
+**[支持工具](#支持工具)**
 
-它是 guardrail，不是操作系统沙箱，也不是 EDR 或企业 DLP。真要跑高风险场景，最小权限账户、系统沙箱、网络策略和上游服务自己的权限边界仍然缺一不可，ATG 替代不了它们。
+</div>
+
+> [!IMPORTANT]
+> ATG 是 guardrail，不是操作系统沙箱，也不是 EDR 或企业 DLP。真要跑高风险场景，最小权限账户、系统沙箱、网络策略和上游服务自己的权限边界仍然缺一不可，ATG 替代不了它们。
+
+AgentToolGate（下面简称 ATG）是一个跑在本地的 AI Agent 工具调用治理网关。它不做“防注入”，只管一件事——数据库、GitHub、HTTP、外部 MCP 和本地高危动作在真正执行之前，先过 policy、审批、密钥注入和审计这一道。
 
 ## 架构总览
 
