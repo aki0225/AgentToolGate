@@ -23,10 +23,10 @@
 
 </div>
 
+AgentToolGate（下面简称 ATG）是一个跑在本地的 AI Agent 工具调用治理网关。它不做“防注入”，只管一件事——数据库、GitHub、HTTP、外部 MCP 和本地高危动作在真正执行之前，先过 policy、审批、密钥注入和审计这一道。
+
 > [!IMPORTANT]
 > ATG 是 guardrail，不是操作系统沙箱，也不是 EDR 或企业 DLP。真要跑高风险场景，最小权限账户、系统沙箱、网络策略和上游服务自己的权限边界仍然缺一不可，ATG 替代不了它们。
-
-AgentToolGate（下面简称 ATG）是一个跑在本地的 AI Agent 工具调用治理网关。它不做“防注入”，只管一件事——数据库、GitHub、HTTP、外部 MCP 和本地高危动作在真正执行之前，先过 policy、审批、密钥注入和审计这一道。
 
 ## 架构总览
 
@@ -97,12 +97,12 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 
 ## 能防什么
 
-两条互补的路径：
+两个入口：
 
 - **工具治理网关**：`database.query`、`github.*`、`http.request`、`mcp_<connector>.<tool>` 在执行前过 workspace policy、审批、限流、密钥注入、脱敏审计和 OTel trace。
 - **本地动作防火墙**：Claude / Codex 要写 Startup、`.ssh`、`.env`、`.git/hooks` 或 ATG 自身的 hook/config，或者脚本里出现 `ExecutionPolicy Bypass`、`WindowStyle Hidden`、encoded payload 这类特征时，先进 guard 评估。
 
-它拦的是这类后果：
+拦的是这类后果：
 
 - 写操作、高风险工具没经审批就打到 GitHub、HTTP、数据库或外部 MCP。
 - Agent 直接拿到或回显上游 token、Authorization header、cookie、DSN 密码、MCP session。
@@ -111,10 +111,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 
 ## 不能防什么
 
-这些边界说在前面：
-
 - 提示词注入、幻觉、恶意上下文本身，ATG 不拦——它只管工具调用落地那一刻。
-- 它替代不了 OS 沙箱、容器、EDR、最小权限用户、网络隔离和云 IAM。
 - Codex hook bridge 没有完整的交互式 ask 体验，需要确认的动作目前按保守 `deny` / no-op 处理，不能当成完整的审批弹窗。
 - Claude Code 侧可以保留 ask/confirm 心智，但它仍然只是 hook guardrail，不是 OS 级 enforcement。
 - Secret 目前是 env-backed `valueRef`，不是 KMS、Vault 或云 Secret Manager。
