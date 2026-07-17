@@ -16,8 +16,9 @@
 
 **[架构总览](#架构总览)** ·
 **[快速开始](#快速开始)** ·
-**[能防什么](#能防什么)** ·
-**[不能防什么](#不能防什么)** ·
+**[防护范围](#防护范围)** ·
+**[非目标](#非目标)** ·
+**[已知限制](#已知限制)** ·
 **[深入文档](#深入文档)** ·
 **[支持工具](#支持工具)**
 
@@ -95,7 +96,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 
 日常使用说明见 [docs/local-daily-use.md](docs/local-daily-use.md)，AI 客户端接入见 [docs/ai-client-integration.md](docs/ai-client-integration.md)。
 
-## 能防什么
+## 防护范围
 
 两个入口：
 
@@ -109,11 +110,14 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 - 被注入之后写持久化脚本、改 git hooks、摸凭据路径、破坏项目文件。
 - 审批、拒绝、失败和执行结果没有留痕，出了事查不了。
 
-## 不能防什么
+## 非目标
 
 - 提示词注入、幻觉、恶意上下文本身，ATG 不拦——它只管工具调用落地那一刻。
+- 不做 OS 级 enforcement：Claude Code 侧可以保留 ask/confirm 心智，但它仍然只是 hook guardrail。
+
+## 已知限制
+
 - Codex hook bridge 没有完整的交互式 ask 体验，需要确认的动作目前按保守 `deny` / no-op 处理，不能当成完整的审批弹窗。
-- Claude Code 侧可以保留 ask/confirm 心智，但它仍然只是 hook guardrail，不是 OS 级 enforcement。
 - Secret 目前是 env-backed `valueRef`，不是 KMS、Vault 或云 Secret Manager。
 - GitHub 集成适合 PAT / demo token，不是 GitHub App installation token 的生产闭环。
 - HTTP 的 SSRF guard 还没覆盖 DNS rebinding、解析后私网网段判定和 redirect 后的 DNS 复检。
