@@ -39,6 +39,30 @@ type RequestOptions = {
   method?: string;
 };
 
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+export function getApiErrorMessage(
+  error: unknown,
+  fallback: string,
+  permissionDenied: string,
+): string {
+  if (error instanceof ApiError && error.status === 403) {
+    return permissionDenied;
+  }
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+  return fallback;
+}
+
 async function requestJson<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = {
     Accept: "application/json",
@@ -60,15 +84,44 @@ async function requestJson<T>(path: string, options: RequestOptions = {}): Promi
   });
 
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : null;
+  const payload = parseJsonResponse(text, response.status, response.ok);
   if (!response.ok) {
-    if (response.status === 403) {
-      throw new Error("当前角色无权执行该操作");
-    }
-    const message = payload?.error ?? payload?.message ?? response.statusText;
-    throw new Error(message);
+    throw createApiError(response.status, response.statusText, payload);
   }
   return payload as T;
+}
+
+function parseJsonResponse(text: string, status: number, responseOK: boolean): unknown {
+  if (!text) {
+    return null;
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    if (responseOK) {
+      throw new ApiError(status, "Backend returned an invalid JSON response");
+    }
+    return null;
+  }
+}
+
+function apiErrorMessage(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  for (const key of ["error", "message"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function createApiError(status: number, statusText: string, payload: unknown): ApiError {
+  const message = apiErrorMessage(payload) ?? statusText.trim();
+  return new ApiError(status, message || `Request failed with status ${status}`);
 }
 
 function normalizeApiList<T>(payload: ApiList<T> | null | undefined): ApiList<T> {
@@ -493,9 +546,13 @@ export function connectApprovalStream(handlers: ApprovalStreamHandlers): Approva
         },
         signal: controller.signal,
       });
-      if (!response.ok || !response.body) {
+      if (!response.ok) {
         const text = await response.text().catch(() => "");
-        throw new Error(text || response.statusText || "approval stream request failed");
+        const payload = parseJsonResponse(text, response.status, false);
+        throw createApiError(response.status, response.statusText, payload);
+      }
+      if (!response.body) {
+        throw new ApiError(response.status, "approval stream response body is missing");
       }
       onOpen?.();
       await readApprovalStream(response.body, () => closed || controller.signal.aborted, onApproval);

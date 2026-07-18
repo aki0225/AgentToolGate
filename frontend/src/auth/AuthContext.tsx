@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { createUserManager, getAuthMode, organizationScope } from "./oidc";
 import { getMe, listPublicWorkspaces } from "../api/client";
 import type { MeResponse, Workspace } from "../types";
+import { bootstrapAuthSession } from "./bootstrap";
 
 const selectedWorkspaceStorageKey = "agt.selectedWorkspaceOrgId";
 
@@ -47,18 +48,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     async function load() {
       try {
-        const { items } = await listPublicWorkspaces();
+        const result = await bootstrapAuthSession({
+          authMode,
+          selectedWorkspaceOrgId: window.sessionStorage.getItem(selectedWorkspaceStorageKey),
+          userManager,
+          listWorkspaces: listPublicWorkspaces,
+          loadMe: (token, workspaceOrgId) => getMe(token, workspaceOrgId),
+        });
         if (cancelled) {
           return;
         }
-        setWorkspaces(items);
-        if (!selectedWorkspaceOrgId && items.length === 1) {
-          setSelectedWorkspaceOrgId(items[0].zitadelOrganizationId);
-          window.sessionStorage.setItem(selectedWorkspaceStorageKey, items[0].zitadelOrganizationId);
+        setWorkspaces(result.workspaces);
+        setSelectedWorkspaceOrgId(result.selectedWorkspaceOrgId);
+        setMe(result.me);
+        setOidcUser(result.oidcUser);
+        setError(result.sessionError?.message ?? null);
+        if (result.selectedWorkspaceOrgId) {
+          window.sessionStorage.setItem(selectedWorkspaceStorageKey, result.selectedWorkspaceOrgId);
+        } else {
+          window.sessionStorage.removeItem(selectedWorkspaceStorageKey);
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load workspaces");
+          setWorkspaces([]);
+          setMe(null);
+          setOidcUser(null);
+          setError(err instanceof Error ? err.message : "Failed to initialize session");
         }
       } finally {
         if (!cancelled) {
@@ -70,21 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  useEffect(() => {
-    if (authMode !== "local") {
-      return;
-    }
-    if (me || workspaces.length === 0) {
-      return;
-    }
-    const localWorkspaceOrgId = selectedWorkspaceOrgId ?? (workspaces.length === 1 ? workspaces[0].zitadelOrganizationId : null);
-    if (!localWorkspaceOrgId) {
-      return;
-    }
-    void refreshSession(localWorkspaceOrgId, null);
-  }, [authMode, me, selectedWorkspaceOrgId, workspaces]);
+  }, [authMode, userManager]);
 
   async function refreshSession(workspaceOrgId?: string | null, tokenOverride?: string | null) {
     const nextWorkspaceOrgId = workspaceOrgId ?? selectedWorkspaceOrgId;
@@ -157,7 +158,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const currentWorkspace =
     me?.workspace ??
     workspaces.find((workspace) => workspace.zitadelOrganizationId === selectedWorkspaceOrgId) ??
-    workspaces[0] ??
+    (workspaces.length === 1 ? workspaces[0] : null) ??
     null;
 
   return (

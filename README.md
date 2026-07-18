@@ -96,6 +96,16 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 
 日常使用说明见 [docs/local-daily-use.md](docs/local-daily-use.md)，AI 客户端接入见 [docs/ai-client-integration.md](docs/ai-client-integration.md)。
 
+## 生产部署前必读
+
+仓库默认 `docker-compose.yml` 使用 `HOST=0.0.0.0`、`AUTH_MODE=local`、
+`LOCAL_ROLE=owner` 和 `DEV_MODE=true`。这套配置只用于单机本地开发：
+任何能够访问 backend 的调用方都会进入本地 owner 身份，不能直接作为多用户、
+共享主机或网络暴露部署的鉴权方案。
+
+如果要让其他机器或其他用户访问，至少需要切换到 OIDC、限制监听地址和网络入口，
+并为上游凭据配置最小权限。不要把默认 Compose 配置直接暴露到公网。
+
 ## 防护范围
 
 两个入口：
@@ -133,6 +143,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 - [安全评审说明](docs/security-review-notes.md)：安全评审视角的控制与剩余风险。
 - [Daily Use Acceptance](docs/daily-use-acceptance.md)：日常开发低噪音验收证据。
 - [Agent Guard Synthetic Demo](examples/agent-demo/windows-startup-poisoning.md)：Windows Startup poisoning synthetic demo。
+- [Secret 外传 Synthetic Demo](examples/agent-demo/secret-exfiltration-blocked.md)：本机验证危险 header 阻断与响应脱敏。
+- [GitHub 写审批 Synthetic Demo](examples/agent-demo/github-write-approval.md)：本机验证审批前不触达上游和独立 reviewer 放行。
 
 ## 支持工具
 

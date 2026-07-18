@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { KeyRound, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
-import { createSecret, deleteSecret, getSecretUsage, listSecrets, updateSecret } from "../api/client";
+import { createSecret, deleteSecret, getApiErrorMessage, getSecretUsage, listSecrets, updateSecret } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { canManageSecrets } from "../auth/permissions";
 import { EmptyState } from "../components/EmptyState";
@@ -68,7 +68,7 @@ export function SecretsPage() {
       const result = await listSecrets(token, workspaceOrgId);
       setSecrets(result.items);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("secrets.loadError"));
+      toast.error(getApiErrorMessage(error, t("secrets.loadError"), t("common.permissionDenied")));
       setSecrets([]);
     } finally {
       setLoading(false);
@@ -91,7 +91,7 @@ export function SecretsPage() {
         }
       } catch (error) {
         if (!cancelled) {
-          toast.error(error instanceof Error ? error.message : t("secrets.loadError"));
+          toast.error(getApiErrorMessage(error, t("secrets.loadError"), t("common.permissionDenied")));
           setSecrets([]);
         }
       } finally {
@@ -165,7 +165,7 @@ export function SecretsPage() {
       setDraft(defaultDraft);
       await loadSecrets();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("secrets.saveError"));
+      toast.error(getApiErrorMessage(error, t("secrets.saveError"), t("common.permissionDenied")));
     } finally {
       setSaving(false);
     }
@@ -191,7 +191,7 @@ export function SecretsPage() {
       toast.success(t("secrets.deleteSuccess"));
       await loadSecrets();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("secrets.deleteError"));
+      toast.error(getApiErrorMessage(error, t("secrets.deleteError"), t("common.permissionDenied")));
     } finally {
       setDeleting(false);
     }
@@ -213,7 +213,7 @@ export function SecretsPage() {
       setDeleteUsage(null);
       await loadSecrets();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("secrets.forceDeleteError"));
+      toast.error(getApiErrorMessage(error, t("secrets.forceDeleteError"), t("common.permissionDenied")));
     } finally {
       setDeleting(false);
     }
@@ -228,7 +228,7 @@ export function SecretsPage() {
       await updateSecret(secret.id, { ...secretToInput(secret), enabled: !secret.enabled }, token, workspaceOrgId);
       await loadSecrets();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("secrets.toggleError"));
+      toast.error(getApiErrorMessage(error, t("secrets.toggleError"), t("common.permissionDenied")));
     }
   }
 

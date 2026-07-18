@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Plus, RefreshCw, ShieldCheck, Wrench } from "lucide-react";
-import { createConnector, listConnectors, syncConnector, updateConnector } from "../api/client";
+import { createConnector, getApiErrorMessage, listConnectors, syncConnector, updateConnector } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { canManageConnectors } from "../auth/permissions";
 import { EmptyState } from "../components/EmptyState";
@@ -74,7 +74,7 @@ export function ConnectorsPage() {
         }
       } catch (error) {
         if (!cancelled) {
-          toast.error(error instanceof Error ? error.message : t("connectors.loadError"));
+          toast.error(getApiErrorMessage(error, t("connectors.loadError"), t("common.permissionDenied")));
         }
       } finally {
         if (!cancelled) {
@@ -112,7 +112,7 @@ export function ConnectorsPage() {
         }),
       );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("connectors.syncError"));
+      toast.error(getApiErrorMessage(error, t("connectors.syncError"), t("common.permissionDenied")));
     } finally {
       setSyncingConnectorId(null);
     }
@@ -180,7 +180,7 @@ export function ConnectorsPage() {
       setEditing(null);
       setDraft(defaultDraft);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("connectors.saveError"));
+      toast.error(getApiErrorMessage(error, t("connectors.saveError"), t("common.permissionDenied")));
     } finally {
       setSaving(false);
     }
