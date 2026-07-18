@@ -2,6 +2,7 @@ import { Navigate } from "react-router-dom";
 import { useMemo } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Button } from "../components/ui/button";
 import { useI18n } from "../i18n";
 
 export function LoginPage() {
@@ -36,7 +37,16 @@ export function LoginPage() {
           <CardDescription>{t("login.workspaces.description")}</CardDescription>
         </CardHeader>
         <CardContent>
-          {!hasWorkspaces && <p className="m-0 text-sm text-muted-foreground">{t("login.workspaces.loading")}</p>}
+          {auth.error ? (
+            <div role="alert" className="grid gap-3 rounded-2xl border border-destructive/25 bg-destructive/10 p-4">
+              <p className="m-0 text-sm text-destructive">{t("login.workspaces.error")}</p>
+              <Button type="button" variant="outline" className="w-fit" onClick={() => window.location.reload()}>
+                {t("login.workspaces.retry")}
+              </Button>
+            </div>
+          ) : !hasWorkspaces ? (
+            <p className="m-0 text-sm text-muted-foreground">{t("login.workspaces.empty")}</p>
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-[repeat(auto-fit,minmax(220px,1fr))]">
             {auth.workspaces.map((workspace) => (
               <button

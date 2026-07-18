@@ -56,7 +56,7 @@
 - `github.create_issue`：触发 `approval_required`，脚本只打印审批提示，不会自动审批。
 - `run-windows-startup-poisoning-demo.ps1`：可运行的 synthetic Windows Startup poisoning demo，只发送 JSON，不写真实 Startup。
 - `windows-startup-poisoning.md`：说明如何运行、看什么输出、以及如何安全讲这个 demo。
-- `evidence/windows-startup-poisoning-output.txt`：一份脱敏后的真实 demo 输出，包含 decision/reason/explanation 摘要，可直接用于 README / 面试展示。
+- `evidence/windows-startup-poisoning-output.txt`：一份脱敏后的真实 demo 输出，包含 decision/reason/explanation 摘要，可用于 README 或安全评审演示。
 
 ## 完整 Agent SDK demo
 
@@ -114,9 +114,9 @@
 
    `-DryRun` 只打印脱敏后的请求头；如果配置了 `Authorization`，终端里只会显示 `Bearer [REDACTED]`。
 
-## 作品化展示建议
+## 公开演示建议
 
-如果是给面试官或读者看，建议按这个顺序展示：
+如果是给读者或安全评审者看，建议按这个顺序展示：
 
 1. 打开 [`windows-startup-poisoning.md`](windows-startup-poisoning.md)，先讲攻击场景和边界。
 2. 跑一次 `run-windows-startup-poisoning-demo.ps1`，展示 `deny_with_ticket`、`reason` 和 explanation signals。

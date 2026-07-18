@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { CheckCircle2, Edit, Lock, PlayCircle, ShieldCheck, Trash2 } from "lucide-react";
-import { createPolicy, deletePolicy, listPolicies, simulatePolicy, updatePolicy } from "../api/client";
+import { createPolicy, deletePolicy, getApiErrorMessage, listPolicies, simulatePolicy, updatePolicy } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { canManagePolicies as canManagePoliciesForRole } from "../auth/permissions";
 import { PageHeader } from "../components/PageHeader";
@@ -61,7 +61,7 @@ export function PoliciesPage() {
       const result = await listPolicies(token, workspaceOrgId);
       setPolicies(result.items);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("policies.loadError"));
+      toast.error(getApiErrorMessage(error, t("policies.loadError"), t("common.permissionDenied")));
       setPolicies([]);
     } finally {
       setLoading(false);
@@ -79,7 +79,7 @@ export function PoliciesPage() {
         }
       } catch (error) {
         if (!cancelled) {
-          toast.error(error instanceof Error ? error.message : t("policies.loadError"));
+          toast.error(getApiErrorMessage(error, t("policies.loadError"), t("common.permissionDenied")));
           setPolicies([]);
         }
       } finally {
@@ -135,7 +135,7 @@ export function PoliciesPage() {
       resetForm();
       await loadPolicies();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("policies.saveError"));
+      toast.error(getApiErrorMessage(error, t("policies.saveError"), t("common.permissionDenied")));
     } finally {
       setSaving(false);
     }
@@ -157,7 +157,7 @@ export function PoliciesPage() {
         resetForm();
       }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("policies.deleteError"));
+      toast.error(getApiErrorMessage(error, t("policies.deleteError"), t("common.permissionDenied")));
     }
   }
 
@@ -170,7 +170,7 @@ export function PoliciesPage() {
       await updatePolicy(rule.id, { ...policyRuleToInput(rule), enabled: !rule.enabled }, token, workspaceOrgId);
       await loadPolicies();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("policies.toggleError"));
+      toast.error(getApiErrorMessage(error, t("policies.toggleError"), t("common.permissionDenied")));
     }
   }
 
@@ -179,7 +179,7 @@ export function PoliciesPage() {
       const result = await simulatePolicy(simulationForm, token, workspaceOrgId);
       setSimulation(result);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("policies.simulateError"));
+      toast.error(getApiErrorMessage(error, t("policies.simulateError"), t("common.permissionDenied")));
       setSimulation(null);
     }
   }

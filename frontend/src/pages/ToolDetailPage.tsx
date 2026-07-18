@@ -1,7 +1,7 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Clock, Code2, Database, Globe, History, Play, ShieldCheck, Wrench } from "lucide-react";
-import { createToolCall, getDatabaseSchema, getTool, listToolCalls } from "../api/client";
+import { Clock, Code2, Database, Globe, History, Play, RefreshCw, ShieldCheck, TriangleAlert, Wrench } from "lucide-react";
+import { createToolCall, getApiErrorMessage, getDatabaseSchema, getTool, listToolCalls } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { canExecuteTools } from "../auth/permissions";
 import { Badge } from "../components/ui/badge";
@@ -51,6 +51,10 @@ export function ToolDetailPage() {
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [result, setResult] = useState<ToolCallResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [executing, setExecuting] = useState(false);
+  const executingRef = useRef(false);
   const [databaseSchema, setDatabaseSchema] = useState<DatabaseSchemaResponse | null>(null);
   const [databaseSchemaError, setDatabaseSchemaError] = useState<string | null>(null);
   const toolKey = useMemo(() => (tool ? `${tool.namespace}.${tool.name}` : ""), [tool]);
@@ -62,27 +66,41 @@ export function ToolDetailPage() {
     const activeToolId = toolId;
     let cancelled = false;
     async function load() {
-      const toolResult = await getTool(activeToolId, token, workspaceOrgId);
-      let callItems: ToolCall[] = [];
       try {
-        const callsResult = await listToolCalls(token, workspaceOrgId, {
-          tool: `${toolResult.namespace}.${toolResult.name}`,
-          pageSize: 200,
-        });
-        callItems = callsResult.items;
-      } catch {
-        callItems = [];
-      }
-      if (!cancelled) {
-        setTool(toolResult);
-        setCalls(callItems);
+        setLoading(true);
+        setLoadError(null);
+        setTool((current) => (current?.id === activeToolId ? current : null));
+        setCalls([]);
+        const toolResult = await getTool(activeToolId, token, workspaceOrgId);
+        let callItems: ToolCall[] = [];
+        try {
+          const callsResult = await listToolCalls(token, workspaceOrgId, {
+            tool: `${toolResult.namespace}.${toolResult.name}`,
+            pageSize: 200,
+          });
+          callItems = callsResult.items;
+        } catch {
+          callItems = [];
+        }
+        if (!cancelled) {
+          setTool(toolResult);
+          setCalls(callItems);
+        }
+      } catch (loadFailure) {
+        if (!cancelled) {
+          setLoadError(getApiErrorMessage(loadFailure, t("toolDetail.loadError"), t("common.permissionDenied")));
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     }
     void load();
     return () => {
       cancelled = true;
     };
-  }, [toolId, token, workspaceOrgId, refreshNonce]);
+  }, [toolId, token, workspaceOrgId, refreshNonce, t]);
 
   const isMockTool = useMemo(() => tool?.namespace === "mock", [tool]);
   const isDatabaseQueryTool = useMemo(() => toolKey === "database.query", [toolKey]);
@@ -109,7 +127,9 @@ export function ToolDetailPage() {
       } catch (err) {
         if (!cancelled) {
           setDatabaseSchema(null);
-          setDatabaseSchemaError(err instanceof Error ? err.message : t("toolDetail.schema.loadError"));
+          setDatabaseSchemaError(
+            getApiErrorMessage(err, t("toolDetail.schema.loadError"), t("common.permissionDenied")),
+          );
         }
       }
     }
@@ -128,12 +148,17 @@ export function ToolDetailPage() {
 
   async function handleRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (executingRef.current) {
+      return;
+    }
     setError(null);
     setResult(null);
     if (!canExecute) {
       setError(t("common.permissionDenied"));
       return;
     }
+    executingRef.current = true;
+    setExecuting(true);
     try {
       if (!toolId || !tool) {
         throw new Error(t("toolDetail.notAvailable"));
@@ -168,17 +193,46 @@ export function ToolDetailPage() {
       const response = await createToolCall({ tool: toolKey, arguments: parsed }, token, workspaceOrgId);
       setResult(response);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t("toolDetail.executionFailed"));
+      setError(getApiErrorMessage(err, t("toolDetail.executionFailed"), t("common.permissionDenied")));
     } finally {
+      executingRef.current = false;
+      setExecuting(false);
       setRefreshNonce((current) => current + 1);
     }
   }
 
-  if (!tool) {
+  if (loading && !tool) {
     return (
       <div className="grid gap-6">
         <Card className="p-6">
           <p className="m-0 text-sm text-muted-foreground">{t("toolDetail.loading")}</p>
+        </Card>
+      </div>
+    );
+  }
+
+  if (loadError || !tool) {
+    return (
+      <div className="grid gap-6">
+        <Card>
+          <CardContent className="grid gap-4 p-6">
+            <div role="alert" className="flex items-start gap-3 rounded-2xl border border-destructive/25 bg-destructive/10 p-4">
+              <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+              <div>
+                <div className="font-bold text-foreground">{t("toolDetail.loadErrorTitle")}</div>
+                <p className="m-0 mt-1 text-sm text-muted-foreground">{loadError ?? t("toolDetail.notAvailable")}</p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <Button type="button" variant="outline" onClick={() => setRefreshNonce((current) => current + 1)}>
+                <RefreshCw className="h-4 w-4" />
+                {t("toolDetail.retry")}
+              </Button>
+              <Button asChild variant="outline">
+                <Link to="/tools">{t("toolDetail.backToTools")}</Link>
+              </Button>
+            </div>
+          </CardContent>
         </Card>
       </div>
     );
@@ -245,9 +299,9 @@ export function ToolDetailPage() {
                   <p className="m-0 text-sm text-muted-foreground">
                     {t("toolDetail.database.guard")}
                   </p>
-                    <Button type="submit" disabled={!canExecute}>
-                      {t("toolDetail.database.execute")}
-                    </Button>
+                  <Button type="submit" disabled={!canExecute || executing}>
+                    {t("toolDetail.database.execute")}
+                  </Button>
                 </form>
               ) : isGitHubTool ? (
                 <form className="grid gap-4" onSubmit={handleRun}>
@@ -303,9 +357,9 @@ export function ToolDetailPage() {
                   <p className="m-0 text-sm text-muted-foreground">
                     {t("toolDetail.github.guard")}
                   </p>
-                    <Button type="submit" disabled={!canExecute}>
-                      {toolKey === "github.create_issue" ? t("toolDetail.action.requestApproval") : t("toolDetail.action.execute")}
-                    </Button>
+                  <Button type="submit" disabled={!canExecute || executing}>
+                    {toolKey === "github.create_issue" ? t("toolDetail.action.requestApproval") : t("toolDetail.action.execute")}
+                  </Button>
                 </form>
               ) : isHTTPTool ? (
                 <form className="grid gap-4" onSubmit={handleRun}>
@@ -362,9 +416,9 @@ export function ToolDetailPage() {
                       {t("toolDetail.http.writeNotice")}
                     </p>
                   )}
-                    <Button type="submit" disabled={!canExecute}>
-                      {httpMethodRequiresApproval ? t("toolDetail.action.requestApproval") : t("toolDetail.action.execute")}
-                    </Button>
+                  <Button type="submit" disabled={!canExecute || executing}>
+                    {httpMethodRequiresApproval ? t("toolDetail.action.requestApproval") : t("toolDetail.action.execute")}
+                  </Button>
                 </form>
               ) : isMCPTool ? (
                 <form className="grid gap-4" onSubmit={handleRun}>
@@ -380,9 +434,9 @@ export function ToolDetailPage() {
                       {t("toolDetail.mcp.writeNotice")}
                     </p>
                   )}
-                    <Button type="submit" disabled={!canExecute}>
-                      {tool.requiresApproval ? t("toolDetail.action.requestApproval") : t("toolDetail.action.execute")}
-                    </Button>
+                  <Button type="submit" disabled={!canExecute || executing}>
+                    {tool.requiresApproval ? t("toolDetail.action.requestApproval") : t("toolDetail.action.execute")}
+                  </Button>
                 </form>
               ) : isMockTool ? (
                 <form className="grid gap-4" onSubmit={handleRun}>
@@ -390,9 +444,9 @@ export function ToolDetailPage() {
                     <Label htmlFor="mock-arguments">{t("toolDetail.mock.arguments")}</Label>
                     <textarea id="mock-arguments" className={textareaClassName} rows={8} value={payload} onChange={(event) => setPayload(event.target.value)} />
                   </div>
-                    <Button type="submit" disabled={!canExecute}>
-                      {t("toolDetail.action.execute")}
-                    </Button>
+                  <Button type="submit" disabled={!canExecute || executing}>
+                    {t("toolDetail.action.execute")}
+                  </Button>
                 </form>
               ) : (
                 <p className="m-0 text-sm text-muted-foreground">{t("toolDetail.unsupported")}</p>

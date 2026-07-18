@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { CheckCircle2, Clock, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
-import { approveApproval, connectApprovalStream, listApprovals, rejectApproval } from "../api/client";
+import { approveApproval, connectApprovalStream, getApiErrorMessage, listApprovals, rejectApproval } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { canReviewApprovals } from "../auth/permissions";
 import { PageHeader } from "../components/PageHeader";
@@ -80,7 +80,7 @@ export function ApprovalsPage() {
         if (!cancelled) {
           setFeedback({
             kind: "error",
-            text: error instanceof Error ? error.message : t("approvals.loadError"),
+            text: getApiErrorMessage(error, t("approvals.loadError"), t("common.permissionDenied")),
           });
         }
       } finally {
@@ -195,7 +195,7 @@ export function ApprovalsPage() {
     } catch (error) {
       setFeedback({
         kind: "error",
-        text: error instanceof Error ? error.message : t("approvals.actionError"),
+        text: getApiErrorMessage(error, t("approvals.actionError"), t("common.permissionDenied")),
       });
     } finally {
       setSavingId(null);

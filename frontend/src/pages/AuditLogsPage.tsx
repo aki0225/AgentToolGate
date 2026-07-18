@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ArrowLeft, ArrowRight, Eye, FileText, RefreshCw, TriangleAlert } from "lucide-react";
-import { getToolCall, listToolCalls, listTools } from "../api/client";
+import { getApiErrorMessage, getToolCall, listToolCalls, listTools } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { EmptyState } from "../components/EmptyState";
 import { JsonBlock } from "../components/JsonBlock";
@@ -37,17 +37,17 @@ export function AuditLogsPage() {
   const token = auth.oidcUser?.id_token ?? null;
   const [tools, setTools] = useState<Tool[]>([]);
   const [callsPage, setCallsPage] = useState<ToolCallPage | null>(null);
+  const [focusedCall, setFocusedCall] = useState<ToolCall | null>(null);
   const [loading, setLoading] = useState(true);
-  const [expandedCallId, setExpandedCallId] = useState<string | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
   const toolFilter = searchParams.get("tool") ?? "all";
   const statusFilter = searchParams.get("status") ?? "all";
   const fromFilter = searchParams.get("from") ?? "";
   const toFilter = searchParams.get("to") ?? "";
+  const focusedCallId = searchParams.get("call")?.trim() || null;
   const page = clampPositiveInt(searchParams.get("page"), 1);
   const pageSize = clampPositiveInt(searchParams.get("pageSize"), defaultPageSize, 200);
-  const searchSignature = searchParams.toString();
 
   useEffect(() => {
     let cancelled = false;
@@ -71,7 +71,7 @@ export function AuditLogsPage() {
         }
       } catch (error) {
         if (!cancelled) {
-          toast.error(error instanceof Error ? error.message : t("audit.loadError"));
+          toast.error(getApiErrorMessage(error, t("audit.loadError"), t("common.permissionDenied")));
         }
       } finally {
         if (!cancelled) {
@@ -83,7 +83,34 @@ export function AuditLogsPage() {
     return () => {
       cancelled = true;
     };
-  }, [token, workspaceOrgId, toolFilter, statusFilter, fromFilter, toFilter, page, pageSize, searchSignature, refreshNonce, t]);
+  }, [token, workspaceOrgId, toolFilter, statusFilter, fromFilter, toFilter, page, pageSize, refreshNonce, t]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFocusedCall(null);
+    const targetCallId = focusedCallId;
+    if (!targetCallId) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    async function loadFocusedCall(callId: string) {
+      try {
+        const detail = await getToolCall(callId, token, workspaceOrgId);
+        if (!cancelled) {
+          setFocusedCall(detail);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          toast.error(getApiErrorMessage(error, t("audit.detailError"), t("common.permissionDenied")));
+        }
+      }
+    }
+    void loadFocusedCall(targetCallId);
+    return () => {
+      cancelled = true;
+    };
+  }, [focusedCallId, token, workspaceOrgId, refreshNonce, t]);
 
   const totalPages = useMemo(() => {
     if (!callsPage || callsPage.total === 0) {
@@ -93,6 +120,18 @@ export function AuditLogsPage() {
   }, [callsPage]);
 
   const toolKeys = useMemo(() => tools.map((tool) => tool.namespace + "." + tool.name), [tools]);
+  const visibleCalls = useMemo(() => {
+    const pageItems = callsPage?.items ?? [];
+    if (!focusedCall) {
+      return pageItems;
+    }
+    const focusedIndex = pageItems.findIndex((item) => item.id === focusedCall.id);
+    if (focusedIndex < 0) {
+      return [focusedCall, ...pageItems];
+    }
+    return pageItems.map((item, index) => (index === focusedIndex ? focusedCall : item));
+  }, [callsPage, focusedCall]);
+  const expandedCallId = focusedCall?.id ?? null;
 
   function updateSearchParams(updater: (next: URLSearchParams) => void) {
     const next = new URLSearchParams(searchParams);
@@ -147,26 +186,14 @@ export function AuditLogsPage() {
     });
   }
 
-  async function expandCall(call: ToolCall) {
-    if (expandedCallId === call.id) {
-      setExpandedCallId(null);
-      return;
+  function expandCall(call: ToolCall) {
+    const next = new URLSearchParams(searchParams);
+    if (focusedCallId === call.id) {
+      next.delete("call");
+    } else {
+      next.set("call", call.id);
     }
-    setExpandedCallId(call.id);
-    try {
-      const detail = await getToolCall(call.id, token, workspaceOrgId);
-      setCallsPage((current) => {
-        if (!current) {
-          return current;
-        }
-        return {
-          ...current,
-          items: current.items.map((item) => (item.id === detail.id ? detail : item)),
-        };
-      });
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("audit.detailError"));
-    }
+    setSearchParams(next, { replace: true });
   }
 
   const traceBaseURL = import.meta.env.VITE_JAEGER_URL?.trim() ?? "";
@@ -259,7 +286,7 @@ export function AuditLogsPage() {
                   <Skeleton className="h-10 w-52" />
                   <Skeleton className="h-72 w-full" />
                 </div>
-              ) : !callsPage || callsPage.items.length === 0 ? (
+              ) : !callsPage || visibleCalls.length === 0 ? (
                 <EmptyState
                   icon={TriangleAlert}
                   title={t("audit.empty.title")}
@@ -285,7 +312,7 @@ export function AuditLogsPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {callsPage.items.map((call) => (
+                      {visibleCalls.map((call) => (
                         <Fragment key={call.id}>
                           <TableRow
                             className={expandedCallId === call.id ? "border-accent/30 bg-white/[0.05]" : undefined}
@@ -322,7 +349,7 @@ export function AuditLogsPage() {
                             <TableCell className="text-muted-foreground">{new Date(call.createdAt).toLocaleString()}</TableCell>
                             <TableCell>
                               <div className="flex justify-end">
-                                <Button type="button" size="sm" variant="outline" onClick={() => void expandCall(call)}>
+                                <Button type="button" size="sm" variant="outline" onClick={() => expandCall(call)}>
                                   <Eye className="h-4 w-4" />
                                   {expandedCallId === call.id ? t("audit.action.hide") : t("audit.action.view")}
                                 </Button>
