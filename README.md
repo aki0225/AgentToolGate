@@ -4,8 +4,6 @@
 
 # AgentToolGate
 
-<h3>提示词注入在应用层防不完，但 Agent 拿着工具去干坏事的那一步，可以拦。</h3>
-
 <p>
   <a href="https://github.com/aki0225/AgentToolGate/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/aki0225/AgentToolGate/ci.yml?branch=main&style=for-the-badge&label=CI" alt="CI"></a>
   <img src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.26+">
