@@ -1,5 +1,14 @@
 # 安全策略
 
+## 生产部署前必读
+
+仓库默认 Compose 配置使用 `HOST=0.0.0.0`、`AUTH_MODE=local`、
+`LOCAL_ROLE=owner` 和 `DEV_MODE=true`。它只适用于单机本地开发，不是生产鉴权方案。
+在该模式下，任何能够访问 backend 的调用方都会进入本地 owner 身份。
+
+多用户、共享主机或网络暴露部署必须启用 OIDC，并同时限制监听地址、网络入口和上游凭据权限。
+不要把默认 Compose 配置直接暴露到公网。
+
 ## 支持版本
 
 安全修复面向当前 `main` 分支和最新公开 GitHub Release。较早的 Release Candidate 可能只补充文档澄清，不应被视为长期支持版本。

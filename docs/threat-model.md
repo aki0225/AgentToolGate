@@ -122,6 +122,8 @@ ATG 当前不提供：
 - 完整 prompt-injection prevention。
 - OS sandbox、kernel policy 或 EDR。
 - 完整 Codex interactive ask 体验。
+- Guard Core 不会递归解码普通文件写入内容中的多层编码 payload；直接命令中的隐藏执行特征
+  仍会进入规则判断，但不能把 ContentPreview 检查当作完整内容扫描或 OS enforcement。
 - KMS/Vault/cloud Secret Manager 集成。
 - GitHub App installation-token 生产生命周期。
 - 对 DNS rebinding 或 DNS 解析后私网 IP 的完整 SSRF 防护。
