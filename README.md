@@ -105,6 +105,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 
 如果要让其他机器或其他用户访问，至少需要切换到 OIDC、限制监听地址和网络入口，
 并为上游凭据配置最小权限。不要把默认 Compose 配置直接暴露到公网。
+否则请求等同于无鉴权访问。当前项目不宣称已提供企业级 RBAC、职责分离或
+组织级访问控制。
 
 ## 防护范围
 
