@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { connectApprovalStream, readApprovalStream } from "../src/api/client";
+import { ApiError, connectApprovalStream, readApprovalStream } from "../src/api/client";
 
 test("审批流客户端：OIDC 使用 Authorization header，不把 token 或 workspace 写进 query", async () => {
   const originalFetch = globalThis.fetch;
@@ -91,26 +91,56 @@ test("审批流客户端：local 模式继续使用 EventSource query workspace 
   }
 });
 
-test("审批流客户端：连接失败时触发 onError 以便 UI fallback polling", async () => {
+test("审批流客户端：token fetch 非 2xx 返回 typed ApiError 以便 UI fallback polling", async () => {
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = (async () => {
-    return new Response("unauthorized", { status: 401 });
+    return new Response("unauthorized", { status: 401, statusText: "Unauthorized" });
   }) as typeof fetch;
 
   try {
-    let errorMessage = "";
-    const connection = connectApprovalStream({
+    const error = await waitForApprovalStreamError({
       token: "expired-token",
       workspaceOrgId: "oidc-org",
-      onApproval: () => {},
-      onError: (error) => {
-        errorMessage = error.message;
-      },
     });
 
-    await expect.poll(() => errorMessage).toContain("unauthorized");
-    connection.close();
+    expect(error instanceof ApiError).toBe(true);
+    expect(error).toMatchObject({
+      name: "ApiError",
+      status: 401,
+      message: "Unauthorized",
+    });
+    expect(error.message).not.toContain("unauthorized");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("审批流客户端：token fetch HTML 502 不泄漏响应正文", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async () => {
+    return new Response("<html><body>internal-token=super-secret</body></html>", {
+      status: 502,
+      statusText: "Bad Gateway",
+      headers: { "Content-Type": "text/html" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const error = await waitForApprovalStreamError({
+      token: "stream-token",
+      workspaceOrgId: "oidc-org",
+    });
+
+    expect(error instanceof ApiError).toBe(true);
+    expect(error).toMatchObject({
+      name: "ApiError",
+      status: 502,
+      message: "Bad Gateway",
+    });
+    expect(error.message).not.toContain("internal-token");
+    expect(error.message).not.toContain("<html>");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -143,4 +173,32 @@ function sseBody(lines: string[]): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+async function waitForApprovalStreamError(options: {
+  token: string;
+  workspaceOrgId?: string;
+}): Promise<Error> {
+  let connection: { close: () => void } | null = null;
+  try {
+    return await new Promise<Error>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        connection?.close();
+        reject(new Error("approval stream error not emitted"));
+      }, 1000);
+
+      connection = connectApprovalStream({
+        token: options.token,
+        workspaceOrgId: options.workspaceOrgId,
+        onApproval: () => {},
+        onError: (error) => {
+          clearTimeout(timeout);
+          connection?.close();
+          resolve(error);
+        },
+      });
+    });
+  } finally {
+    connection?.close();
+  }
 }

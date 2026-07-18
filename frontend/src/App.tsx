@@ -17,7 +17,7 @@ import { useI18n } from "./i18n";
 
 function ProtectedLayout() {
   const auth = useAuth();
-  if (auth.authMode === "oidc" && !auth.me) {
+  if (!auth.me) {
     return <Navigate to="/login" replace />;
   }
   return <Layout />;

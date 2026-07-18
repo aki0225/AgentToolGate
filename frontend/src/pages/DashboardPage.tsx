@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Activity, CheckCircle2, Clock, Gauge, TriangleAlert, Wrench, XCircle } from "lucide-react";
-import { listDashboardSummary, listToolCalls, listTools } from "../api/client";
+import { getApiErrorMessage, listDashboardSummary, listToolCalls, listTools } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
@@ -21,11 +22,15 @@ export function DashboardPage() {
   const [tools, setTools] = useState<Tool[]>([]);
   const [calls, setCalls] = useState<ToolCall[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
+        setLoading(true);
+        setError(null);
         const [summaryResult, toolsResult, callsResult] = await Promise.all([
           listDashboardSummary(token, workspaceOrgId),
           listTools(token, workspaceOrgId),
@@ -37,6 +42,13 @@ export function DashboardPage() {
         setSummary(summaryResult);
         setTools(toolsResult.items);
         setCalls(callsResult.items);
+      } catch (loadError) {
+        if (!cancelled) {
+          setSummary(null);
+          setTools([]);
+          setCalls([]);
+          setError(getApiErrorMessage(loadError, t("dashboard.loadError"), t("common.permissionDenied")));
+        }
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -47,7 +59,7 @@ export function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [token, workspaceOrgId]);
+  }, [token, workspaceOrgId, refreshNonce, t]);
 
   const lastFiveCalls = useMemo(() => calls.slice(0, 5), [calls]);
   const metrics = [
@@ -87,7 +99,22 @@ export function DashboardPage() {
     <div className="grid gap-6">
       <PageHeader kicker={t("dashboard.kicker")} title={t("dashboard.title")} description={t("dashboard.description")} />
 
-      {loading ? (
+      {error ? (
+        <Card>
+          <CardContent className="grid gap-4 p-6">
+            <div role="alert" className="flex items-start gap-3 rounded-2xl border border-destructive/25 bg-destructive/10 p-4">
+              <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+              <div>
+                <div className="font-bold text-foreground">{t("dashboard.loadErrorTitle")}</div>
+                <p className="m-0 mt-1 text-sm text-muted-foreground">{error}</p>
+              </div>
+            </div>
+            <Button type="button" variant="outline" className="w-fit" onClick={() => setRefreshNonce((value) => value + 1)}>
+              {t("dashboard.retry")}
+            </Button>
+          </CardContent>
+        </Card>
+      ) : loading ? (
         <div className="grid gap-4">
           <div className="grid gap-4 lg:grid-cols-4">
             {Array.from({ length: 5 }).map((_, index) => (

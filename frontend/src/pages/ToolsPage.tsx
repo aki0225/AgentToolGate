@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { PlusCircle, ShieldCheck, Wrench } from "lucide-react";
-import { createTool, listTools, updateTool } from "../api/client";
+import { createTool, getApiErrorMessage, listTools, updateTool } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { canManageTools } from "../auth/permissions";
 import { EmptyState } from "../components/EmptyState";
@@ -56,7 +56,7 @@ export function ToolsPage() {
         }
       } catch (error) {
         if (!cancelled) {
-          toast.error(error instanceof Error ? error.message : t("tools.loadError"));
+          toast.error(getApiErrorMessage(error, t("tools.loadError"), t("common.permissionDenied")));
         }
       } finally {
         if (!cancelled) {
@@ -90,7 +90,7 @@ export function ToolsPage() {
       setForm(defaultForm);
       toast.success(t("tools.createSuccess", { name: created.displayName }));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("tools.createError"));
+      toast.error(getApiErrorMessage(error, t("tools.createError"), t("common.permissionDenied")));
     }
   }
 
@@ -112,7 +112,7 @@ export function ToolsPage() {
       setTools((current) => current.map((item) => (item.id === updated.id ? updated : item)));
       toast.success(t("tools.toggleSuccess", { name: updated.displayName, state: updated.enabled ? t("tools.state.enabled") : t("tools.state.disabled") }));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t("tools.updateError"));
+      toast.error(getApiErrorMessage(error, t("tools.updateError"), t("common.permissionDenied")));
     } finally {
       setSavingToolId(null);
     }
