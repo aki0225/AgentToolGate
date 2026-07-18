@@ -49,6 +49,28 @@ function Resolve-GoExe {
     throw "未找到 Go 可执行文件。请把 go 加入 PATH，或设置 AGT_GO_EXE 指向 go 可执行文件。"
 }
 
+function Resolve-GitValue {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [string]$Fallback = "unknown"
+    )
+
+    try {
+        $value = & git -C $RepoRoot @Arguments 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            $trimmed = ($value -join "`n").Trim()
+            if ($trimmed) {
+                return $trimmed
+            }
+        }
+    }
+    catch {
+        # 发布验证仍应能在没有 Git 元数据的源码快照中完成。
+    }
+
+    return $Fallback
+}
+
 function Resolve-Platform {
     param([string]$RequestedPlatform)
 
@@ -169,6 +191,15 @@ if (-not (Test-Path $BackendDir)) {
 $Platform = Resolve-Platform -RequestedPlatform $Platform
 Assert-SmokePlatformSupported -TargetPlatform $Platform
 $GoExe = Resolve-GoExe
+$releaseVersion = if (-not [string]::IsNullOrWhiteSpace($env:RELEASE_TAG)) {
+    $env:RELEASE_TAG.Trim()
+}
+else {
+    Resolve-GitValue -Arguments @("describe", "--tags", "--exact-match", "HEAD") -Fallback "dev"
+}
+$releaseCommit = Resolve-GitValue -Arguments @("rev-parse", "HEAD")
+$releaseBuildTime = (Get-Date).ToUniversalTime().ToString("o")
+$releaseLdflags = "-X main.version=$releaseVersion -X main.commit=$releaseCommit -X main.buildTime=$releaseBuildTime"
 
 $goOS = if ($Platform -eq "linux-amd64") { "linux" } else { "windows" }
 $goArch = "amd64"
@@ -181,6 +212,7 @@ $BinaryPath = Join-Path $PackageDir $binaryName
 $ExtractDir = Join-Path $SmokeDir ("extract-" + $Platform)
 
 Write-Host "==> 构建平台: $Platform" -ForegroundColor Cyan
+Write-Host "==> 发布元数据: $releaseVersion / $releaseCommit / $releaseBuildTime" -ForegroundColor Cyan
 Write-Host "==> 构建前端" -ForegroundColor Cyan
 Push-Location $FrontendDir
 try {
@@ -214,7 +246,7 @@ try {
     [Environment]::SetEnvironmentVariable("GOARCH", $goArch, "Process")
     Push-Location $BackendDir
     try {
-        & $GoExe build -o $BinaryPath ./cmd/server
+        & $GoExe build -ldflags $releaseLdflags -o $BinaryPath ./cmd/server
         if ($LASTEXITCODE -ne 0) {
             throw "Go 构建失败，退出码 $LASTEXITCODE"
         }
