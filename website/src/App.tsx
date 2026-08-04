@@ -1,6 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
 
-import { ArchitectureFlow } from "./components/ArchitectureFlow";
 import { CapabilityGrid } from "./components/CapabilityGrid";
 import { HeroPipeline } from "./components/HeroPipeline";
 import { Icon, type IconName } from "./components/Icon";
@@ -12,77 +11,24 @@ const githubBlobRoot = `${githubRoot}/blob/main`;
 const latestDownloadRoot = `${githubRoot}/releases/latest/download`;
 
 const navItems = [
-  { label: "产品能力", href: "#capabilities" },
+  { label: "工作方式", href: "#workflow" },
   { label: "交互演示", href: "#demo" },
-  { label: "架构", href: "#architecture" },
   { label: "安全边界", href: "#boundaries" },
-  { label: "工程证据", href: "#evidence" },
   { label: "下载", href: "#download" }
 ];
 
-const evidenceRows: Array<{
-  code: string;
-  title: string;
-  detail: string;
-  proof: string;
-  href: string;
-  linkLabel: string;
-}> = [
+const proofLinks = [
   {
-    code: "STACK",
-    title: "Go + React + TypeScript",
-    detail: "Go 后端、React 控制台和独立 Vite 展示站按发布边界分离。",
-    proof: "backend/go.mod · frontend/package.json · website/package.json",
-    href: `${githubRoot}/tree/main`,
-    linkLabel: "查看源码树"
+    label: "CI 与测试",
+    href: `${githubRoot}/actions/workflows/ci.yml`
   },
   {
-    code: "STORE",
-    title: "SQLite / PostgreSQL / MemoryStore",
-    detail: "本地单二进制优先 SQLite，同时保留 PostgreSQL 集成路径与测试内存存储。",
-    proof: "internal/store · PostgreSQL CI service",
-    href: `${githubBlobRoot}/docs/architecture.md`,
-    linkLabel: "查看架构说明"
+    label: "架构文档",
+    href: `${githubBlobRoot}/docs/architecture.md`
   },
   {
-    code: "RELEASE",
-    title: "Windows / Linux amd64 + SHA256",
-    detail: "双平台发布产物由 GitHub Release 承载，展示站不复制二进制。",
-    proof: "agenttoolgate-windows-amd64.zip · agenttoolgate-linux-amd64.tar.gz · SHA256SUMS",
-    href: `${githubRoot}/releases`,
-    linkLabel: "查看 Releases"
-  },
-  {
-    code: "CI",
-    title: "可复述的质量门禁",
-    detail: "Go test/vet、PostgreSQL 集成测试、TypeScript check、生产构建和 E2E 分层执行。",
-    proof: ".github/workflows/ci.yml",
-    href: `${githubRoot}/actions/workflows/ci.yml`,
-    linkLabel: "查看 CI 定义"
-  },
-  {
-    code: "IDENTITY",
-    title: "OIDC、基础 role 与 workspace 隔离",
-    detail: "已有基础身份与隔离控制，但不宣传为企业级 RBAC 或完整职责分离。",
-    proof: "internal/auth · internal/app/rbac_test.go",
-    href: `${githubBlobRoot}/docs/security-review-notes.md`,
-    linkLabel: "查看安全评审"
-  },
-  {
-    code: "OBSERVE",
-    title: "OpenTelemetry + Prometheus",
-    detail: "trace id 关联治理证据，指标覆盖调用、拒绝、错误、耗时与 Guard 规则命中。",
-    proof: "internal/telemetry",
-    href: `${githubRoot}/tree/main/backend/internal/telemetry`,
-    linkLabel: "查看可观测性实现"
-  },
-  {
-    code: "REVIEW",
-    title: "Threat Model / Security Review / Acceptance",
-    detail: "公开记录已有控制、剩余风险、日常使用证据和生产化前提。",
-    proof: "docs/threat-model.md · docs/security-review-notes.md · docs/daily-use-acceptance.md",
-    href: `${githubBlobRoot}/docs/threat-model.md`,
-    linkLabel: "查看威胁模型"
+    label: "威胁模型与安全评审",
+    href: `${githubBlobRoot}/docs/threat-model.md`
   }
 ];
 
@@ -105,7 +51,7 @@ const downloads: Array<{
     icon: "download"
   },
   {
-    platform: "完整性校验",
+    platform: "SHA256",
     filename: "SHA256SUMS",
     href: `${latestDownloadRoot}/SHA256SUMS`,
     icon: "lock"
@@ -129,24 +75,16 @@ function ExternalLink({
 }
 
 function SectionHeading({
-  index,
-  eyebrow,
   title,
   description
 }: {
-  index: string;
-  eyebrow: string;
   title: string;
   description: string;
 }) {
   return (
     <div className="section-heading">
-      <div className="section-index">{index}</div>
-      <div>
-        <span className="section-eyebrow">{eyebrow}</span>
-        <h2>{title}</h2>
-        <p>{description}</p>
-      </div>
+      <h2>{title}</h2>
+      <p>{description}</p>
     </div>
   );
 }
@@ -180,7 +118,7 @@ export function App() {
             </span>
             <span className="brand-copy">
               <strong>AgentToolGate</strong>
-              <small>TOOL GOVERNANCE GATEWAY</small>
+              <small>本地工具治理网关</small>
             </span>
           </a>
 
@@ -226,16 +164,17 @@ export function App() {
       <main id="main-content">
         <section className="hero section-shell" id="top">
           <div className="hero-copy">
-            <div className="hero-eyebrow">
-              <span>AGENTTOOLGATE / TOOL GOVERNANCE GATEWAY</span>
-            </div>
+            <p className="hero-brand">AgentToolGate</p>
             <h1>
               让高危工具调用，
-              <span>在执行前先过治理闸门</span>
+              <span>
+                在执行前先过
+                <br />
+                治理闸门
+              </span>
             </h1>
             <p className="hero-lead">
-              面向 Codex、Claude Code 与 MCP 客户端的本地工具治理网关，统一处理 Policy、
-              Approval、Connector Secret、Audit 与本地高危动作。
+              面向 Codex、Claude Code 与 MCP 客户端的本地工具治理网关，统一处理决策、审批、运行时 Secret 与脱敏审计。
             </p>
             <div className="hero-actions">
               <a className="button button-primary" href="#demo">
@@ -243,7 +182,7 @@ export function App() {
                 <Icon name="arrow" />
               </a>
               <a className="button button-secondary" href="#download">
-                下载最新 Release
+                下载 Release
                 <Icon name="download" />
               </a>
             </div>
@@ -251,110 +190,48 @@ export function App() {
 
           <div className="hero-visual">
             <HeroPipeline />
-            <div className="hero-boundary">
-              <Icon name="lock" />
-              <p>
-                静态展示，不运行后端、不连接真实 Connector，也不收集 token、Secret 或表单信息。
-              </p>
-            </div>
           </div>
         </section>
 
-        <section className="section section-shell" id="capabilities">
+        <section className="section section-shell" id="workflow">
           <SectionHeading
-            index="01"
-            eyebrow="PROBLEM / GOVERNANCE"
-            title="危险后果发生在工具落地那一刻"
-            description="AgentToolGate 不承诺消灭提示词注入；它把受支持的工具调用收敛到可解释、可审批、可审计的执行路径。"
+            title="它如何工作"
+            description="工具调用先被判定，再决定执行、审批或拒绝；本地高危动作走独立但同样保守的 Guard 入口。"
           />
           <CapabilityGrid />
+
+          <div className="proof-links" aria-label="工程证据">
+            <span>继续核对</span>
+            {proofLinks.map((item) => (
+              <ExternalLink href={item.href} key={item.label}>
+                {item.label}
+                <Icon name="external" />
+              </ExternalLink>
+            ))}
+          </div>
         </section>
 
         <section className="section section-shell section-demo" id="demo">
           <SectionHeading
-            index="02"
-            eyebrow="INTERACTIVE / STATIC"
-            title="三条可复现的治理状态机"
-            description="每个场景都有独立内存状态、合法迁移和完全重置；不使用真实 API，也不靠定时脚本伪造网络过程。"
+            title="交互演示"
+            description="三个 synthetic 场景展示真实治理状态迁移，不连接后端、上游服务或真实凭据。"
           />
           <ScenarioTabs />
         </section>
 
-        <section className="section section-shell" id="architecture">
-          <SectionHeading
-            index="03"
-            eyebrow="ARCHITECTURE / TRUST BOUNDARY"
-            title="两条编排轨道，同一套治理原则"
-            description="Tool Registry 调用进入统一 Policy / Approval / Runtime 链路；Local Guard 走独立入口和一次性票据流程。"
-          />
-          <ArchitectureFlow />
-        </section>
-
-        <section className="section section-shell" id="evidence">
-          <SectionHeading
-            index="04"
-            eyebrow="ENGINEERING / EVIDENCE"
-            title="不靠夸张数字，直接给出可核对证据"
-            description="技术栈、状态存储、发布产物、质量门禁、身份边界和安全文档都对应仓库中的实现或配置。"
-          />
-
-          <div className="evidence-ledger">
-            <div className="evidence-ledger-header" aria-hidden="true">
-              <span>索引</span>
-              <span>工程能力</span>
-              <span>仓库证据</span>
-              <span>入口</span>
-            </div>
-            {evidenceRows.map((item, index) => (
-              <article className="evidence-row" key={item.code}>
-                <div className="evidence-code">
-                  <span>{String(index + 1).padStart(2, "0")}</span>
-                  <code>{item.code}</code>
-                </div>
-                <div className="evidence-main">
-                  <h3>{item.title}</h3>
-                  <p>{item.detail}</p>
-                </div>
-                <code className="evidence-proof">{item.proof}</code>
-                <ExternalLink className="evidence-link" href={item.href}>
-                  {item.linkLabel}
-                  <Icon name="external" />
-                </ExternalLink>
-              </article>
-            ))}
-          </div>
-
-          <div className="evidence-doc-strip">
-            <span>继续审阅</span>
-            <ExternalLink href={`${githubBlobRoot}/docs/architecture.md`}>架构说明</ExternalLink>
-            <ExternalLink href={`${githubBlobRoot}/docs/threat-model.md`}>威胁模型</ExternalLink>
-            <ExternalLink href={`${githubBlobRoot}/docs/security-review-notes.md`}>
-              安全评审
-            </ExternalLink>
-            <ExternalLink href={`${githubBlobRoot}/docs/daily-use-acceptance.md`}>
-              Daily Use Acceptance
-            </ExternalLink>
-          </div>
-        </section>
-
         <section className="section section-shell" id="boundaries">
           <SectionHeading
-            index="05"
-            eyebrow="SECURITY / DISCLOSURE"
-            title="Guardrail 不是操作系统沙箱"
-            description="把能做、不能替代和当前限制一起摆出来，避免把本地 MVP 误解成完整企业安全平台。"
+            title="安全边界"
+            description="AgentToolGate 是执行前 guardrail，不是操作系统沙箱，也不能替代生产身份、网络与最小权限控制。"
           />
           <SecurityBoundary />
         </section>
 
         <section className="section section-shell section-download" id="download">
-          <div className="download-heading">
-            <span className="section-eyebrow">RELEASE / LOCAL FIRST</span>
-            <h2>下载二进制，三条命令完成本地接入</h2>
-            <p>
-              Release 文件和 SHA256 校验由 GitHub 托管。默认 hook mode 为 dry-run，确认结果后再显式进入真实阻断。
-            </p>
-          </div>
+          <SectionHeading
+            title="下载并开始使用"
+            description="Release 提供 Windows 与 Linux amd64 产物和 SHA256；默认 dry-run，确认结果后再显式进入 live。"
+          />
 
           <div className="download-layout">
             <div className="download-list">
@@ -369,51 +246,32 @@ export function App() {
                 </ExternalLink>
               ))}
               <ExternalLink className="release-index-link" href={`${githubRoot}/releases`}>
-                查看全部版本与发布说明
+                查看全部版本
                 <Icon name="external" />
               </ExternalLink>
             </div>
 
             <div className="quickstart-terminal" aria-label="Windows 快速开始命令">
               <div className="terminal-bar">
-                <span>
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                <code>PowerShell / 项目根目录</code>
+                <strong>快速开始</strong>
+                <span>PowerShell · 项目根目录</span>
               </div>
               <div className="terminal-body">
-                <p>
-                  <span>01</span>
-                  <code>.\agenttoolgate.exe doctor</code>
-                </p>
-                <p>
-                  <span>02</span>
-                  <code>.\agenttoolgate.exe init all</code>
-                </p>
-                <p>
-                  <span>03</span>
-                  <code>.\agenttoolgate.exe up --open</code>
-                </p>
-                <small>Linux 使用 ./agenttoolgate，参数相同。</small>
+                <code>.\agenttoolgate.exe doctor</code>
+                <code>.\agenttoolgate.exe init codex</code>
+                <code>.\agenttoolgate.exe up --open</code>
+                <small>Claude 用户将第二条改为 init claude；Linux 使用 ./agenttoolgate。</small>
               </div>
             </div>
           </div>
 
-          <div className="download-docs">
-            <div>
-                <Icon name="terminal" />
-                <span>
-                  <strong>接入 Codex / Claude Code</strong>
-                  <small>MCP Inbound Streamable HTTP /mcp，旧客户端按文档使用 SSE fallback。</small>
-                </span>
-            </div>
-            <ExternalLink href={`${githubBlobRoot}/docs/ai-client-integration.md`}>
-              打开接入文档
-              <Icon name="external" />
-            </ExternalLink>
-          </div>
+          <ExternalLink
+            className="integration-link"
+            href={`${githubBlobRoot}/docs/ai-client-integration.md`}
+          >
+            阅读 Codex / Claude Code 接入文档
+            <Icon name="external" />
+          </ExternalLink>
         </section>
       </main>
 
@@ -437,7 +295,6 @@ export function App() {
           <ExternalLink href={`${githubBlobRoot}/docs/threat-model.md`}>威胁模型</ExternalLink>
           <ExternalLink href={`${githubRoot}/blob/main/LICENSE`}>许可证</ExternalLink>
         </div>
-        <span className="footer-note">静态展示 · 无真实 API · 无数据采集 · 2026</span>
       </footer>
     </>
   );

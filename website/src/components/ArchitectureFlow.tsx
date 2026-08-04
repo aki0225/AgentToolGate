@@ -1,128 +1,57 @@
-import { Icon } from "./Icon";
+import { Icon, type IconName } from "./Icon";
 
-const toolRegistrySteps = [
+const workflowSteps: Array<{
+  icon: IconName;
+  title: string;
+  description: string;
+}> = [
   {
-    label: "入口",
-    title: "REST / MCP Inbound",
-    detail: "/api/tool-calls · /mcp · /mcp/sse"
+    icon: "gate",
+    title: "接收工具调用",
+    description:
+      "REST 与 MCP Inbound 进入 Tool Registry；Codex / Claude Hook 进入 Local Guard 专用入口。"
   },
   {
-    label: "治理",
-    title: "Policy + Hard Guardrails",
-    detail: "workspace · rate limit · adapter validation"
+    icon: "policy",
+    title: "Policy 决策",
+    description:
+      "确定性规则和硬护栏给出 allow、deny 或 require_approval，MCP 不会形成治理旁路。"
   },
   {
-    label: "人在回路",
+    icon: "review",
     title: "Approval",
-    detail: "require_approval · frozen arguments"
+    description:
+      "高风险写操作冻结参数并等待独立 Reviewer；批准前，上游请求计数保持为 0。"
   },
   {
-    label: "执行",
-    title: "Connector Runtime",
-    detail: "database · github · http · mcp_*"
+    icon: "secret",
+    title: "Runtime 与 Secret",
+    description:
+      "批准后 Connector Runtime 才执行；ATG 管理的 Secret 通过 env-backed valueRef 在运行时解析。"
   },
   {
-    label: "证据",
-    title: "Audit + OTel",
-    detail: "redacted input/output · trace id"
-  }
-];
-
-const localGuardSteps = [
-  {
-    label: "入口",
-    title: "Codex / Claude Hook",
-    detail: "/api/agent-guard/evaluate"
-  },
-  {
-    label: "专用编排",
-    title: "Guard Risk + Policy",
-    detail: "action · target · signals · fingerprint"
-  },
-  {
-    label: "保守阻断",
-    title: "deny_with_ticket",
-    detail: "首次判定创建待审 ticket"
-  },
-  {
-    label: "一次性放行",
-    title: "Approved Ticket",
-    detail: "绑定 fingerprint · 单次消费"
-  },
-  {
-    label: "证据",
-    title: "Guard Audit",
-    detail: "risk explanation · redacted target"
+    icon: "audit",
+    title: "Audit 与 Local Guard",
+    description:
+      "主链路写入脱敏 Audit；本地高危动作使用一次性 ticket，不能记忆为长期静默放行。"
   }
 ];
 
 export function ArchitectureFlow() {
   return (
-    <div className="architecture-board">
-      <div className="architecture-legend">
-        <span>
-          <i className="legend-dot legend-dot-primary" />
-          Tool Registry 主链路
-        </span>
-        <span>
-          <i className="legend-dot legend-dot-warning" />
-          Local Guard 专用编排
-        </span>
-      </div>
-
-      <div className="architecture-track architecture-track-primary">
-        <div className="architecture-track-title">
-          <span>TRACK A</span>
-          <h3>所有经 ATG 接入的 Tool Registry 调用</h3>
-          <p>MCP Inbound 不形成旁路；写类 MCP Outbound 工具仍进入同一治理链路。</p>
-        </div>
-        <div className="architecture-steps">
-          {toolRegistrySteps.map((step, index) => (
-            <div className="architecture-step" key={step.title}>
-              <span>{step.label}</span>
-              <strong>{step.title}</strong>
-              <code>{step.detail}</code>
-              {index < toolRegistrySteps.length - 1 ? (
-                <Icon className="architecture-arrow" name="arrow" />
-              ) : null}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="architecture-track architecture-track-warning">
-        <div className="architecture-track-title">
-          <span>TRACK B</span>
-          <h3>Local Action Guard 独立入口</h3>
-          <p>复用治理思想和存储对象，但不是物理调用 createToolCall。</p>
-        </div>
-        <div className="architecture-steps">
-          {localGuardSteps.map((step, index) => (
-            <div className="architecture-step" key={step.title}>
-              <span>{step.label}</span>
-              <strong>{step.title}</strong>
-              <code>{step.detail}</code>
-              {index < localGuardSteps.length - 1 ? (
-                <Icon className="architecture-arrow" name="arrow" />
-              ) : null}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="architecture-boundary-note">
-        <Icon name="secret" />
-        <p>
-          <strong>Secret 边界：</strong>
-          ATG 管理的 Connector Secret 不进入模型参数，由后端在最终 Connector Runtime
-          解析 env-backed <code>valueRef</code>。缺失或禁用时 fail closed。
-        </p>
-      </div>
-
-      <div className="architecture-limit-note">
-        MCP Outbound 当前只描述已经实现的 HTTP + SSE 路径；不宣称完整 Streamable HTTP
-        Outbound、OAuth 或 stdio。
-      </div>
-    </div>
+    <ol className="workflow-steps" aria-label="AgentToolGate 工作方式">
+      {workflowSteps.map((step, index) => (
+        <li className="workflow-step" key={step.title}>
+          <div className="workflow-step-marker">
+            <span>{String(index + 1).padStart(2, "0")}</span>
+            <Icon name={step.icon} />
+          </div>
+          <div className="workflow-step-copy">
+            <h3>{step.title}</h3>
+            <p>{step.description}</p>
+          </div>
+        </li>
+      ))}
+    </ol>
   );
 }

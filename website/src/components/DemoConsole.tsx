@@ -73,7 +73,7 @@ export function DemoConsole({
       <div className="demo-console-banner">
         <span>
           <Icon name="lock" />
-          静态演示，不连接真实后端或上游服务
+          Synthetic demo · 不连接真实后端或上游服务
         </span>
         <button className="text-button" type="button" onClick={onReset}>
           重新演示
@@ -83,8 +83,7 @@ export function DemoConsole({
       <div className="demo-console-grid">
         <section className="demo-request-pane" aria-labelledby={`${scenario.id}-request-title`}>
           <div className="console-pane-heading">
-            <span>INPUT / SYNTHETIC</span>
-            <h3 id={`${scenario.id}-request-title`}>请求快照</h3>
+            <h3 id={`${scenario.id}-request-title`}>请求</h3>
           </div>
           <dl className="fixture-list">
             {scenario.fixture.map((item) => (
@@ -99,17 +98,11 @@ export function DemoConsole({
               <code key={signal}>{signal}</code>
             ))}
           </div>
-          <pre className="request-preview">
-            <code>{scenario.requestPreview}</code>
-          </pre>
         </section>
 
         <section className="demo-state-pane" aria-labelledby={`${scenario.id}-state-title`}>
           <div className="console-pane-heading console-pane-heading-inline">
-            <div>
-              <span>STATE MACHINE / LOCAL</span>
-              <h3 id={`${scenario.id}-state-title`}>治理状态</h3>
-            </div>
+            <h3 id={`${scenario.id}-state-title`}>状态</h3>
             <span className={`state-badge state-badge-${view.tone}`}>
               {statusLabels[state.status]}
             </span>
@@ -181,8 +174,7 @@ export function DemoConsole({
 
         <aside className="demo-evidence-pane" aria-labelledby={`${scenario.id}-evidence-title`}>
           <div className="console-pane-heading">
-            <span>EVIDENCE / DERIVED</span>
-            <h3 id={`${scenario.id}-evidence-title`}>实时证据</h3>
+            <h3 id={`${scenario.id}-evidence-title`}>证据</h3>
           </div>
 
           <div className="metric-strip">
@@ -243,13 +235,6 @@ export function DemoConsole({
               </div>
             ) : null}
           </dl>
-
-          <div className="evidence-footnote">
-            <Icon name="audit" />
-            <p>
-              状态文案、颜色、按钮和计数均由同一份内存状态派生；非法迁移会被纯函数拒绝。
-            </p>
-          </div>
         </aside>
       </div>
     </div>

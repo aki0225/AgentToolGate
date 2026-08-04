@@ -119,15 +119,14 @@ export function ScenarioTabs() {
             >
               <span>{item.index}</span>
               <strong>{item.shortName}</strong>
-              <small>{item.title}</small>
             </button>
           );
         })}
       </div>
 
       <div className="scenario-intro">
+        <h3>{scenario.title}</h3>
         <p>{scenario.summary}</p>
-        <code>state={state.status}</code>
       </div>
 
       <DemoConsole
