@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 
-import { CapabilityGrid } from "./components/CapabilityGrid";
+import { ArchitectureFlow } from "./components/ArchitectureFlow";
 import { HeroPipeline } from "./components/HeroPipeline";
 import { Icon, type IconName } from "./components/Icon";
 import { ScenarioTabs } from "./components/ScenarioTabs";
@@ -27,8 +27,8 @@ const proofLinks = [
     href: `${githubBlobRoot}/docs/architecture.md`
   },
   {
-    label: "威胁模型与安全评审",
-    href: `${githubBlobRoot}/docs/threat-model.md`
+    label: "安全评审",
+    href: `${githubBlobRoot}/docs/security-review-notes.md`
   }
 ];
 
@@ -198,7 +198,7 @@ export function App() {
             title="它如何工作"
             description="工具调用先被判定，再决定执行、审批或拒绝；本地高危动作走独立但同样保守的 Guard 入口。"
           />
-          <CapabilityGrid />
+          <ArchitectureFlow />
 
           <div className="proof-links" aria-label="工程证据">
             <span>继续核对</span>

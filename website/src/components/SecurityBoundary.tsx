@@ -48,6 +48,12 @@ export function SecurityBoundary() {
         </ul>
       </section>
 
+      <p className="boundary-warning">
+        默认 <code>AUTH_MODE=local</code>、<code>LOCAL_ROLE=owner</code> 和{" "}
+        <code>DEV_MODE=true</code> 仅供单机开发；多用户或网络暴露部署必须启用{" "}
+        <code>OIDC</code>，否则等同于无鉴权访问。
+      </p>
+
       <a className="boundary-link" href={threatModelUrl} rel="noreferrer" target="_blank">
         阅读完整威胁模型
         <Icon name="external" />
