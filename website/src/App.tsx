@@ -20,14 +20,6 @@ const navItems = [
   { label: "下载", href: "#download" }
 ];
 
-const heroFacts = [
-  "Windows / Linux",
-  "单二进制 + SQLite",
-  "MCP Inbound HTTP",
-  "MIT License",
-  "Go + Node CI"
-];
-
 const evidenceRows: Array<{
   code: string;
   title: string;
@@ -234,25 +226,18 @@ export function App() {
       <main id="main-content">
         <section className="hero section-shell" id="top">
           <div className="hero-copy">
-            <div className="hero-eyebrow hero-enter hero-enter-1">
-              <span>LOCAL-FIRST</span>
-              <i aria-hidden="true" />
-              <span>FAIL-CLOSED</span>
-              <i aria-hidden="true" />
-              <span>AUDITABLE</span>
+            <div className="hero-eyebrow">
+              <span>AGENTTOOLGATE / TOOL GOVERNANCE GATEWAY</span>
             </div>
-            <h1 className="hero-enter hero-enter-2">
-              让 AI Agent 的高危动作，
-              <span>在真正执行前先过治理闸门</span>
+            <h1>
+              让高危工具调用，
+              <span>在执行前先过治理闸门</span>
             </h1>
-            <p className="hero-lead hero-enter hero-enter-3">
-              面向 Codex、Claude Code 与 MCP 客户端的本地工具治理网关：Policy、Approval、
-              Connector Secret、Audit 与 Local Action Firewall。
+            <p className="hero-lead">
+              面向 Codex、Claude Code 与 MCP 客户端的本地工具治理网关，统一处理 Policy、
+              Approval、Connector Secret、Audit 与本地高危动作。
             </p>
-            <p className="hero-english hero-enter hero-enter-3">
-              Govern high-risk tool calls before execution.
-            </p>
-            <div className="hero-actions hero-enter hero-enter-4">
+            <div className="hero-actions">
               <a className="button button-primary" href="#demo">
                 查看交互演示
                 <Icon name="arrow" />
@@ -261,27 +246,17 @@ export function App() {
                 下载最新 Release
                 <Icon name="download" />
               </a>
-              <ExternalLink className="button button-ghost" href={githubRoot}>
-                查看源码
-                <Icon name="github" />
-              </ExternalLink>
             </div>
-            <div className="hero-boundary hero-enter hero-enter-4">
-              <Icon name="lock" />
-              <p>
-                本站是静态产品展示，不运行 AgentToolGate 后端，不连接真实 Connector，不收集
-                token、Secret 或表单信息。
-              </p>
-            </div>
-            <ul className="hero-facts hero-enter hero-enter-5" aria-label="产品摘要">
-              {heroFacts.map((fact) => (
-                <li key={fact}>{fact}</li>
-              ))}
-            </ul>
           </div>
 
-          <div className="hero-visual hero-enter hero-enter-3">
+          <div className="hero-visual">
             <HeroPipeline />
+            <div className="hero-boundary">
+              <Icon name="lock" />
+              <p>
+                静态展示，不运行后端、不连接真实 Connector，也不收集 token、Secret 或表单信息。
+              </p>
+            </div>
           </div>
         </section>
 
