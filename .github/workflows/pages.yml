@@ -1,6 +1,12 @@
 name: 部署 GitHub Pages
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "website/**"
+      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
