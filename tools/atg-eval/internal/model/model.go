@@ -9,6 +9,12 @@ import (
 
 const SchemaVersionV1 = "v1"
 
+const (
+	SuiteDangerousActionsV1     = "dangerous-actions-v1"
+	SuiteBenignDevelopmentV1    = "benign-development-v1"
+	SuiteGovernanceInvariantsV1 = "governance-invariants-v1"
+)
+
 type Platform string
 
 const (
@@ -143,6 +149,17 @@ var (
 	tokenPattern            = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 	inlineCredentialPattern = regexp.MustCompile(`(?i)\b(bearer|basic)\s+\S+`)
 	credentialDSNPattern    = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^:/@\s]+:[^@/\s]+@`)
+	dsnPattern              = regexp.MustCompile(`(?i)\b(postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://`)
+	sensitiveLiteralPattern = regexp.MustCompile(`(?i)\b(token|access[_-]?token|api[_-]?key|secret|password|authorization|cookie|dsn|approval[_-]?id|fingerprint)\b\s*[:=]\s*["']?[^,\s}"']{4,}`)
+	credentialTokenPattern  = regexp.MustCompile(`(?i)\b(gh[pousr]_[a-z0-9]{12,}|github_pat_[a-z0-9_]{20,}|sk-[a-z0-9_-]{16,}|xox[baprs]-[a-z0-9-]{12,}|akia[a-z0-9]{16})\b`)
+	bareSecretPattern       = regexp.MustCompile(`(?i)\b((real|super|prod|production|live|demo|env)[_-]+(secret|token|password)|(secret|token|password)[_-]+(real|super|prod|production|live|demo|env))([_-][a-z0-9]+)*\b`)
+	jwtPattern              = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b`)
+	privateKeyPattern       = regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)
+	longHexPattern          = regexp.MustCompile(`(?i)\b[a-f0-9]{32,}\b`)
+	windowsPathPattern      = regexp.MustCompile(`(?i)(^|[^a-z0-9])[a-z]:[\\/]`)
+	userHomePathPattern     = regexp.MustCompile(`(?i)(^|[^a-z0-9])/(home|users)/`)
+	embeddedUnixPathPattern = regexp.MustCompile(`(^|[\s"'(=,\[：])/(?:[^/\s"'<>]+)(?:/[^/\s"'<>]+)+`)
+	embeddedUNCPathPattern  = regexp.MustCompile(`(^|[\s"'(=,\[：])\\\\[^\\/\s"'<>]+[\\/][^,\s"'<>]+`)
 	sha256Pattern           = regexp.MustCompile(`^[a-f0-9]{64}$`)
 )
 
@@ -161,6 +178,9 @@ func (c Case) Validate() error {
 	}
 	if len([]rune(c.Title)) > 160 {
 		return fmt.Errorf("title 不能超过 160 个字符")
+	}
+	if err := validateDeclarativeString("title", c.Title); err != nil {
+		return err
 	}
 	if err := validateToken("category", c.Category); err != nil {
 		return err
@@ -198,8 +218,18 @@ func (a Action) Validate() error {
 	if len(a.Target) > 1024 || len(a.URL) > 2048 || len(a.Tool) > 256 {
 		return fmt.Errorf("target、url 或 tool 超过长度限制")
 	}
-	if containsAbsolutePath(a.Target) {
-		return fmt.Errorf("target 不能包含真实绝对路径，请使用 <sandbox> 占位符")
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"target", a.Target},
+		{"method", a.Method},
+		{"url", a.URL},
+		{"tool", a.Tool},
+	} {
+		if err := validateDeclarativeString(field.name, field.value); err != nil {
+			return err
+		}
 	}
 	if a.Type == ActionNetwork && strings.TrimSpace(a.URL) == "" {
 		return fmt.Errorf("network 动作必须提供 url")
@@ -325,7 +355,7 @@ func validateToken(field, value string) error {
 	if !tokenPattern.MatchString(value) {
 		return fmt.Errorf("%s 必须匹配 %s", field, tokenPattern.String())
 	}
-	return nil
+	return validateDeclarativeString(field, value)
 }
 
 func validatePlatforms(platforms []Platform) error {
@@ -379,11 +409,8 @@ func validateArgumentValue(path string, value any) error {
 			}
 		}
 	case string:
-		if containsAbsolutePath(typed) {
-			return fmt.Errorf("%s 不能包含真实绝对路径", path)
-		}
-		if inlineCredentialPattern.MatchString(typed) || credentialDSNPattern.MatchString(typed) {
-			return fmt.Errorf("%s 不能包含内联凭据", path)
+		if err := validateDeclarativeString(path, typed); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -401,13 +428,15 @@ func sensitiveArgumentKey(key string) bool {
 	switch normalized {
 	case "authorization", "cookie", "token", "accesstoken", "refreshtoken",
 		"apikey", "secret", "password", "passwd", "privatekey", "clientsecret",
-		"dsn", "databaseurl", "signature":
+		"dsn", "databaseurl", "signature", "approvalid", "fingerprint":
 		return true
 	}
 	return strings.HasSuffix(normalized, "token") ||
 		strings.HasSuffix(normalized, "password") ||
 		strings.HasSuffix(normalized, "privatekey") ||
-		strings.HasSuffix(normalized, "clientsecret")
+		strings.HasSuffix(normalized, "clientsecret") ||
+		strings.HasSuffix(normalized, "approvalid") ||
+		strings.HasSuffix(normalized, "fingerprint")
 }
 
 func containsControlCharacter(value string) bool {
@@ -446,13 +475,48 @@ func validActionType(value ActionType) bool {
 	}
 }
 
-func validDecision(value Decision) bool {
+func IsValidDecision(value Decision) bool {
 	switch value {
 	case DecisionAllow, DecisionAsk, DecisionDeny, DecisionApprovalRequired, DecisionDenyWithTicket:
 		return true
 	default:
 		return false
 	}
+}
+
+func validDecision(value Decision) bool {
+	return IsValidDecision(value)
+}
+
+func validateDeclarativeString(field, value string) error {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	if containsAbsolutePath(trimmed) ||
+		windowsPathPattern.MatchString(trimmed) ||
+		userHomePathPattern.MatchString(trimmed) ||
+		embeddedUnixPathPattern.MatchString(trimmed) ||
+		embeddedUNCPathPattern.MatchString(trimmed) {
+		return fmt.Errorf("%s 不能包含真实绝对路径，请使用 <sandbox> 占位符", field)
+	}
+	if inlineCredentialPattern.MatchString(trimmed) ||
+		credentialDSNPattern.MatchString(trimmed) ||
+		dsnPattern.MatchString(trimmed) ||
+		sensitiveLiteralPattern.MatchString(trimmed) ||
+		credentialTokenPattern.MatchString(trimmed) ||
+		bareSecretPattern.MatchString(trimmed) ||
+		jwtPattern.MatchString(trimmed) ||
+		privateKeyPattern.MatchString(trimmed) ||
+		longHexPattern.MatchString(trimmed) {
+		return fmt.Errorf("%s 不能包含凭据、DSN、approval ID 或 fingerprint", field)
+	}
+	return nil
+}
+
+// ValidatePublishedText 复用用例字段的路径和敏感内容约束，供发布套件原文扫描使用。
+func ValidatePublishedText(field, value string) error {
+	return validateDeclarativeString(field, value)
 }
 
 func validSideEffect(value SideEffectExpectation) bool {

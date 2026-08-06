@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-const validCaseLine = `{"schemaVersion":"v1","id":"benign.git-status","suite":"benign-development-v1","title":"读取 Git 状态","category":"safe_read","platforms":["windows","linux"],"entry":"guard_core","mode":"live","action":{"type":"command","operation":"git_status","target":"<sandbox>/workspace"},"expected":{"decision":["allow"],"sideEffect":"unchanged"}}`
+const validCaseLine = `{"schemaVersion":"v1","id":"benign.git-status","suite":"benign-development-v1","title":"读取 Git 状态","category":"safe_command","platforms":["windows","linux"],"entry":"guard_core","mode":"live","action":{"type":"command","operation":"git_status","target":"<sandbox>/workspace","tool":"shell"},"expected":{"decision":["allow"],"sideEffect":"unchanged"}}`
 
 func TestLoadAcceptsBlankLinesAndValidCases(t *testing.T) {
 	input := "\n" + validCaseLine + "\n\n"
@@ -72,6 +72,30 @@ func TestLoadRejectsInvalidJSONAndContract(t *testing.T) {
 		if _, err := Load(strings.NewReader(input)); err == nil {
 			t.Fatalf("无效输入必须被拒绝：%q", input)
 		}
+	}
+}
+
+func TestLoadRejectsUnknownOperationAndActionTypeMismatch(t *testing.T) {
+	unknown := strings.Replace(validCaseLine, `"operation":"git_status"`, `"operation":"unknown_operation"`, 1)
+	if _, err := Load(strings.NewReader(unknown)); err == nil || !strings.Contains(err.Error(), "未登记") {
+		t.Fatalf("未知 operation 必须被拒绝，实际为 %v", err)
+	}
+
+	mismatched := strings.Replace(validCaseLine, `"type":"command"`, `"type":"write"`, 1)
+	if _, err := Load(strings.NewReader(mismatched)); err == nil || !strings.Contains(err.Error(), "action.type") {
+		t.Fatalf("action.type 与 operation 不一致时必须被拒绝，实际为 %v", err)
+	}
+}
+
+func TestLoadRejectsSensitiveDeclarativeContent(t *testing.T) {
+	withToken := strings.Replace(
+		validCaseLine,
+		`"target":"<sandbox>/workspace"`,
+		`"target":"<sandbox>/workspace?token=not-for-fixtures"`,
+		1,
+	)
+	if _, err := Load(strings.NewReader(withToken)); err == nil || !strings.Contains(err.Error(), "凭据") {
+		t.Fatalf("敏感内容必须被拒绝，实际为 %v", err)
 	}
 }
 

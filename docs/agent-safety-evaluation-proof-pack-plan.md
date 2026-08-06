@@ -372,7 +372,19 @@ HTML 报告必须：
 
 ## 11. CI 策略
 
-### 11.1 PR 快速评估
+### 11.1 评估工具基础门禁（阶段 2A 已完成）
+
+当前 CI 使用独立 job 执行：
+
+- `go -C tools/atg-eval test -count=1 -timeout 60s ./...`
+- `go -C tools/atg-eval vet ./...`
+- 分别 validate dangerous、benign 和 governance 三份 JSONL suite。
+
+该 job 只验证评估工具、30 个声明式用例和 24 个受限 operation 的完整性契约。它不执行
+真实 Runner，不生成或上传报告及 evidence，不启动 Codex、Claude Code、MCP 或其他网络
+服务。
+
+### 11.2 PR 快速评估（后续阶段）
 
 每个 PR 执行：
 
@@ -382,7 +394,10 @@ HTML 报告必须：
 
 失败时上传报告和脱敏 evidence。
 
-### 11.2 完整评估
+PR 快速评估与当前基础门禁不是同一能力；只有治理和 MCP Inbound 执行器、报告生成与
+脱敏 evidence 链路完成后，才会启用该流程。
+
+### 11.3 完整评估（后续阶段）
 
 完整 30 个用例在以下场景运行：
 
@@ -477,8 +492,16 @@ feat(evaluation): 建立评估契约与安全沙箱
 
 - 已完成 24 个受限动作映射、真实 Guard CLI Driver、Runner 骨架和指标聚合。
 - 已完成平台跳过、受限副作用观察、Hook 决策映射校验及错误脱敏。
-- 尚未提交三类 JSONL suite、`atg-eval run` 命令接线和 6 个治理不变量。
-- 阶段 2 仍为进行中；恢复时先补 30 个用例，再接 CLI 和治理不变量。
+- 阶段 2A 已完成三类 JSONL suite，共 30 个声明式用例；危险与良性用例恰好覆盖
+  24 个受限 operation。
+- 已完成 operation 元数据一致性校验和 CI 基础门禁，只运行 test、vet 与 suite validate。
+- 2A 核对发现 Guard Core 当前会把 `secrets/credentials.json` 当作普通 workspace 写入放行。
+  这是待独立 Guard 修复任务处理的真实缺口；阶段 2A 不修改生产安全语义，也不通过放宽
+  用例预期掩盖该缺陷。
+- 6 个治理不变量和 MCP Inbound 用例当前仅可校验、不可由动作 Runner 执行，不生成假的
+  passed 结果。
+- 阶段 2 仍为进行中；后续需接入治理与 MCP Inbound 执行器，并完成真实 Runner 结果与
+  evidence 生成。
 
 提交建议：
 
@@ -557,6 +580,7 @@ git diff --check
 ## 16. 首版验收标准
 
 - [x] 当前 `main` 已发布为新的稳定 Release。
+- [x] 30 个声明式用例目录、24 个受限 operation 完整性校验和 CI 基础门禁已完成。
 - [ ] 评估 Runner 只在已校验的 disposable root 内产生副作用。
 - [ ] loopback 之外的网络请求被拒绝。
 - [ ] 30 个用例均有明确 passed / failed / skipped。

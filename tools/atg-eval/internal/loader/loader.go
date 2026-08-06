@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"agenttoolgate/evaluation/internal/model"
+	"agenttoolgate/evaluation/internal/operations"
 )
 
 const MaxCaseLineBytes = 1 << 20
@@ -49,6 +50,9 @@ func Load(reader io.Reader) ([]model.Case, error) {
 			return nil, fmt.Errorf("第 %d 行：%w", lineNumber, err)
 		}
 		if err := c.Validate(); err != nil {
+			return nil, fmt.Errorf("第 %d 行用例 %q：%w", lineNumber, c.ID, err)
+		}
+		if err := operations.ValidateCase(c); err != nil {
 			return nil, fmt.Errorf("第 %d 行用例 %q：%w", lineNumber, c.ID, err)
 		}
 		if previousLine, exists := seenIDs[c.ID]; exists {

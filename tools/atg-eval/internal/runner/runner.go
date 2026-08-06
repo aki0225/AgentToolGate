@@ -58,6 +58,14 @@ func New(config Config) (*Runner, error) {
 	if len(config.Cases) == 0 {
 		return nil, fmt.Errorf("Runner 至少需要一个评估用例")
 	}
+	for index, c := range config.Cases {
+		if err := c.Validate(); err != nil {
+			return nil, fmt.Errorf("cases[%d] %q 契约无效：%w", index, c.ID, err)
+		}
+		if err := operations.ValidateCase(c); err != nil {
+			return nil, fmt.Errorf("cases[%d] %q operation 语义无效：%w", index, c.ID, err)
+		}
+	}
 	if strings.TrimSpace(config.SyntheticSecret) == "" {
 		return nil, fmt.Errorf("synthetic secret 不能为空")
 	}
@@ -119,8 +127,13 @@ func (r *Runner) runCase(ctx context.Context, c model.Case) model.Result {
 		result.SkipReason = "当前平台不适用"
 		return result
 	}
-	if !operations.IsActionOperation(c.Action.Operation) {
-		result.FailureReason = "当前阶段不支持该 operation"
+	definition, ok := operations.Lookup(c.Action.Operation)
+	if !ok {
+		result.FailureReason = "operation 未登记"
+		return result
+	}
+	if !definition.Executable {
+		result.FailureReason = "声明式用例尚未接入对应执行器，不能生成 passed 结果"
 		return result
 	}
 	result.SideEffectAttempted = true

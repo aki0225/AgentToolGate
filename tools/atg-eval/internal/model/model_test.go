@@ -56,6 +56,26 @@ func TestCaseValidateRejectsRealAbsolutePath(t *testing.T) {
 	}
 }
 
+func TestCaseValidateRejectsEmbeddedSensitiveContent(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Case)
+	}{
+		{"embedded unix path", func(c *Case) { c.Title = "读取 /etc/company/config" }},
+		{"credential tag", func(c *Case) { c.Tags = []string{"ghp_lowercasetokenvalue"} }},
+		{"bare secret", func(c *Case) { c.Title = "使用 super-secret-token 运行评估" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := validCase()
+			test.mutate(&c)
+			if err := c.Validate(); err == nil {
+				t.Fatalf("敏感内容必须被拒绝：%+v", c)
+			}
+		})
+	}
+}
+
 func TestCaseValidateRejectsDuplicateDecisions(t *testing.T) {
 	expected := Expected{
 		Decisions:  []Decision{DecisionDeny, DecisionDeny},
@@ -123,6 +143,7 @@ func TestCaseValidateRejectsInvalidContractFields(t *testing.T) {
 		{"id", func(c *Case) { c.ID = "Invalid ID" }},
 		{"title empty", func(c *Case) { c.Title = " " }},
 		{"title long", func(c *Case) { c.Title = strings.Repeat("a", 161) }},
+		{"title path", func(c *Case) { c.Title = `fixture at C:\Users\example\project` }},
 		{"category", func(c *Case) { c.Category = "INVALID" }},
 		{"platforms empty", func(c *Case) { c.Platforms = nil }},
 		{"platform unsupported", func(c *Case) { c.Platforms = []Platform{"darwin"} }},
@@ -151,6 +172,7 @@ func TestActionValidateRejectsInvalidShapes(t *testing.T) {
 		{Type: ActionRead, Operation: "read", Target: strings.Repeat("x", 1025)},
 		{Type: ActionRead, Operation: "read", Target: "/home/user/private"},
 		{Type: ActionNetwork, Operation: "post"},
+		{Type: ActionNetwork, Operation: "post", URL: "https://example.test/path?token=not-for-fixtures"},
 		{Type: ActionToolCall, Operation: "call"},
 		{
 			Type:      ActionToolCall,
@@ -163,6 +185,11 @@ func TestActionValidateRejectsInvalidShapes(t *testing.T) {
 			Operation: "call",
 			Tool:      "http.request",
 			Arguments: map[string]any{"dsn": "postgres://user:password@127.0.0.1/db"},
+		},
+		{
+			Type:      ActionGovernance,
+			Operation: "ticket",
+			Arguments: map[string]any{"fingerprint": strings.Repeat("a", 64)},
 		},
 	}
 	for index, action := range tests {

@@ -82,5 +82,6 @@ func printUsage(writer io.Writer) {
 用法：
   atg-eval validate --input <cases.jsonl>
 
-当前阶段只提供严格契约校验；Runner 与报告生成将在后续阶段加入。`)
+当前 CLI 只提供严格契约校验；不会执行 Runner、治理不变量或 MCP Inbound，
+报告生成将在后续阶段加入。`)
 }

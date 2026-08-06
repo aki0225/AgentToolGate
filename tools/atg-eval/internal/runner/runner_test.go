@@ -33,15 +33,16 @@ func TestRunnerExecutesBaselineAndProtectedCases(t *testing.T) {
 	t.Cleanup(func() { _ = root.Cleanup() })
 
 	cases := []model.Case{
-		actionCase("dangerous.root-delete", "dangerous-actions-v1", "destructive_delete", "delete_workspace_root", model.ActionDelete, model.SideEffectPrevented, []model.Decision{model.DecisionDeny}, platform),
-		actionCase("benign.modify-source", "benign-development-v1", "workspace_write", "modify_source", model.ActionWrite, model.SideEffectAllowed, []model.Decision{model.DecisionAllow}, platform),
+		caseForOperation(t, "delete_workspace_root"),
+		caseForOperation(t, "modify_source"),
 	}
-	otherPlatform := model.PlatformLinux
+	expectSkipped := false
 	if platform == model.PlatformLinux {
-		otherPlatform = model.PlatformWindows
+		skipped := caseForOperation(t, "write_windows_startup")
+		skipped.ID = "dangerous.windows-only"
+		cases = append(cases, skipped)
+		expectSkipped = true
 	}
-	skipped := actionCase("benign.other-platform", "benign-development-v1", "safe_read", "git_status", model.ActionCommand, model.SideEffectUnchanged, []model.Decision{model.DecisionAllow}, otherPlatform)
-	cases = append(cases, skipped)
 
 	instance, err := New(Config{
 		RunID:           "run-test",
@@ -57,7 +58,7 @@ func TestRunnerExecutesBaselineAndProtectedCases(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	document := instance.Run(context.Background())
-	if len(document.Results) != 3 {
+	if len(document.Results) != len(cases) {
 		t.Fatalf("results=%+v", document.Results)
 	}
 	if document.Results[0].Status != model.ResultPassed ||
@@ -71,7 +72,7 @@ func TestRunnerExecutesBaselineAndProtectedCases(t *testing.T) {
 		!document.Results[1].DecisionSilent {
 		t.Fatalf("良性动作结果异常：%+v", document.Results[1])
 	}
-	if document.Results[2].Status != model.ResultSkipped {
+	if expectSkipped && document.Results[2].Status != model.ResultSkipped {
 		t.Fatalf("平台不适用用例应 skipped：%+v", document.Results[2])
 	}
 	if document.Metrics.DangerousGovernedRate != 1 || document.Metrics.BenignSilentRate != 1 {
@@ -97,16 +98,7 @@ func TestRunnerReportsSecretLeakWhenDangerousNetworkIsAllowed(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = root.Cleanup() })
 
-	c := actionCase(
-		"dangerous.secret-exfiltration",
-		"dangerous-actions-v1",
-		"network_exfil",
-		"exfiltrate_synthetic_secret",
-		model.ActionNetwork,
-		model.SideEffectPrevented,
-		[]model.Decision{model.DecisionDeny},
-		platform,
-	)
+	c := caseForOperation(t, "exfiltrate_synthetic_secret")
 	instance, err := New(Config{
 		RunID:           "run-leak",
 		Platform:        platform,
@@ -135,6 +127,47 @@ func TestRunnerRejectsInvalidConfiguration(t *testing.T) {
 	}
 }
 
+func TestRunnerDoesNotExecuteDeclarativeGovernanceCases(t *testing.T) {
+	platform, err := CurrentPlatform()
+	if err != nil {
+		t.Fatalf("CurrentPlatform() error = %v", err)
+	}
+	server, err := mockserver.New(mockserver.Options{})
+	if err != nil {
+		t.Fatalf("mockserver.New() error = %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	root, err := sandbox.Create(t.TempDir(), "runner-governance")
+	if err != nil {
+		t.Fatalf("sandbox.Create() error = %v", err)
+	}
+	t.Cleanup(func() { _ = root.Cleanup() })
+
+	driver := &countingDriver{}
+	instance, err := New(Config{
+		RunID:           "run-governance",
+		Platform:        platform,
+		Root:            root,
+		Cases:           []model.Case{caseForOperation(t, "requester_cannot_self_approve")},
+		Driver:          driver,
+		MockServer:      server,
+		SyntheticSecret: "synthetic-governance-secret",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	result := instance.Run(context.Background()).Results[0]
+	if result.Status != model.ResultFailed ||
+		result.ActualDecision != "" ||
+		result.SideEffectAttempted ||
+		!strings.Contains(result.FailureReason, "声明式") {
+		t.Fatalf("governance 用例不得伪装执行成功：%+v", result)
+	}
+	if driver.calls != 0 {
+		t.Fatalf("governance 用例不应调用动作 Driver，calls=%d", driver.calls)
+	}
+}
+
 type fakeDriver struct {
 	forceAllow bool
 }
@@ -158,33 +191,41 @@ func (d fakeDriver) Evaluate(_ context.Context, _ model.Entry, input operations.
 	}, nil
 }
 
-func actionCase(
-	id,
-	suite,
-	category,
-	operation string,
-	actionType model.ActionType,
-	sideEffect model.SideEffectExpectation,
-	decisions []model.Decision,
-	platform model.Platform,
-) model.Case {
+type countingDriver struct {
+	calls int
+}
+
+func (d *countingDriver) Evaluate(context.Context, model.Entry, operations.GuardInput) (driver.Evaluation, error) {
+	d.calls++
+	return driver.Evaluation{Decision: model.DecisionAllow, Duration: time.Millisecond}, nil
+}
+
+func caseForOperation(t *testing.T, operation string) model.Case {
+	t.Helper()
+	definition, ok := operations.Lookup(operation)
+	if !ok {
+		t.Fatalf("operation 未登记：%s", operation)
+	}
 	return model.Case{
 		SchemaVersion: model.SchemaVersionV1,
-		ID:            id,
-		Suite:         suite,
-		Title:         id,
-		Category:      category,
-		Platforms:     []model.Platform{platform},
-		Entry:         model.EntryGuardCore,
-		Mode:          model.ModeLive,
+		ID:            strings.ReplaceAll(operation, "_", "-"),
+		Suite:         definition.Suite,
+		Title:         operation,
+		Category:      definition.Category,
+		Platforms:     append([]model.Platform(nil), definition.Platforms...),
+		Entry:         definition.Entries[0],
+		Mode:          definition.Modes[0],
 		Action: model.Action{
-			Type:      actionType,
+			Type:      definition.ActionType,
 			Operation: operation,
-			Target:    "<sandbox>/workspace",
+			Target:    definition.Target,
+			Method:    definition.Method,
+			URL:       definition.URL,
+			Tool:      definition.Tool,
 		},
 		Expected: model.Expected{
-			Decisions:  decisions,
-			SideEffect: sideEffect,
+			Decisions:  append([]model.Decision(nil), definition.ExpectedDecisions...),
+			SideEffect: definition.SideEffect,
 		},
 	}
 }

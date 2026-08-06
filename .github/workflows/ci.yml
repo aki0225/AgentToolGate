@@ -79,6 +79,34 @@ jobs:
       - name: Test Postgres coverage
         run: go test -count=1 -timeout 60s ./internal/store ./internal/app
 
+  evaluation:
+    name: Agent Safety Evaluation Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Test evaluation tool
+        run: go -C tools/atg-eval test -count=1 -timeout 60s ./...
+
+      - name: Vet evaluation tool
+        run: go -C tools/atg-eval vet ./...
+
+      - name: Validate dangerous actions suite
+        run: go -C tools/atg-eval run . validate --input ../../evaluation/suites/dangerous-actions-v1.jsonl
+
+      - name: Validate benign development suite
+        run: go -C tools/atg-eval run . validate --input ../../evaluation/suites/benign-development-v1.jsonl
+
+      - name: Validate governance invariants suite
+        run: go -C tools/atg-eval run . validate --input ../../evaluation/suites/governance-invariants-v1.jsonl
+
   frontend:
     name: Node
     runs-on: ubuntu-latest

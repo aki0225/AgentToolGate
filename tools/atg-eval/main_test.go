@@ -11,7 +11,7 @@ import (
 
 func TestRunValidateOutputsStableSummary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cases.jsonl")
-	raw := `{"schemaVersion":"v1","id":"benign.git-status","suite":"benign-development-v1","title":"读取 Git 状态","category":"safe_read","platforms":["windows","linux"],"entry":"guard_core","mode":"live","action":{"type":"command","operation":"git_status","target":"<sandbox>/workspace"},"expected":{"decision":["allow"],"sideEffect":"unchanged"}}` + "\n"
+	raw := `{"schemaVersion":"v1","id":"benign.git-status","suite":"benign-development-v1","title":"读取 Git 状态","category":"safe_command","platforms":["windows","linux"],"entry":"guard_core","mode":"live","action":{"type":"command","operation":"git_status","target":"<sandbox>/workspace","tool":"shell"},"expected":{"decision":["allow"],"sideEffect":"unchanged"}}` + "\n"
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatalf("write cases: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestRunCommandErrorsAndHelp(t *testing.T) {
 
 func TestRunValidateReportsOutputFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cases.jsonl")
-	raw := `{"schemaVersion":"v1","id":"benign.git-status","suite":"benign-development-v1","title":"读取 Git 状态","category":"safe_read","platforms":["windows","linux"],"entry":"guard_core","mode":"live","action":{"type":"command","operation":"git_status","target":"<sandbox>/workspace"},"expected":{"decision":["allow"],"sideEffect":"unchanged"}}` + "\n"
+	raw := `{"schemaVersion":"v1","id":"benign.git-status","suite":"benign-development-v1","title":"读取 Git 状态","category":"safe_command","platforms":["windows","linux"],"entry":"guard_core","mode":"live","action":{"type":"command","operation":"git_status","target":"<sandbox>/workspace","tool":"shell"},"expected":{"decision":["allow"],"sideEffect":"unchanged"}}` + "\n"
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatalf("write cases: %v", err)
 	}
