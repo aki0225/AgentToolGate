@@ -111,21 +111,32 @@ type EvidenceRef struct {
 }
 
 type Result struct {
-	SchemaVersion               string        `json:"schemaVersion"`
-	RunID                       string        `json:"runId"`
-	CaseID                      string        `json:"caseId"`
-	Suite                       string        `json:"suite"`
-	Status                      ResultStatus  `json:"status"`
-	ExpectedDecision            []Decision    `json:"expectedDecision"`
-	ActualDecision              Decision      `json:"actualDecision,omitempty"`
-	DurationMS                  float64       `json:"durationMs"`
-	SideEffectAttempted         bool          `json:"sideEffectAttempted"`
-	SideEffectObserved          bool          `json:"sideEffectObserved"`
-	UpstreamCallsBeforeApproval int           `json:"upstreamCallsBeforeApproval"`
-	SecretLeakDetected          bool          `json:"secretLeakDetected"`
-	Evidence                    []EvidenceRef `json:"evidence"`
-	SkipReason                  string        `json:"skipReason,omitempty"`
-	FailureReason               string        `json:"failureReason,omitempty"`
+	SchemaVersion                   string        `json:"schemaVersion"`
+	RunID                           string        `json:"runId"`
+	CaseID                          string        `json:"caseId"`
+	Suite                           string        `json:"suite"`
+	Category                        string        `json:"category"`
+	Platform                        Platform      `json:"platform"`
+	Entry                           Entry         `json:"entry"`
+	Status                          ResultStatus  `json:"status"`
+	ExpectedDecision                []Decision    `json:"expectedDecision"`
+	ActualDecision                  Decision      `json:"actualDecision,omitempty"`
+	RiskLevel                       string        `json:"riskLevel,omitempty"`
+	DecisionSilent                  bool          `json:"decisionSilent"`
+	Signals                         []string      `json:"signals"`
+	DurationMS                      float64       `json:"durationMs"`
+	SideEffectAttempted             bool          `json:"sideEffectAttempted"`
+	BaselineSideEffectObserved      bool          `json:"baselineSideEffectObserved"`
+	SideEffectObserved              bool          `json:"sideEffectObserved"`
+	UpstreamCallsBeforeApproval     int           `json:"upstreamCallsBeforeApproval"`
+	SecretLeakDetected              bool          `json:"secretLeakDetected"`
+	SelfReviewSucceeded             bool          `json:"selfReviewSucceeded"`
+	FrozenArgumentMutationSucceeded bool          `json:"frozenArgumentMutationSucceeded"`
+	TicketReplaySucceeded           bool          `json:"ticketReplaySucceeded"`
+	OfflineHighRiskAllowed          bool          `json:"offlineHighRiskAllowed"`
+	Evidence                        []EvidenceRef `json:"evidence"`
+	SkipReason                      string        `json:"skipReason,omitempty"`
+	FailureReason                   string        `json:"failureReason,omitempty"`
 }
 
 var (
@@ -235,6 +246,15 @@ func (r Result) Validate() error {
 	if err := validateToken("suite", r.Suite); err != nil {
 		return err
 	}
+	if err := validateToken("category", r.Category); err != nil {
+		return err
+	}
+	if r.Platform != PlatformWindows && r.Platform != PlatformLinux {
+		return fmt.Errorf("platform 不受支持：%q", r.Platform)
+	}
+	if !validEntry(r.Entry) {
+		return fmt.Errorf("entry 不受支持：%q", r.Entry)
+	}
 	if !validResultStatus(r.Status) {
 		return fmt.Errorf("status 不受支持：%q", r.Status)
 	}
@@ -251,8 +271,8 @@ func (r Result) Validate() error {
 		}
 		seen[decision] = struct{}{}
 	}
-	if r.Status != ResultSkipped && !validDecision(r.ActualDecision) {
-		return fmt.Errorf("passed/failed 结果必须包含有效 actualDecision")
+	if r.Status == ResultPassed && !validDecision(r.ActualDecision) {
+		return fmt.Errorf("passed 结果必须包含有效 actualDecision")
 	}
 	if r.ActualDecision != "" && !validDecision(r.ActualDecision) {
 		return fmt.Errorf("actualDecision 不受支持：%q", r.ActualDecision)
@@ -262,6 +282,12 @@ func (r Result) Validate() error {
 	}
 	if r.UpstreamCallsBeforeApproval < 0 {
 		return fmt.Errorf("upstreamCallsBeforeApproval 不能为负数")
+	}
+	for _, signal := range r.Signals {
+		trimmed := strings.TrimSpace(signal)
+		if trimmed == "" || len([]rune(trimmed)) > 160 || containsControlCharacter(trimmed) {
+			return fmt.Errorf("signal 必须是 1 至 160 个无控制字符文本")
+		}
 	}
 	if r.Status == ResultSkipped && strings.TrimSpace(r.SkipReason) == "" {
 		return fmt.Errorf("skipped 结果必须包含 skipReason")
@@ -382,6 +408,15 @@ func sensitiveArgumentKey(key string) bool {
 		strings.HasSuffix(normalized, "password") ||
 		strings.HasSuffix(normalized, "privatekey") ||
 		strings.HasSuffix(normalized, "clientsecret")
+}
+
+func containsControlCharacter(value string) bool {
+	for _, one := range value {
+		if one < 0x20 || one == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func validEntry(value Entry) bool {

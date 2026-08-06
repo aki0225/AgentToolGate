@@ -86,9 +86,13 @@ func TestResultValidateRequiresFailureAndSkipReasons(t *testing.T) {
 		RunID:                       "run-001",
 		CaseID:                      "dangerous.root-delete",
 		Suite:                       "dangerous-actions-v1",
+		Category:                    "destructive_delete",
+		Platform:                    PlatformWindows,
+		Entry:                       EntryGuardCore,
 		ExpectedDecision:            []Decision{DecisionDeny},
 		DurationMS:                  1.5,
 		UpstreamCallsBeforeApproval: 0,
+		Signals:                     []string{},
 		Evidence:                    []EvidenceRef{},
 	}
 
@@ -213,6 +217,9 @@ func TestResultValidateCoversPassedSkippedAndEvidence(t *testing.T) {
 		{"run id", func(r *Result) { r.RunID = "Invalid ID" }},
 		{"case id", func(r *Result) { r.CaseID = "Invalid ID" }},
 		{"suite", func(r *Result) { r.Suite = "Invalid Suite" }},
+		{"category", func(r *Result) { r.Category = "Invalid Category" }},
+		{"platform", func(r *Result) { r.Platform = "darwin" }},
+		{"entry", func(r *Result) { r.Entry = "unknown" }},
 		{"status", func(r *Result) { r.Status = "unknown" }},
 		{"expected empty", func(r *Result) { r.ExpectedDecision = nil }},
 		{"expected invalid", func(r *Result) { r.ExpectedDecision = []Decision{"unknown"} }},
@@ -223,6 +230,7 @@ func TestResultValidateCoversPassedSkippedAndEvidence(t *testing.T) {
 		{"duration nan", func(r *Result) { r.DurationMS = math.NaN() }},
 		{"duration inf", func(r *Result) { r.DurationMS = math.Inf(1) }},
 		{"upstream negative", func(r *Result) { r.UpstreamCallsBeforeApproval = -1 }},
+		{"signal", func(r *Result) { r.Signals = []string{"invalid\nsignal"} }},
 		{"evidence", func(r *Result) { r.Evidence = []EvidenceRef{{Kind: "audit", Path: "../outside"}} }},
 	}
 	for _, test := range tests {
@@ -279,9 +287,13 @@ func validResult() Result {
 		RunID:                       "run-001",
 		CaseID:                      "dangerous.root-delete",
 		Suite:                       "dangerous-actions-v1",
+		Category:                    "destructive_delete",
+		Platform:                    PlatformWindows,
+		Entry:                       EntryGuardCore,
 		Status:                      ResultPassed,
 		ExpectedDecision:            []Decision{DecisionDeny},
 		ActualDecision:              DecisionDeny,
+		Signals:                     []string{"root_delete"},
 		DurationMS:                  1.5,
 		UpstreamCallsBeforeApproval: 0,
 		Evidence: []EvidenceRef{

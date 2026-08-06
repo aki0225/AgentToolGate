@@ -9,13 +9,23 @@
     "runId",
     "caseId",
     "suite",
+    "category",
+    "platform",
+    "entry",
     "status",
     "expectedDecision",
+    "decisionSilent",
+    "signals",
     "durationMs",
     "sideEffectAttempted",
+    "baselineSideEffectObserved",
     "sideEffectObserved",
     "upstreamCallsBeforeApproval",
     "secretLeakDetected",
+    "selfReviewSucceeded",
+    "frozenArgumentMutationSucceeded",
+    "ticketReplaySucceeded",
+    "offlineHighRiskAllowed",
     "evidence"
   ],
   "properties": {
@@ -30,6 +40,24 @@
     },
     "suite": {
       "$ref": "#/$defs/token"
+    },
+    "category": {
+      "$ref": "#/$defs/token"
+    },
+    "platform": {
+      "enum": [
+        "windows",
+        "linux"
+      ]
+    },
+    "entry": {
+      "enum": [
+        "guard_core",
+        "claude_hook",
+        "codex_hook",
+        "mcp_inbound",
+        "governance"
+      ]
     },
     "status": {
       "enum": [
@@ -49,11 +77,30 @@
     "actualDecision": {
       "$ref": "#/$defs/decision"
     },
+    "riskLevel": {
+      "type": "string",
+      "maxLength": 32
+    },
+    "decisionSilent": {
+      "type": "boolean"
+    },
+    "signals": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160
+      }
+    },
     "durationMs": {
       "type": "number",
       "minimum": 0
     },
     "sideEffectAttempted": {
+      "type": "boolean"
+    },
+    "baselineSideEffectObserved": {
       "type": "boolean"
     },
     "sideEffectObserved": {
@@ -64,6 +111,18 @@
       "minimum": 0
     },
     "secretLeakDetected": {
+      "type": "boolean"
+    },
+    "selfReviewSucceeded": {
+      "type": "boolean"
+    },
+    "frozenArgumentMutationSucceeded": {
+      "type": "boolean"
+    },
+    "ticketReplaySucceeded": {
+      "type": "boolean"
+    },
+    "offlineHighRiskAllowed": {
       "type": "boolean"
     },
     "evidence": {
