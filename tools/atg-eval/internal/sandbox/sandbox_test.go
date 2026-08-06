@@ -53,12 +53,44 @@ func TestResolveRejectsTraversalAndRootTarget(t *testing.T) {
 		"",
 		".",
 		"../outside.txt",
-		"<sandbox>",
 		`..\outside.txt`,
+		"foo/../../outside.txt",
+		`foo\..\..\outside.txt`,
+		"<sandbox>",
+		"<sandbox>/../outside.txt",
+		`<sandbox>\..\outside.txt`,
 		filepath.Join(string(os.PathSeparator), "absolute.txt"),
+		"/absolute.txt",
+		`\rooted.txt`,
+		`C:\absolute.txt`,
+		"C:/absolute.txt",
+		`\\server\share\outside.txt`,
+		"//server/share/outside.txt",
 	} {
 		if _, err := root.ResolveTarget(target); err == nil {
 			t.Fatalf("目标 %q 必须被拒绝", target)
+		}
+	}
+}
+
+func TestResolveAcceptsSandboxRelativePaths(t *testing.T) {
+	root, err := Create(filepath.Join(t.TempDir(), "evaluation"), "run-relative")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	t.Cleanup(func() { _ = root.Cleanup() })
+
+	for _, target := range []string{
+		"workspace/file.txt",
+		"workspace/nested/result.json",
+	} {
+		resolved, err := root.Resolve(target)
+		if err != nil {
+			t.Fatalf("安全相对路径 %q 应可解析：%v", target, err)
+		}
+		expected := filepath.Join(root.Path(), filepath.FromSlash(target))
+		if !samePath(resolved, expected) {
+			t.Fatalf("Resolve(%q) = %q，期望 %q", target, resolved, expected)
 		}
 	}
 }

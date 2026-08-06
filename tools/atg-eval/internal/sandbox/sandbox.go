@@ -138,17 +138,22 @@ func (r *Root) Resolve(relative string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("sandbox 相对路径不能为空")
 	}
+	portable := strings.ReplaceAll(trimmed, `\`, "/")
 	if filepath.IsAbs(trimmed) ||
 		filepath.VolumeName(trimmed) != "" ||
-		strings.HasPrefix(trimmed, "/") ||
-		strings.HasPrefix(trimmed, `\`) {
+		strings.HasPrefix(portable, "/") ||
+		(len(portable) >= 2 &&
+			((portable[0] >= 'A' && portable[0] <= 'Z') ||
+				(portable[0] >= 'a' && portable[0] <= 'z')) &&
+			portable[1] == ':') {
 		return "", fmt.Errorf("sandbox 路径必须是相对路径")
 	}
-	cleaned := filepath.Clean(trimmed)
-	if cleaned == "." || cleaned == ".." ||
-		strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
+	portableCleaned := filepath.ToSlash(filepath.Clean(filepath.FromSlash(portable)))
+	if portableCleaned == "." || portableCleaned == ".." ||
+		strings.HasPrefix(portableCleaned, "../") {
 		return "", fmt.Errorf("sandbox 路径不能指向根目录或包含上级跳转")
 	}
+	cleaned := filepath.Clean(filepath.FromSlash(portable))
 	candidate := filepath.Join(r.path, cleaned)
 	if err := ensureContained(r.path, candidate, false); err != nil {
 		return "", err
