@@ -5,7 +5,7 @@
 
 ## 当前阶段
 
-阶段 1 已建立：
+阶段 1 已完成：
 
 - Case / Result v1 数据契约。
 - 严格 JSONL loader。
@@ -13,8 +13,16 @@
 - 只绑定 loopback 的 mock server。
 - 统一文本、JSON 和 HTTP header 脱敏器。
 
-危险动作、良性动作、治理不变量、Runner 和报告生成会在后续阶段加入。本阶段不会为了
-得到更好结果修改生产 Guard、Hook Adapter 或 Policy。
+阶段 2 正在实现，当前已建立：
+
+- 24 个代码内枚举的受限动作及 synthetic 副作用。
+- 调用真实 `agenttoolgate guard evaluate/adapt/hook` 的 Driver。
+- Baseline / Protected Runner 骨架和平台跳过语义。
+- 安全率、误拦截率、决策延迟及治理违规计数。
+
+尚未完成三类 JSONL suite、`atg-eval run` 命令接线和 6 个治理不变量。当前内容是可测试的
+恢复点，不代表阶段 2 已验收完成。评估实现不会为了得到更好结果修改生产 Guard、Hook
+Adapter 或 Policy。
 
 ## 本地验证
 
