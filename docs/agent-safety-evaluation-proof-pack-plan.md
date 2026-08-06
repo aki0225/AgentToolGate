@@ -500,10 +500,16 @@ feat(evaluation): 建立评估契约与安全沙箱
   仍保持 `ask`。
 - 阶段 2A 的 CI 仍只执行 test、vet 与 suite validate，未通过 Runner 执行 30 个用例，
   也不生成正式评估结果或 evidence。
+- 阶段 2B 已新增 `atg-eval run`，串联严格 loader、disposable sandbox、loopback mock、
+  真实 Guard CLI Driver 和 Runner，输出单个全局脱敏的原始 JSON Document。
+- 阶段 2B 当前只真实执行 `Executable=true` 的 Guard Core operation；failed result、
+  基础设施错误和资源清理错误均返回非零，skipped 不视为 failed。
+- Guard CLI 单次调用默认超时为 30 秒，并允许通过 `--guard-timeout` 显式调整；超时
+  仍 fail closed，不自动重试。
 - 6 个治理不变量和 MCP Inbound 用例当前仅可校验、不可由动作 Runner 执行，不生成假的
   passed 结果。
-- 阶段 2 仍为进行中；后续需接入治理与 MCP Inbound 执行器，并完成真实 Runner 结果与
-  evidence 生成。
+- 阶段 2 仍为进行中；阶段 2B 不代表 30 个用例已全部执行，也不生成正式 Proof Pack
+  报告或 evidence。后续仍需接入治理与 MCP Inbound 执行器。
 
 提交建议：
 

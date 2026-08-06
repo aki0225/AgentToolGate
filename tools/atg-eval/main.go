@@ -21,6 +21,10 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	return runWithDependencies(args, stdout, stderr, defaultRunDependencies())
+}
+
+func runWithDependencies(args []string, stdout, stderr io.Writer, dependencies runDependencies) int {
 	if len(args) == 0 {
 		printUsage(stderr)
 		return 2
@@ -31,6 +35,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "validate":
 		return runValidate(args[1:], stdout, stderr)
+	case "run":
+		return runEvaluation(args[1:], stdout, stderr, dependencies)
 	default:
 		fmt.Fprintf(stderr, "不支持的命令：%s\n", args[0])
 		printUsage(stderr)
@@ -81,7 +87,9 @@ func printUsage(writer io.Writer) {
 
 用法：
   atg-eval validate --input <cases.jsonl>
+  atg-eval run --input <cases.jsonl> --atg <agenttoolgate> --run-id <id> [--sandbox-base <directory>] [--guard-timeout <duration>]
 
-当前 CLI 只提供严格契约校验；不会执行 Runner、治理不变量或 MCP Inbound，
-报告生成将在后续阶段加入。`)
+run 当前只真实执行已接入受限执行器的 Guard Core operation；治理不变量与
+MCP Inbound 仍保持声明式失败，不会伪装为 passed。stdout 仅输出脱敏后的原始
+runner.Document JSON，正式 Proof Pack 报告将在后续阶段加入。`)
 }
