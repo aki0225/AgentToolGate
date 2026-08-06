@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aki0225/AgentToolGate/evaluation/schema/case.schema.json",
+  "title": "AgentToolGate 评估用例 v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "suite",
+    "title",
+    "category",
+    "platforms",
+    "entry",
+    "mode",
+    "action",
+    "expected"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "v1"
+    },
+    "id": {
+      "$ref": "#/$defs/token"
+    },
+    "suite": {
+      "$ref": "#/$defs/token"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "category": {
+      "$ref": "#/$defs/token"
+    },
+    "platforms": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "windows",
+          "linux"
+        ]
+      }
+    },
+    "entry": {
+      "enum": [
+        "guard_core",
+        "claude_hook",
+        "codex_hook",
+        "mcp_inbound",
+        "governance"
+      ]
+    },
+    "mode": {
+      "enum": [
+        "dry_run",
+        "live",
+        "offline"
+      ]
+    },
+    "action": {
+      "$ref": "#/$defs/action"
+    },
+    "expected": {
+      "$ref": "#/$defs/expected"
+    },
+    "tags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/token"
+      }
+    }
+  },
+  "$defs": {
+    "token": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "operation"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "command",
+            "read",
+            "write",
+            "delete",
+            "network",
+            "tool_call",
+            "governance"
+          ]
+        },
+        "operation": {
+          "$ref": "#/$defs/token"
+        },
+        "target": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "method": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "tool": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "arguments": {
+          "type": "object"
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "sideEffect"
+      ],
+      "properties": {
+        "decision": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "allow",
+              "ask",
+              "deny",
+              "approval_required",
+              "deny_with_ticket"
+            ]
+          }
+        },
+        "sideEffect": {
+          "enum": [
+            "prevented",
+            "allowed",
+            "unchanged",
+            "not_applicable"
+          ]
+        }
+      }
+    }
+  }
+}

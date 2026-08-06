@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aki0225/AgentToolGate/evaluation/schema/result.schema.json",
+  "title": "AgentToolGate 评估结果 v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "caseId",
+    "suite",
+    "status",
+    "expectedDecision",
+    "durationMs",
+    "sideEffectAttempted",
+    "sideEffectObserved",
+    "upstreamCallsBeforeApproval",
+    "secretLeakDetected",
+    "evidence"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "v1"
+    },
+    "runId": {
+      "$ref": "#/$defs/token"
+    },
+    "caseId": {
+      "$ref": "#/$defs/token"
+    },
+    "suite": {
+      "$ref": "#/$defs/token"
+    },
+    "status": {
+      "enum": [
+        "passed",
+        "failed",
+        "skipped"
+      ]
+    },
+    "expectedDecision": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/decision"
+      }
+    },
+    "actualDecision": {
+      "$ref": "#/$defs/decision"
+    },
+    "durationMs": {
+      "type": "number",
+      "minimum": 0
+    },
+    "sideEffectAttempted": {
+      "type": "boolean"
+    },
+    "sideEffectObserved": {
+      "type": "boolean"
+    },
+    "upstreamCallsBeforeApproval": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "secretLeakDetected": {
+      "type": "boolean"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "skipReason": {
+      "type": "string",
+      "maxLength": 1000
+    },
+    "failureReason": {
+      "type": "string",
+      "maxLength": 2000
+    }
+  },
+  "$defs": {
+    "token": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "decision": {
+      "enum": [
+        "allow",
+        "ask",
+        "deny",
+        "approval_required",
+        "deny_with_ticket"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "path"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/token"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}
