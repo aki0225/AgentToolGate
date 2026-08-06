@@ -495,9 +495,11 @@ feat(evaluation): 建立评估契约与安全沙箱
 - 阶段 2A 已完成三类 JSONL suite，共 30 个声明式用例；危险与良性用例恰好覆盖
   24 个受限 operation。
 - 已完成 operation 元数据一致性校验和 CI 基础门禁，只运行 test、vet 与 suite validate。
-- 2A 核对发现 Guard Core 当前会把 `secrets/credentials.json` 当作普通 workspace 写入放行。
-  这是待独立 Guard 修复任务处理的真实缺口；阶段 2A 不修改生产安全语义，也不通过放宽
-  用例预期掩盖该缺陷。
+- 2A 核对发现的 `credentials.json` workspace 写入放行缺口，已由独立 Guard Core
+  `credential_config_write` 规则和回归测试修复；evaluation suite 的 expected decision
+  仍保持 `ask`。
+- 阶段 2A 的 CI 仍只执行 test、vet 与 suite validate，未通过 Runner 执行 30 个用例，
+  也不生成正式评估结果或 evidence。
 - 6 个治理不变量和 MCP Inbound 用例当前仅可校验、不可由动作 Runner 执行，不生成假的
   passed 结果。
 - 阶段 2 仍为进行中；后续需接入治理与 MCP Inbound 执行器，并完成真实 Runner 结果与

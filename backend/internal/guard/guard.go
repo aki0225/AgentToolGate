@@ -190,6 +190,9 @@ func detectSensitiveWrite(target, commandText, command, content, actionType, too
 	if isHardSensitiveWritePath(target) {
 		return newDecision("deny", "critical", false, "命中敏感写入", "sensitive_write", "sensitive_read", "凭据目录写入"), true
 	}
+	if isCredentialConfigWritePath(target) {
+		return newDecision("ask", "medium", false, "需要确认", "credential_config_write", "sensitive_config"), true
+	}
 	if isSensitiveConfigPath(target) {
 		return newDecision("ask", "medium", false, "需要确认", "config_write", "unknown", "敏感文件写入"), true
 	}
@@ -366,6 +369,11 @@ func isSensitiveConfigPath(target string) bool {
 		return true
 	}
 	return containsAny(lower, "/.github/workflows/")
+}
+
+func isCredentialConfigWritePath(target string) bool {
+	segments := pathSegments(target)
+	return len(segments) > 0 && strings.EqualFold(segments[len(segments)-1], "credentials.json")
 }
 
 func isHardSelfTamperPath(target string) bool {
