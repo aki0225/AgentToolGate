@@ -880,6 +880,8 @@ func TestRunUpFailureDoesNotLeaveHookControlBehind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare up: %v", err)
 	}
+	// 使用系统分配的临时端口，确保本测试稳定进入启动后钩子失败与清理分支。
+	cfg.Port = "0"
 	if err := writeProjectHookControlAtPath(hookControlPath, hookControlMode); err != nil {
 		t.Fatalf("pre-write hook control: %v", err)
 	}
