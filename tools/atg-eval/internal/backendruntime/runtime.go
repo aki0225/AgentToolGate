@@ -30,17 +30,21 @@ const (
 var runtimeNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
 type Config struct {
-	Executable     string
-	PrefixArgs     []string
-	Environment    []string
-	Root           *sandbox.Root
-	Name           string
-	WorkspaceOrgID string
-	Subject        string
-	Role           string
-	StartupTimeout time.Duration
-	StopTimeout    time.Duration
-	Redactor       *redact.Redactor
+	Executable       string
+	PrefixArgs       []string
+	Environment      []string
+	Root             *sandbox.Root
+	Name             string
+	StateName        string
+	StoreDriver      string
+	WorkspaceOrgID   string
+	Subject          string
+	Role             string
+	HTTPAllowedHosts []string
+	OTLPEndpoint     string
+	StartupTimeout   time.Duration
+	StopTimeout      time.Duration
+	Redactor         *redact.Redactor
 }
 
 type Server struct {
@@ -71,6 +75,13 @@ func Start(ctx context.Context, config Config) (*Server, error) {
 	if err := os.MkdirAll(runtimeDirectory, 0o700); err != nil {
 		return nil, fmt.Errorf("创建 ATG runtime 目录失败：%w", err)
 	}
+	stateDirectory, err := normalized.Root.Resolve(filepath.Join("runtime-state", normalized.StateName))
+	if err != nil {
+		return nil, fmt.Errorf("解析 ATG state 目录失败：%w", err)
+	}
+	if err := os.MkdirAll(stateDirectory, 0o700); err != nil {
+		return nil, fmt.Errorf("创建 ATG state 目录失败：%w", err)
+	}
 	stdoutFile, err := os.OpenFile(filepath.Join(runtimeDirectory, "stdout.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("创建 ATG stdout 日志失败：%w", err)
@@ -91,7 +102,7 @@ func Start(ctx context.Context, config Config) (*Server, error) {
 	args = append(args, "serve", "--addr", addr)
 	command := exec.Command(normalized.Executable, args...)
 	command.Dir = runtimeDirectory
-	command.Env = runtimeEnvironment(normalized, runtimeDirectory)
+	command.Env = runtimeEnvironment(normalized, stateDirectory)
 	stdout := newLimitedLogBuffer(maxCapturedLogBytes)
 	stderr := newLimitedLogBuffer(maxCapturedLogBytes)
 	command.Stdout = io.MultiWriter(stdoutFile, stdout)
@@ -129,6 +140,15 @@ func (s *Server) BaseURL() string {
 		return ""
 	}
 	return s.baseURL
+}
+
+// SensitiveValueDetected 只返回是否命中，不暴露子进程原始日志。
+// 治理评估用它证明 synthetic secret 未进入启动摘要、错误日志或运行日志。
+func (s *Server) SensitiveValueDetected(value string) bool {
+	if s == nil || value == "" {
+		return false
+	}
+	return strings.Contains(s.stdout.String(), value) || strings.Contains(s.stderr.String(), value)
 }
 
 // Close 先尝试发送中断信号，超时后再强制结束，保证评估不会遗留后台进程。
@@ -254,7 +274,33 @@ func normalizeConfig(config Config) (Config, error) {
 	if !runtimeNamePattern.MatchString(config.Name) {
 		return Config{}, fmt.Errorf("ATG runtime name 必须匹配 %s", runtimeNamePattern.String())
 	}
+	config.StateName = strings.ToLower(strings.TrimSpace(config.StateName))
+	if config.StateName == "" {
+		config.StateName = config.Name
+	}
+	if !runtimeNamePattern.MatchString(config.StateName) {
+		return Config{}, fmt.Errorf("ATG state name 必须匹配 %s", runtimeNamePattern.String())
+	}
+	config.StoreDriver = strings.ToLower(strings.TrimSpace(config.StoreDriver))
+	if config.StoreDriver == "" {
+		config.StoreDriver = "memory"
+	}
+	if config.StoreDriver != "memory" && config.StoreDriver != "sqlite" {
+		return Config{}, fmt.Errorf("ATG runtime store 只允许 memory 或 sqlite")
+	}
 	if err := validateExtraEnvironment(config.Environment); err != nil {
+		return Config{}, err
+	}
+	allowedHosts, err := normalizeLoopbackHosts(config.HTTPAllowedHosts)
+	if err != nil {
+		return Config{}, err
+	}
+	config.HTTPAllowedHosts = allowedHosts
+	config.OTLPEndpoint = strings.TrimSpace(config.OTLPEndpoint)
+	if config.OTLPEndpoint == "" {
+		config.OTLPEndpoint = "127.0.0.1:1"
+	}
+	if err := validateLoopbackEndpoint(config.OTLPEndpoint, "OTLP endpoint"); err != nil {
 		return Config{}, err
 	}
 	if strings.TrimSpace(config.WorkspaceOrgID) == "" {
@@ -276,6 +322,58 @@ func normalizeConfig(config Config) (Config, error) {
 		config.Redactor = redact.New(redact.Options{})
 	}
 	return config, nil
+}
+
+func normalizeLoopbackHosts(rawHosts []string) ([]string, error) {
+	if len(rawHosts) == 0 {
+		return []string{"127.0.0.1", "localhost"}, nil
+	}
+	result := make([]string, 0, len(rawHosts))
+	seen := make(map[string]struct{}, len(rawHosts))
+	for _, rawHost := range rawHosts {
+		host := strings.TrimSpace(rawHost)
+		if host == "" {
+			continue
+		}
+		if strings.EqualFold(host, "localhost") {
+			host = "localhost"
+		} else {
+			hostname := host
+			if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+				hostname = parsedHost
+			}
+			ip := net.ParseIP(strings.Trim(hostname, "[]"))
+			if ip == nil || !ip.IsLoopback() {
+				return nil, fmt.Errorf("HTTP allowed host 必须是 loopback 地址")
+			}
+		}
+		key := strings.ToLower(host)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, host)
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("HTTP allowed hosts 不能为空")
+	}
+	return result, nil
+}
+
+func validateLoopbackEndpoint(endpoint, label string) error {
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil || strings.TrimSpace(port) == "" {
+		return fmt.Errorf("%s 必须是 loopback host:port", label)
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("%s 必须绑定 loopback IP", label)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return fmt.Errorf("%s 端口无效", label)
+	}
+	return nil
 }
 
 func validateExtraEnvironment(entries []string) error {
@@ -304,13 +402,13 @@ func reserveLoopbackAddress() (string, error) {
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(addr.Port)), nil
 }
 
-func runtimeEnvironment(config Config, runtimeDirectory string) []string {
-	dataDirectory := filepath.Join(runtimeDirectory, "data")
-	policyPath := filepath.Join(runtimeDirectory, "missing-policies.yaml")
+func runtimeEnvironment(config Config, stateDirectory string) []string {
+	dataDirectory := filepath.Join(stateDirectory, "data")
+	policyPath := filepath.Join(stateDirectory, "missing-policies.yaml")
 	environment := safeBaseEnvironment()
 	environment = append(environment,
 		"HOST=127.0.0.1",
-		"STORE_DRIVER=memory",
+		"STORE_DRIVER="+config.StoreDriver,
 		"AGT_DATA_DIR="+dataDirectory,
 		"AGT_SQLITE_PATH="+filepath.Join(dataDirectory, "agenttoolgate.db"),
 		"AUTH_MODE=local",
@@ -322,8 +420,8 @@ func runtimeEnvironment(config Config, runtimeDirectory string) []string {
 		"LOCAL_NAME=Evaluation Runtime",
 		"LOCAL_ROLE="+strings.TrimSpace(config.Role),
 		"POLICY_CONFIG_PATH="+policyPath,
-		"OTEL_EXPORTER_OTLP_ENDPOINT=127.0.0.1:1",
-		"HTTP_ALLOWED_HOSTS=127.0.0.1,localhost",
+		"OTEL_EXPORTER_OTLP_ENDPOINT="+config.OTLPEndpoint,
+		"HTTP_ALLOWED_HOSTS="+strings.Join(config.HTTPAllowedHosts, ","),
 		"CORS_ALLOWED_ORIGINS=http://127.0.0.1",
 		"RATE_LIMIT_PER_MINUTE=10000",
 		"DEV_MODE=false",
@@ -361,6 +459,12 @@ func safeBaseEnvironment() []string {
 		environment = append(environment, key+"="+value)
 	}
 	return environment
+}
+
+// SafeBaseEnvironment 返回可传给受控子进程的最小系统环境副本。
+// 调用方必须显式追加业务所需变量，不能再拼接 os.Environ()。
+func SafeBaseEnvironment() []string {
+	return append([]string(nil), safeBaseEnvironment()...)
 }
 
 type limitedLogBuffer struct {

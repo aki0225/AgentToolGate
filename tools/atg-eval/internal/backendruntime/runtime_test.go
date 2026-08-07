@@ -24,14 +24,17 @@ func TestStartUsesLoopbackAndScrubsInheritedEnvironment(t *testing.T) {
 	t.Cleanup(func() { _ = root.Cleanup() })
 
 	server, err := Start(context.Background(), Config{
-		Executable:  os.Args[0],
-		PrefixArgs:  []string{"-test.run=TestBackendRuntimeHelperProcess", "--"},
-		Environment: []string{"ATG_EVAL_BACKEND_HELPER=1"},
-		Root:        root,
-		Name:        "mcp-inbound",
-		Subject:     "evaluation-viewer",
-		Role:        "viewer",
-		Redactor:    redact.New(redact.Options{Paths: []redact.PathReplacement{{Path: root.Path(), Replacement: "<sandbox>"}}}),
+		Executable: os.Args[0],
+		PrefixArgs: []string{"-test.run=TestBackendRuntimeHelperProcess", "--"},
+		Environment: []string{
+			"ATG_EVAL_BACKEND_HELPER=1",
+			"ATG_EVAL_BACKEND_LOG_VALUE=runtime-sensitive-marker",
+		},
+		Root:     root,
+		Name:     "mcp-inbound",
+		Subject:  "evaluation-viewer",
+		Role:     "viewer",
+		Redactor: redact.New(redact.Options{Paths: []redact.PathReplacement{{Path: root.Path(), Replacement: "<sandbox>"}}}),
 	})
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -52,6 +55,8 @@ func TestStartUsesLoopbackAndScrubsInheritedEnvironment(t *testing.T) {
 		Subject      string `json:"subject"`
 		Role         string `json:"role"`
 		Host         string `json:"host"`
+		AllowedHosts string `json:"allowedHosts"`
+		OTLPEndpoint string `json:"otlpEndpoint"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode /inspect error = %v", err)
@@ -62,8 +67,16 @@ func TestStartUsesLoopbackAndScrubsInheritedEnvironment(t *testing.T) {
 	if payload.StoreDriver != "memory" ||
 		payload.Subject != "evaluation-viewer" ||
 		payload.Role != "viewer" ||
-		payload.Host != "127.0.0.1" {
+		payload.Host != "127.0.0.1" ||
+		payload.AllowedHosts != "127.0.0.1,localhost" ||
+		payload.OTLPEndpoint != "127.0.0.1:1" {
 		t.Fatalf("runtime 环境不符合预期：%+v", payload)
+	}
+	if !server.SensitiveValueDetected("runtime-sensitive-marker") {
+		t.Fatal("runtime 必须能以布尔值检测敏感日志")
+	}
+	if server.SensitiveValueDetected("not-present") {
+		t.Fatal("runtime 不得误报不存在的敏感值")
 	}
 	if err := server.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
@@ -120,6 +133,10 @@ func TestStartRejectsUnsafeConfiguration(t *testing.T) {
 		{Executable: os.Args[0], Name: "runtime"},
 		{Executable: os.Args[0], Root: root},
 		{Executable: os.Args[0], Root: root, Name: "../escape"},
+		{Executable: os.Args[0], Root: root, Name: "runtime", StateName: "../escape"},
+		{Executable: os.Args[0], Root: root, Name: "runtime", StoreDriver: "postgres"},
+		{Executable: os.Args[0], Root: root, Name: "runtime", OTLPEndpoint: "example.com:4317"},
+		{Executable: os.Args[0], Root: root, Name: "runtime", HTTPAllowedHosts: []string{"example.com:443"}},
 		{Executable: os.Args[0], Root: root, Name: "runtime", Environment: []string{"INVALID"}},
 		{Executable: os.Args[0], Root: root, Name: "runtime", Environment: []string{"GITHUB_TOKEN=forbidden"}},
 	}
@@ -155,6 +172,9 @@ func TestNilServerAccessorsAreSafe(t *testing.T) {
 	if server.BaseURL() != "" {
 		t.Fatal("nil runtime 的 BaseURL 必须为空")
 	}
+	if server.SensitiveValueDetected("secret") {
+		t.Fatal("nil runtime 不得报告敏感日志")
+	}
 	if err := server.Close(); err != nil {
 		t.Fatalf("nil runtime 的 Close() 必须安全，error=%v", err)
 	}
@@ -168,6 +188,9 @@ func TestBackendRuntimeHelperProcess(t *testing.T) {
 		fmt.Fprintf(os.Stderr, "Bearer %s\n", os.Getenv("ATG_EVAL_BACKEND_SECRET"))
 		time.Sleep(30 * time.Second)
 		os.Exit(0)
+	}
+	if value := os.Getenv("ATG_EVAL_BACKEND_LOG_VALUE"); value != "" {
+		fmt.Fprintln(os.Stdout, value)
 	}
 	addr := helperArgument("--addr")
 	if addr == "" {
@@ -187,6 +210,8 @@ func TestBackendRuntimeHelperProcess(t *testing.T) {
 			"subject":      os.Getenv("LOCAL_SUBJECT"),
 			"role":         os.Getenv("LOCAL_ROLE"),
 			"host":         os.Getenv("HOST"),
+			"allowedHosts": os.Getenv("HTTP_ALLOWED_HOSTS"),
+			"otlpEndpoint": os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		})
 	})
 	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: time.Second}
