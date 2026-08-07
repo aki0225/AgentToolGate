@@ -372,7 +372,7 @@ HTML 报告必须：
 
 ## 11. CI 策略
 
-### 11.1 评估工具基础门禁（阶段 2A 已完成）
+### 11.1 评估工具基础门禁（阶段 2A 建立，阶段 2D 加固）
 
 当前 CI 使用独立 job 执行：
 
@@ -380,9 +380,10 @@ HTML 报告必须：
 - `go -C tools/atg-eval vet ./...`
 - 分别 validate dangerous、benign 和 governance 三份 JSONL suite。
 
-该 job 只验证评估工具、30 个声明式用例和 24 个受限 operation 的完整性契约。它不执行
-真实 Runner，不生成或上传报告及 evidence，不启动 Codex、Claude Code、MCP 或其他网络
-服务。
+该 job 不通过 `atg-eval run` 执行完整 30 个 suite，也不生成或上传报告及 evidence。
+阶段 2D 后，默认 Go 测试会构建真实 ATG 后端，在随机 loopback 端口覆盖 MCP Inbound
+只读路径和 6 个治理不变量执行器；它不启动真实 Codex / Claude Code 客户端，不访问
+公网或真实上游。
 
 ### 11.2 PR 快速评估（后续阶段）
 
@@ -395,8 +396,9 @@ HTML 报告必须：
 失败时上传报告和脱敏 evidence。
 
 PR 快速评估与当前基础门禁不是同一能力；只有治理执行器、报告生成与脱敏 evidence
-链路完成后，才会启用该流程。MCP Inbound 只读执行器已在阶段 2C 接入，但尚未单独启用
-PR quick evaluation。
+链路完成后，才会启用该流程。MCP Inbound 只读执行器已在阶段 2C 接入，6 个治理不变量
+执行器已在阶段 2D 接入，但报告和 evidence 尚未完成，因此还不能启用 PR quick
+evaluation。
 
 ### 11.3 完整评估（后续阶段）
 
@@ -499,8 +501,9 @@ feat(evaluation): 建立评估契约与安全沙箱
 - 2A 核对发现的 `credentials.json` workspace 写入放行缺口，已由独立 Guard Core
   `credential_config_write` 规则和回归测试修复；evaluation suite 的 expected decision
   仍保持 `ask`。
-- 阶段 2A 的 CI 仍只执行 test、vet 与 suite validate，未通过 Runner 执行 30 个用例，
-  也不生成正式评估结果或 evidence。
+- CI 仍只执行 test、vet 与 suite validate，未通过 Runner 执行完整 30 个用例，也不生成
+  正式评估结果或 evidence；阶段 2D 的默认 Go 测试已增加真实后端 MCP / governance
+  loopback 集成覆盖。
 - 阶段 2B 已新增 `atg-eval run`，串联严格 loader、disposable sandbox、loopback mock、
   真实 Guard CLI Driver 和 Runner，输出单个全局脱敏的原始 JSON Document。
 - 阶段 2B 当前只真实执行 `Executable=true` 的 Guard Core operation；failed result、
@@ -513,13 +516,25 @@ feat(evaluation): 建立评估契约与安全沙箱
   和 `tools/list`，并确认 `mock.echo` 可见；非 loopback endpoint 会被拒绝。
 - runtime stdout / stderr 只写入 sandbox 内限长日志；Runner 结束时先停止 runtime，
   再关闭 mock server 和清理 sandbox。
-- 当前危险动作 12 个与良性开发动作 12 个均已接入受限执行器；6 个治理不变量仍保持
-  声明式，会明确失败而不是生成假的 passed 结果。
+- 阶段 2D 已为 6 个治理不变量增加专用执行入口，不复用 baseline / protected 通用
+  副作用路径。
+- requester / reviewer 通过不同稳定 subject 和同一 SQLite 状态库跨后端重启，真实
+  验证自批拒绝、审批前零上游请求、冻结参数不可替换和 ticket 单次消费。
+- 离线高风险用例真实执行产品 Codex Hook，并在 ATG CLI 与 backend 均不可用时验证
+  fail closed。
+- Secret 可观测性用例只向 API 传 Secret ref，synthetic Secret 仅由隔离环境进入真实
+  后端；loopback 上游必须收到明文，但 API、Audit、runtime 日志和 loopback OTel
+  collector 均不得命中明文。
+- runtime 支持 `memory` / `sqlite` 两种评估状态库、受控 loopback OTLP endpoint 和精确
+  HTTP loopback allowlist；子进程使用最小安全环境，不继承 token、DSN 或云凭据。
 - 2026-08-07 使用当前工作树构建的 Windows 二进制完成阶段 2C 本地验收：dangerous
   12 / 12 passed，benign 12 / 12 passed，governance 0 / 6 passed 且 6 个结果均明确
   标记“尚未接入对应执行器”。该结果不是 Linux、CI 或正式 Proof Pack 结论。
-- 阶段 2 仍为进行中；当前 24 个危险/良性用例可真实执行，但不代表 30 个用例全部通过，
-  也不生成正式 Proof Pack 报告或 evidence。后续仍需接入 6 个治理执行器。
+- 2026-08-07 使用阶段 2D 当前工作树重新构建 Windows 二进制并执行三套 suite：
+  dangerous 12 / 12 passed，benign 12 / 12 passed，governance 6 / 6 passed；6 项治理
+  违规计数均为 0。
+- 阶段 2 的 30 个用例现已具备真实执行路径。正式 Proof Pack 报告、可追溯 evidence、
+  Linux 真实运行和 CI 评估仍属于后续阶段，不能用本地恢复基线替代。
 
 提交建议：
 
@@ -599,11 +614,11 @@ git diff --check
 
 - [x] 当前 `main` 已发布为新的稳定 Release。
 - [x] 30 个声明式用例目录、24 个受限 operation 完整性校验和 CI 基础门禁已完成。
-- [ ] 评估 Runner 只在已校验的 disposable root 内产生副作用。
-- [ ] loopback 之外的网络请求被拒绝。
-- [ ] 30 个用例均有明确 passed / failed / skipped。
+- [x] 评估 Runner 只在已校验的 disposable root 内产生副作用。
+- [x] loopback 之外的网络请求被拒绝。
+- [x] 30 个用例均有明确 passed / failed / skipped。
 - [ ] 结果可以稳定生成 JSON、JUnit、Markdown 和 HTML。
-- [ ] 汇总指标由原始结果计算。
+- [x] 汇总指标由原始结果计算。
 - [ ] 危险动作失败时保留可核对 evidence。
 - [ ] 良性动作误拦截被视为失败或明确风险，不通过调规则隐藏。
 - [ ] PR quick suite 和手动 full suite 可运行。

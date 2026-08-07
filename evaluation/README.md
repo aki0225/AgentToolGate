@@ -41,23 +41,36 @@
   `2024-11-05`，并确认受控工具 `mock.echo` 可见。
 - Runner 结束时先停止 ATG runtime，再关闭 loopback mock server，最后清理 sandbox。
 
-危险动作 12 个和良性开发动作 12 个当前均已接入受限执行器。6 个治理不变量仍是
-可校验但不可执行的声明式用例，会稳定生成 failed 结果和“尚未接入执行器”原因，不会
-伪装为 passed。
+阶段 2D 已接入 6 个治理不变量执行器：
 
-阶段 2、Proof Pack 和正式 evidence 仍未完成。当前实现不代表 30 个用例已经全部通过，
-也不代表 PR quick evaluation 已经启用。用例发现生产缺陷时必须先单独修复并保留回归
-测试，不能通过放宽 expected decision 隐藏问题。
+- requester 与 reviewer 使用不同稳定 subject，并通过同一 SQLite 状态库跨后端重启。
+- 审批用例真实验证自批拒绝、审批前零上游请求、冻结参数不可替换和 ticket 单次消费。
+- 离线用例真实执行仓库内 Codex Hook；ATG CLI 与 backend 均不可用时，高风险写入必须
+  fail closed。
+- Secret 用例只向 API 传递 Secret ref；synthetic Secret 仅由隔离环境注入真实后端，
+  上游必须收到它，但 API、Audit、runtime stdout / stderr 和 loopback OTel collector
+  均不得命中明文。
+- governance 用例不再走 baseline / protected 通用副作用路径，只有专用执行器返回的
+  状态与不变量全部一致时才会生成 `passed`。
+- evaluator 的默认 Go 测试会构建真实 ATG 后端，并覆盖 MCP Inbound 与 6 个治理不变量
+  的 loopback 集成路径；它仍不会通过 `atg-eval run` 执行完整 30 个 suite 或上传报告。
 
-阶段 2C 在 2026-08-07 的 Windows 本地真实进程验收结果：
+阶段 2D 在 2026-08-07 的 Windows 本地真实进程验收结果：
 
 - dangerous suite：12 / 12 passed，`dangerous_governed_rate = 1`。
 - benign suite：12 / 12 passed，`benign_silent_rate = 1`，
   `benign_interruption_rate = 0`。
-- governance suite：0 / 6 passed、6 / 6 failed，失败原因均明确为尚未接入对应执行器。
+- governance suite：6 / 6 passed。
+- `approval_pre_upstream_calls`、`self_review_success_count`、
+  `frozen_argument_mutation_success_count`、`ticket_replay_success_count`、
+  `secret_leak_count` 和 `offline_high_risk_allow_count` 均为 0。
 
 这组数字来自当前工作树构建的真实 ATG 后端与评估工具，不是手工填写；它只作为阶段
-2C 的 Windows 本地恢复基线，不替代 Linux、CI、正式报告或可发布 Proof Pack。
+2D 的 Windows 本地恢复基线，不替代 Linux、CI、正式报告或可发布 Proof Pack。
+
+阶段 2 的 30 个用例现已具备真实执行路径，但 Proof Pack 和正式 evidence 仍未完成，
+也不代表 PR quick evaluation 已经启用。用例发现生产缺陷时必须先单独修复并保留回归
+测试，不能通过放宽 expected decision 隐藏问题。
 
 指标中的 sample count 统计非 skipped 用例，decision sample count 只统计获得有效
 `actualDecision` 的用例。Driver 不可用等基础设施失败保留在 `failed_count`，但不会计入
@@ -91,8 +104,8 @@ go -C tools/atg-eval build -buildvcs=false `
 ```
 
 将 `--input` 和 `--run-id` 分别替换为 benign 或 governance suite 即可执行另外两组
-用例。governance suite 在 6 个执行器接入前预期返回 1，并输出 6 个带明确失败原因的
-结果；这不是基础设施启动失败。
+用例。governance suite 会启动多组隔离的真实后端、共享 loopback OTel collector，并
+执行产品 Hook，因此通常比 dangerous / benign suite 更慢。
 
 `--input`、`--atg` 和 `--run-id` 必填；`--sandbox-base` 默认是 `.tmp/evaluation`。
 `--guard-timeout` 使用 Go duration 格式，默认是 `30s`，可在较慢的 Windows 或 CI
@@ -121,6 +134,9 @@ go -C tools/atg-eval run . validate `
   保留公开 GET 语义，受限执行只访问 loopback `/status`，不会访问声明中的公网 URL。
 - MCP Inbound Harness 只允许 loopback endpoint，使用隔离子进程环境；协议、响应大小、
   JSON-RPC 错误或后端可用性证据不足时均 fail closed。
+- governance Harness 的 HTTP 上游、OTLP collector 和 ATG runtime 均只绑定 loopback；
+  多 Actor 状态只写入当前 disposable sandbox 内的 SQLite。
+- Hook 子进程使用最小安全环境，不继承 token、DSN、云凭据或调用进程中的其他敏感项。
 - sandbox 清理必须同时通过路径 containment、随机 nonce 标记和根目录复核。
 - 脱敏失败时返回错误，不把原始 JSON 作为降级结果。
 - 评估不是 OS sandbox、EDR、DLP 或完整红队平台。
