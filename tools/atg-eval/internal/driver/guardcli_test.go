@@ -125,6 +125,101 @@ func TestGuardCLIMCPFailsClosedWithoutRuntimeAndCloseIsSafe(t *testing.T) {
 	}
 }
 
+func TestDriverParsingHelpersFailClosed(t *testing.T) {
+	if _, err := evaluationFromRaw(rawDecision{Decision: "unknown"}); err == nil {
+		t.Fatal("未知 Guard decision 必须被拒绝")
+	}
+	ask, err := evaluationFromRaw(rawDecision{
+		Decision:  " ASK ",
+		RiskLevel: " medium ",
+		Reason:    " review ",
+		Signals:   []string{"signal"},
+		Category:  " config ",
+	})
+	if err != nil ||
+		ask.Decision != model.DecisionAsk ||
+		ask.RiskLevel != "medium" ||
+		ask.Reason != "review" ||
+		ask.Category != "config" {
+		t.Fatalf("evaluationFromRaw() 归一化异常：%+v err=%v", ask, err)
+	}
+
+	for _, raw := range [][]byte{
+		[]byte(`{"decision":"allow","unknown":true}`),
+		[]byte(`{"decision":"allow"}{"decision":"deny"}`),
+		[]byte(`{"decision":`),
+	} {
+		var decision rawDecision
+		if err := decodeStrictJSON(raw, &decision); err == nil {
+			t.Fatalf("无效严格 JSON 必须被拒绝：%s", raw)
+		}
+	}
+
+	if _, err := verifyHookDecision("codex", model.DecisionAllow, []byte(`{"unexpected":true}`)); err == nil {
+		t.Fatal("Codex allow 输出 JSON 必须被拒绝")
+	}
+	if _, err := verifyHookDecision("claude", model.DecisionDeny, nil); err == nil {
+		t.Fatal("Claude deny 空输出必须被拒绝")
+	}
+	if _, err := verifyHookDecision("claude", model.DecisionDeny, []byte(`{"hookSpecificOutput":null}`)); err == nil {
+		t.Fatal("缺少 hookSpecificOutput 必须被拒绝")
+	}
+	if _, err := verifyHookDecision("claude", model.DecisionDeny, []byte(`{
+		"hookSpecificOutput":{
+			"hookEventName":"PostToolUse",
+			"permissionDecision":"deny"
+		}
+	}`)); err == nil {
+		t.Fatal("非 PreToolUse Hook 输出必须被拒绝")
+	}
+	if _, err := verifyHookDecision("claude", model.DecisionDeny, []byte(`{
+		"hookSpecificOutput":{
+			"hookEventName":"PreToolUse",
+			"permissionDecision":"allow"
+		}
+	}`)); err == nil {
+		t.Fatal("Hook 与 Guard 决策不一致必须被拒绝")
+	}
+}
+
+func TestGuardCLIRejectsInvalidAndOversizedOutput(t *testing.T) {
+	tests := []struct {
+		name        string
+		environment string
+		entry       model.Entry
+		command     string
+	}{
+		{"invalid json", "ATG_EVAL_HELPER_INVALID_JSON=1", model.EntryGuardCore, "safe"},
+		{"unknown decision", "ATG_EVAL_HELPER_UNKNOWN_DECISION=1", model.EntryGuardCore, "safe"},
+		{"invalid hook event", "ATG_EVAL_HELPER_INVALID_HOOK_EVENT=1", model.EntryClaudeHook, "danger"},
+		{"oversized output", "ATG_EVAL_HELPER_OVERSIZED_OUTPUT=1", model.EntryGuardCore, "safe"},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			instance := newHelperDriverWithEnv(t, test.environment)
+			if _, err := instance.Evaluate(
+				context.Background(),
+				test.entry,
+				operations.GuardInput{ToolName: "shell", ActionType: "command", Command: test.command},
+			); err == nil {
+				t.Fatal("无效或超限 Guard 输出必须被拒绝")
+			}
+		})
+	}
+}
+
+func TestLimitedBufferRejectsOversizedCommandOutput(t *testing.T) {
+	buffer := &limitedBuffer{limit: 4}
+	written, err := buffer.Write([]byte("abcdef"))
+	if err == nil || written != 4 || string(buffer.Bytes()) != "abcd" {
+		t.Fatalf("超限写入必须截断并报错：written=%d err=%v value=%q", written, err, buffer.String())
+	}
+	if written, err := buffer.Write([]byte("z")); err == nil || written != 0 {
+		t.Fatalf("已满缓冲区继续写入必须失败：written=%d err=%v", written, err)
+	}
+}
+
 func TestGuardCLIHelperProcess(t *testing.T) {
 	if os.Getenv("ATG_EVAL_HELPER") != "1" {
 		return
@@ -135,6 +230,14 @@ func TestGuardCLIHelperProcess(t *testing.T) {
 	if os.Getenv("ATG_EVAL_HELPER_FAIL") == "1" {
 		fmt.Fprintf(os.Stderr, "Bearer %s\n", os.Getenv("ATG_EVAL_HELPER_SECRET"))
 		os.Exit(1)
+	}
+	if os.Getenv("ATG_EVAL_HELPER_INVALID_JSON") == "1" {
+		fmt.Fprint(os.Stdout, "{")
+		os.Exit(0)
+	}
+	if os.Getenv("ATG_EVAL_HELPER_OVERSIZED_OUTPUT") == "1" {
+		fmt.Fprint(os.Stdout, strings.Repeat("x", defaultCommandOutputLimit+1))
+		os.Exit(0)
 	}
 
 	args := helperArgs()
@@ -148,6 +251,9 @@ func TestGuardCLIHelperProcess(t *testing.T) {
 	} else if strings.Contains(text, "ask") {
 		decision = "ask"
 		silent = false
+	}
+	if os.Getenv("ATG_EVAL_HELPER_UNKNOWN_DECISION") == "1" {
+		decision = "unknown"
 	}
 
 	if len(args) >= 2 && args[0] == "guard" && args[1] == "evaluate" {
@@ -184,9 +290,13 @@ func TestGuardCLIHelperProcess(t *testing.T) {
 		if os.Getenv("ATG_EVAL_HELPER_MISMATCH") == "1" {
 			permission = "allow"
 		}
+		hookEventName := "PreToolUse"
+		if os.Getenv("ATG_EVAL_HELPER_INVALID_HOOK_EVENT") == "1" {
+			hookEventName = "PostToolUse"
+		}
 		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
 			"hookSpecificOutput": map[string]string{
-				"hookEventName":      "PreToolUse",
+				"hookEventName":      hookEventName,
 				"permissionDecision": permission,
 			},
 		})

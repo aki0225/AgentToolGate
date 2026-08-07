@@ -78,8 +78,10 @@ func TestPublishedSuitesAreCompleteAndUnique(t *testing.T) {
 		t.Fatalf("governance definitions=%d，want=6", len(governance))
 	}
 	for _, definition := range governance {
-		if definition.Executable {
-			t.Fatalf("governance operation %s 不得标记为可执行", definition.Operation)
+		if !definition.Executable ||
+			len(definition.Entries) != 1 ||
+			definition.Entries[0] != model.EntryGovernance {
+			t.Fatalf("governance operation %s 必须由专用执行入口处理", definition.Operation)
 		}
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"agenttoolgate/evaluation/internal/backendruntime"
+	"agenttoolgate/evaluation/internal/mockserver"
 	"agenttoolgate/evaluation/internal/model"
 	"agenttoolgate/evaluation/internal/operations"
 	"agenttoolgate/evaluation/internal/redact"
@@ -22,15 +23,19 @@ import (
 const defaultCommandOutputLimit = 1 << 20
 
 type Config struct {
-	Executable        string
-	PrefixArgs        []string
-	Environment       []string
-	Timeout           time.Duration
-	Redactor          *redact.Redactor
-	EnableMCP         bool
-	RuntimeRoot       *sandbox.Root
-	MCPWorkspaceOrgID string
-	MCPStartupTimeout time.Duration
+	Executable           string
+	PrefixArgs           []string
+	Environment          []string
+	Timeout              time.Duration
+	Redactor             *redact.Redactor
+	EnableMCP            bool
+	EnableGovernance     bool
+	RuntimeRoot          *sandbox.Root
+	GovernanceMockServer *mockserver.Server
+	SyntheticSecret      string
+	RepositoryRoot       string
+	MCPWorkspaceOrgID    string
+	MCPStartupTimeout    time.Duration
 }
 
 type GuardCLI struct {
@@ -41,6 +46,7 @@ type GuardCLI struct {
 	redactor          *redact.Redactor
 	mcpRuntime        *backendruntime.Server
 	mcpWorkspaceOrgID string
+	governance        *governanceHarness
 }
 
 type Evaluation struct {
@@ -118,6 +124,14 @@ func New(config Config) (*GuardCLI, error) {
 		}
 		guardCLI.mcpRuntime = runtimeServer
 	}
+	if config.EnableGovernance {
+		governance, err := newGovernanceHarness(config)
+		if err != nil {
+			_ = guardCLI.Close()
+			return nil, err
+		}
+		guardCLI.governance = governance
+	}
 	return guardCLI, nil
 }
 
@@ -150,10 +164,19 @@ func (g *GuardCLI) Evaluate(ctx context.Context, entry model.Entry, input operat
 }
 
 func (g *GuardCLI) Close() error {
-	if g == nil || g.mcpRuntime == nil {
+	if g == nil {
 		return nil
 	}
-	return g.mcpRuntime.Close()
+	var err error
+	if g.mcpRuntime != nil {
+		err = errors.Join(err, g.mcpRuntime.Close())
+		g.mcpRuntime = nil
+	}
+	if g.governance != nil {
+		err = errors.Join(err, g.governance.Close())
+		g.governance = nil
+	}
+	return err
 }
 
 func (g *GuardCLI) evaluateHook(ctx context.Context, entry model.Entry, input operations.GuardInput, startedAt time.Time) (Evaluation, error) {
@@ -266,6 +289,9 @@ func verifyHookDecision(client string, guardDecision model.Decision, raw []byte)
 	}
 	if output.HookSpecificOutput == nil {
 		return "", fmt.Errorf("%s Hook 输出缺少 hookSpecificOutput", client)
+	}
+	if strings.TrimSpace(output.HookSpecificOutput.HookEventName) != "PreToolUse" {
+		return "", fmt.Errorf("%s Hook 输出缺少 PreToolUse 事件", client)
 	}
 	actual := model.Decision(strings.ToLower(strings.TrimSpace(output.HookSpecificOutput.PermissionDecision)))
 	expected := guardDecision

@@ -39,6 +39,7 @@ type runDependencies struct {
 	currentPlatform         func() (model.Platform, error)
 	generateSyntheticSecret func() (string, error)
 	resolveExecutable       func(string) (string, error)
+	resolveRepositoryRoot   func(string) (string, error)
 	createSandbox           func(string, string) (*sandbox.Root, error)
 	newMockServer           func(mockserver.Options) (*mockserver.Server, error)
 	newDriver               func(driver.Config) (evalrunner.DecisionDriver, error)
@@ -61,6 +62,7 @@ func defaultRunDependencies() runDependencies {
 		currentPlatform:         evalrunner.CurrentPlatform,
 		generateSyntheticSecret: generateSyntheticSecret,
 		resolveExecutable:       resolveATGExecutable,
+		resolveRepositoryRoot:   resolveEvaluationRepositoryRoot,
 		createSandbox:           sandbox.Create,
 		newMockServer:           mockserver.New,
 		newDriver: func(config driver.Config) (evalrunner.DecisionDriver, error) {
@@ -163,7 +165,7 @@ func executeEvaluation(
 	if err != nil {
 		return document, redactor, false, err
 	}
-	redactor = newRunRedactor("", inputAbsolute, "", sandboxBaseAbsolute, "")
+	redactor = newRunRedactor("", inputAbsolute, "", sandboxBaseAbsolute, "", "")
 
 	cases, err := dependencies.loadCases(inputAbsolute)
 	if err != nil {
@@ -185,12 +187,23 @@ func executeEvaluation(
 		return document, redactor, false, fmt.Errorf("ATG 可执行文件不可用")
 	}
 	executable = filepath.Clean(executable)
+	repositoryRoot := ""
+	if casesContainEntry(cases, model.EntryGovernance) {
+		if dependencies.resolveRepositoryRoot == nil {
+			return document, redactor, false, fmt.Errorf("缺少 evaluation repository root 解析器")
+		}
+		repositoryRoot, err = dependencies.resolveRepositoryRoot(inputAbsolute)
+		if err != nil {
+			return document, redactor, false, err
+		}
+	}
 	redactor = newRunRedactor(
 		syntheticSecret,
 		inputAbsolute,
 		executable,
 		sandboxBaseAbsolute,
 		"",
+		repositoryRoot,
 	)
 
 	root, err := dependencies.createSandbox(sandboxBaseAbsolute, options.runID)
@@ -203,6 +216,7 @@ func executeEvaluation(
 		executable,
 		sandboxBaseAbsolute,
 		root.Path(),
+		repositoryRoot,
 	)
 
 	var server *mockserver.Server
@@ -232,13 +246,17 @@ func executeEvaluation(
 		return document, redactor, false, err
 	}
 	decisionDriver, err = dependencies.newDriver(driver.Config{
-		Executable:        executable,
-		Timeout:           options.guardTimeout,
-		Redactor:          redactor,
-		EnableMCP:         casesContainEntry(cases, model.EntryMCPInbound),
-		RuntimeRoot:       root,
-		MCPWorkspaceOrgID: "local-org",
-		MCPStartupTimeout: options.guardTimeout,
+		Executable:           executable,
+		Timeout:              options.guardTimeout,
+		Redactor:             redactor,
+		EnableMCP:            casesContainEntry(cases, model.EntryMCPInbound),
+		EnableGovernance:     casesContainEntry(cases, model.EntryGovernance),
+		RuntimeRoot:          root,
+		GovernanceMockServer: server,
+		SyntheticSecret:      syntheticSecret,
+		RepositoryRoot:       repositoryRoot,
+		MCPWorkspaceOrgID:    "local-org",
+		MCPStartupTimeout:    options.guardTimeout,
 	})
 	if err != nil {
 		return document, redactor, false, fmt.Errorf("创建 Guard CLI Driver 失败：%w", err)
@@ -294,14 +312,37 @@ func normalizeRunPath(raw, label string) (string, error) {
 	return filepath.Clean(absolute), nil
 }
 
+func resolveEvaluationRepositoryRoot(inputAbsolute string) (string, error) {
+	current := filepath.Dir(filepath.Clean(inputAbsolute))
+	for {
+		codexHook := filepath.Join(current, ".codex", "hooks", "agent-guard-pretool.py")
+		claudeHook := filepath.Join(current, ".claude", "hooks", "agent-guard-pretool.py")
+		if regularFile(codexHook) && regularFile(claudeHook) {
+			return current, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	return "", fmt.Errorf("无法从 evaluation input 定位产品 Hook repository root")
+}
+
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
 func newRunRedactor(
 	secret,
 	inputAbsolute,
 	executableAbsolute,
 	sandboxBaseAbsolute,
-	sandboxRootAbsolute string,
+	sandboxRootAbsolute,
+	repositoryRootAbsolute string,
 ) *redact.Redactor {
-	paths := make([]redact.PathReplacement, 0, 4)
+	paths := make([]redact.PathReplacement, 0, 5)
 	if inputAbsolute != "" {
 		paths = append(paths, redact.PathReplacement{
 			Path:        inputAbsolute,
@@ -324,6 +365,12 @@ func newRunRedactor(
 		paths = append(paths, redact.PathReplacement{
 			Path:        sandboxRootAbsolute,
 			Replacement: "<sandbox>",
+		})
+	}
+	if repositoryRootAbsolute != "" {
+		paths = append(paths, redact.PathReplacement{
+			Path:        repositoryRootAbsolute,
+			Replacement: "<repository>",
 		})
 	}
 	secrets := []string{}

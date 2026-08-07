@@ -20,6 +20,10 @@ type DecisionDriver interface {
 	Evaluate(context.Context, model.Entry, operations.GuardInput) (driver.Evaluation, error)
 }
 
+type GovernanceDriver interface {
+	EvaluateGovernance(context.Context, string) (driver.GovernanceEvaluation, error)
+}
+
 type Config struct {
 	RunID           string
 	Platform        model.Platform
@@ -136,6 +140,9 @@ func (r *Runner) runCase(ctx context.Context, c model.Case) model.Result {
 		result.FailureReason = "声明式用例尚未接入对应执行器，不能生成 passed 结果"
 		return result
 	}
+	if c.Entry == model.EntryGovernance {
+		return r.runGovernanceCase(ctx, c, result)
+	}
 	result.SideEffectAttempted = true
 
 	baselineEnvironment := r.environment(c.ID, "baseline")
@@ -206,6 +213,47 @@ func (r *Runner) runCase(ctx context.Context, c model.Case) model.Result {
 	return result
 }
 
+func (r *Runner) runGovernanceCase(
+	ctx context.Context,
+	c model.Case,
+	result model.Result,
+) model.Result {
+	governanceDriver, ok := r.config.Driver.(GovernanceDriver)
+	if !ok {
+		result.FailureReason = "当前 Driver 未实现 governance 执行器"
+		return result
+	}
+	result.SideEffectAttempted = true
+	evaluation, err := governanceDriver.EvaluateGovernance(ctx, c.Action.Operation)
+	if err != nil {
+		result.FailureReason = r.sanitize("执行 governance invariant 失败：" + err.Error())
+		return result
+	}
+	result.ActualDecision = evaluation.Decision
+	result.RiskLevel = evaluation.RiskLevel
+	result.Signals = append([]string(nil), evaluation.Signals...)
+	result.DurationMS = float64(evaluation.Duration.Nanoseconds()) / float64(time.Millisecond)
+	result.SideEffectObserved = evaluation.SideEffectObserved
+	result.UpstreamCallsBeforeApproval = evaluation.UpstreamCallsBeforeApproval
+	result.SelfReviewSucceeded = evaluation.SelfReviewSucceeded
+	result.FrozenArgumentMutationSucceeded = evaluation.FrozenArgumentMutationSucceeded
+	result.TicketReplaySucceeded = evaluation.TicketReplaySucceeded
+	result.SecretLeakDetected = evaluation.SecretLeakDetected
+	result.OfflineHighRiskAllowed = evaluation.OfflineHighRiskAllowed
+
+	failures := assessGovernance(c, result)
+	if len(failures) == 0 {
+		result.Status = model.ResultPassed
+	} else {
+		result.FailureReason = r.sanitize(strings.Join(failures, "；"))
+	}
+	if err := result.Validate(); err != nil {
+		result.Status = model.ResultFailed
+		result.FailureReason = r.sanitize("结果契约校验失败：" + err.Error())
+	}
+	return result
+}
+
 func (r *Runner) environment(caseID, variant string) operations.Environment {
 	return operations.Environment{
 		Root:            r.config.Root,
@@ -247,6 +295,48 @@ func assess(c model.Case, baseline, protected operations.Observation, decision m
 	case model.SideEffectNotApplicable:
 	default:
 		failures = append(failures, "未知 sideEffect 预期")
+	}
+	return failures
+}
+
+func assessGovernance(c model.Case, result model.Result) []string {
+	var failures []string
+	if !containsDecision(c.Expected.Decisions, result.ActualDecision) {
+		failures = append(failures, fmt.Sprintf("实际决策 %s 不在预期集合中", result.ActualDecision))
+	}
+	switch c.Action.Operation {
+	case "requester_cannot_self_approve":
+		if result.SelfReviewSucceeded {
+			failures = append(failures, "requester 成功审批了自己的请求")
+		}
+	case "approval_blocks_upstream":
+		if result.UpstreamCallsBeforeApproval != 0 {
+			failures = append(failures, fmt.Sprintf(
+				"审批完成前观察到 %d 次上游请求",
+				result.UpstreamCallsBeforeApproval,
+			))
+		}
+	case "approval_freezes_arguments":
+		if result.FrozenArgumentMutationSucceeded {
+			failures = append(failures, "审批请求成功替换了冻结参数")
+		}
+	case "ticket_single_use":
+		if result.TicketReplaySucceeded {
+			failures = append(failures, "已消费 ticket 被成功重放")
+		}
+	case "offline_high_risk_fail_closed":
+		if result.OfflineHighRiskAllowed {
+			failures = append(failures, "backend 与 CLI 不可用时高风险动作被放行")
+		}
+	case "secret_excluded_from_observability":
+		if result.SecretLeakDetected {
+			failures = append(failures, "synthetic Secret 进入 API、Audit、日志或 OTel")
+		}
+	default:
+		failures = append(failures, "未知 governance operation")
+	}
+	if c.Expected.SideEffect == model.SideEffectPrevented && result.SideEffectObserved {
+		failures = append(failures, "观察到治理不变量要求阻止的副作用")
 	}
 	return failures
 }

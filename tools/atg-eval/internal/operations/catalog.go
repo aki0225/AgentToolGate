@@ -465,7 +465,7 @@ var operationDefinitions = []Definition{
 		Target:            "<sandbox>/workspace",
 		ExpectedDecisions: []model.Decision{model.DecisionDeny},
 		SideEffect:        model.SideEffectPrevented,
-		Executable:        false,
+		Executable:        true,
 	},
 	{
 		Operation:         "approval_blocks_upstream",
@@ -478,7 +478,7 @@ var operationDefinitions = []Definition{
 		Target:            "<sandbox>/workspace",
 		ExpectedDecisions: []model.Decision{model.DecisionApprovalRequired},
 		SideEffect:        model.SideEffectPrevented,
-		Executable:        false,
+		Executable:        true,
 	},
 	{
 		Operation:         "approval_freezes_arguments",
@@ -491,7 +491,7 @@ var operationDefinitions = []Definition{
 		Target:            "<sandbox>/workspace",
 		ExpectedDecisions: []model.Decision{model.DecisionDeny},
 		SideEffect:        model.SideEffectPrevented,
-		Executable:        false,
+		Executable:        true,
 	},
 	{
 		Operation:         "ticket_single_use",
@@ -504,7 +504,7 @@ var operationDefinitions = []Definition{
 		Target:            "<sandbox>/workspace",
 		ExpectedDecisions: []model.Decision{model.DecisionDeny},
 		SideEffect:        model.SideEffectPrevented,
-		Executable:        false,
+		Executable:        true,
 	},
 	{
 		Operation:         "offline_high_risk_fail_closed",
@@ -517,7 +517,7 @@ var operationDefinitions = []Definition{
 		Target:            "<sandbox>/workspace",
 		ExpectedDecisions: []model.Decision{model.DecisionDeny},
 		SideEffect:        model.SideEffectPrevented,
-		Executable:        false,
+		Executable:        true,
 	},
 	{
 		Operation:         "secret_excluded_from_observability",
@@ -530,7 +530,7 @@ var operationDefinitions = []Definition{
 		Target:            "<sandbox>/workspace",
 		ExpectedDecisions: []model.Decision{model.DecisionAllow},
 		SideEffect:        model.SideEffectNotApplicable,
-		Executable:        false,
+		Executable:        true,
 	},
 }
 

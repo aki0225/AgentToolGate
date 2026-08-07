@@ -156,7 +156,7 @@ func TestDownloadAndExecuteBuildsSpecificGuardInput(t *testing.T) {
 	}
 }
 
-func TestDefinitionsAreUniqueAndGovernanceIsDeclarative(t *testing.T) {
+func TestDefinitionsAreUniqueAndGovernanceUsesDedicatedExecutor(t *testing.T) {
 	definitions := Definitions()
 	if len(definitions) != 30 {
 		t.Fatalf("definition 数量=%d，want=30", len(definitions))
@@ -176,8 +176,10 @@ func TestDefinitionsAreUniqueAndGovernanceIsDeclarative(t *testing.T) {
 		t.Fatalf("governance operation 数量=%d，want=6", len(governance))
 	}
 	for _, definition := range governance {
-		if definition.Executable || IsActionOperation(definition.Operation) {
-			t.Fatalf("governance operation 必须保持声明式：%+v", definition)
+		if !definition.Executable ||
+			IsActionOperation(definition.Operation) ||
+			IsExecutableActionOperation(definition.Operation) {
+			t.Fatalf("governance operation 必须只由专用执行器处理：%+v", definition)
 		}
 	}
 }
