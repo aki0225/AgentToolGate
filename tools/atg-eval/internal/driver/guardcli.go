@@ -12,27 +12,35 @@ import (
 	"strings"
 	"time"
 
+	"agenttoolgate/evaluation/internal/backendruntime"
 	"agenttoolgate/evaluation/internal/model"
 	"agenttoolgate/evaluation/internal/operations"
 	"agenttoolgate/evaluation/internal/redact"
+	"agenttoolgate/evaluation/internal/sandbox"
 )
 
 const defaultCommandOutputLimit = 1 << 20
 
 type Config struct {
-	Executable  string
-	PrefixArgs  []string
-	Environment []string
-	Timeout     time.Duration
-	Redactor    *redact.Redactor
+	Executable        string
+	PrefixArgs        []string
+	Environment       []string
+	Timeout           time.Duration
+	Redactor          *redact.Redactor
+	EnableMCP         bool
+	RuntimeRoot       *sandbox.Root
+	MCPWorkspaceOrgID string
+	MCPStartupTimeout time.Duration
 }
 
 type GuardCLI struct {
-	executable  string
-	prefixArgs  []string
-	environment []string
-	timeout     time.Duration
-	redactor    *redact.Redactor
+	executable        string
+	prefixArgs        []string
+	environment       []string
+	timeout           time.Duration
+	redactor          *redact.Redactor
+	mcpRuntime        *backendruntime.Server
+	mcpWorkspaceOrgID string
 }
 
 type Evaluation struct {
@@ -83,13 +91,34 @@ func New(config Config) (*GuardCLI, error) {
 	if redactor == nil {
 		redactor = redact.New(redact.Options{})
 	}
-	return &GuardCLI{
-		executable:  strings.TrimSpace(config.Executable),
-		prefixArgs:  append([]string(nil), config.PrefixArgs...),
-		environment: append([]string(nil), config.Environment...),
-		timeout:     timeout,
-		redactor:    redactor,
-	}, nil
+	guardCLI := &GuardCLI{
+		executable:        strings.TrimSpace(config.Executable),
+		prefixArgs:        append([]string(nil), config.PrefixArgs...),
+		environment:       append([]string(nil), config.Environment...),
+		timeout:           timeout,
+		redactor:          redactor,
+		mcpWorkspaceOrgID: strings.TrimSpace(config.MCPWorkspaceOrgID),
+	}
+	if config.EnableMCP {
+		if config.RuntimeRoot == nil {
+			return nil, fmt.Errorf("MCP Inbound runtime 缺少 sandbox root")
+		}
+		runtimeServer, err := backendruntime.Start(context.Background(), backendruntime.Config{
+			Executable:     guardCLI.executable,
+			Root:           config.RuntimeRoot,
+			Name:           "mcp-inbound",
+			WorkspaceOrgID: guardCLI.mcpWorkspaceOrgID,
+			Subject:        "evaluation-mcp-viewer",
+			Role:           "viewer",
+			StartupTimeout: config.MCPStartupTimeout,
+			Redactor:       redactor,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("启动 MCP Inbound runtime 失败：%w", err)
+		}
+		guardCLI.mcpRuntime = runtimeServer
+	}
+	return guardCLI, nil
 }
 
 func (g *GuardCLI) Evaluate(ctx context.Context, entry model.Entry, input operations.GuardInput) (Evaluation, error) {
@@ -113,9 +142,18 @@ func (g *GuardCLI) Evaluate(ctx context.Context, entry model.Entry, input operat
 		return result, err
 	case model.EntryClaudeHook, model.EntryCodexHook:
 		return g.evaluateHook(ctx, entry, input, startedAt)
+	case model.EntryMCPInbound:
+		return g.evaluateMCPInbound(ctx, input, startedAt)
 	default:
 		return Evaluation{}, fmt.Errorf("动作 Runner 不支持 entry：%s", entry)
 	}
+}
+
+func (g *GuardCLI) Close() error {
+	if g == nil || g.mcpRuntime == nil {
+		return nil
+	}
+	return g.mcpRuntime.Close()
 }
 
 func (g *GuardCLI) evaluateHook(ctx context.Context, entry model.Entry, input operations.GuardInput, startedAt time.Time) (Evaluation, error) {

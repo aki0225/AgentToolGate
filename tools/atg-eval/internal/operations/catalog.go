@@ -451,7 +451,8 @@ var operationDefinitions = []Definition{
 		Tool:              "mcp.tools/list",
 		ExpectedDecisions: []model.Decision{model.DecisionAllow},
 		SideEffect:        model.SideEffectNotApplicable,
-		Executable:        false,
+		Executable:        true,
+		effect:            effectNone,
 	},
 	{
 		Operation:         "requester_cannot_self_approve",

@@ -89,7 +89,9 @@ func printUsage(writer io.Writer) {
   atg-eval validate --input <cases.jsonl>
   atg-eval run --input <cases.jsonl> --atg <agenttoolgate> --run-id <id> [--sandbox-base <directory>] [--guard-timeout <duration>]
 
-run 当前只真实执行已接入受限执行器的 Guard Core operation；治理不变量与
-MCP Inbound 仍保持声明式失败，不会伪装为 passed。stdout 仅输出脱敏后的原始
-runner.Document JSON，正式 Proof Pack 报告将在后续阶段加入。`)
+run 当前真实执行危险与良性 suite 中已接入的 Guard Core、Hook 和 MCP Inbound
+受限操作。包含 MCP Inbound 用例时会在随机 loopback 端口启动隔离 ATG runtime，
+结束后受控清理。6 个治理不变量仍保持声明式失败，不会伪装为 passed。
+stdout 仅输出脱敏后的原始 runner.Document JSON，正式 Proof Pack 报告将在后续
+阶段加入。`)
 }

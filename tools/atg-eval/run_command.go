@@ -206,8 +206,14 @@ func executeEvaluation(
 	)
 
 	var server *mockserver.Server
+	var decisionDriver evalrunner.DecisionDriver
 	defer func() {
 		var resourceErr error
+		if closer, ok := decisionDriver.(interface{ Close() error }); ok {
+			if closeErr := closer.Close(); closeErr != nil {
+				resourceErr = errors.Join(resourceErr, fmt.Errorf("停止 ATG runtime 失败：%w", closeErr))
+			}
+		}
 		if server != nil {
 			if closeErr := dependencies.closeMockServer(server); closeErr != nil {
 				resourceErr = errors.Join(resourceErr, fmt.Errorf("关闭 mock server 失败：%w", closeErr))
@@ -225,10 +231,14 @@ func executeEvaluation(
 	if err != nil {
 		return document, redactor, false, err
 	}
-	decisionDriver, err := dependencies.newDriver(driver.Config{
-		Executable: executable,
-		Timeout:    options.guardTimeout,
-		Redactor:   redactor,
+	decisionDriver, err = dependencies.newDriver(driver.Config{
+		Executable:        executable,
+		Timeout:           options.guardTimeout,
+		Redactor:          redactor,
+		EnableMCP:         casesContainEntry(cases, model.EntryMCPInbound),
+		RuntimeRoot:       root,
+		MCPWorkspaceOrgID: "local-org",
+		MCPStartupTimeout: options.guardTimeout,
 	})
 	if err != nil {
 		return document, redactor, false, fmt.Errorf("创建 Guard CLI Driver 失败：%w", err)
@@ -381,6 +391,15 @@ func writeRunError(writer io.Writer, redactor *redact.Redactor, err error) {
 func documentHasFailedResult(document evalrunner.Document) bool {
 	for _, result := range document.Results {
 		if result.Status == model.ResultFailed {
+			return true
+		}
+	}
+	return false
+}
+
+func casesContainEntry(cases []model.Case, entry model.Entry) bool {
+	for _, one := range cases {
+		if one.Entry == entry {
 			return true
 		}
 	}

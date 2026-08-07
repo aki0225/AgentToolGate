@@ -84,7 +84,7 @@ func TestPublishedSuitesAreCompleteAndUnique(t *testing.T) {
 	}
 }
 
-func TestMCPInboundCaseRemainsDeclarative(t *testing.T) {
+func TestMCPInboundCaseUsesDedicatedExecutableEntry(t *testing.T) {
 	path := filepath.Join(repositoryRoot(t), "evaluation", "suites", "benign-development-v1.jsonl")
 	cases, err := loader.LoadFile(path)
 	if err != nil {
@@ -98,8 +98,11 @@ func TestMCPInboundCaseRemainsDeclarative(t *testing.T) {
 		if !ok {
 			t.Fatal("mcp_readonly_call 未登记")
 		}
-		if c.Entry != model.EntryMCPInbound || definition.Executable {
-			t.Fatalf("MCP inbound 用例不得伪装为 Guard Core 已执行：case=%+v definition=%+v", c, definition)
+		if c.Entry != model.EntryMCPInbound ||
+			!definition.Executable ||
+			len(definition.Entries) != 1 ||
+			definition.Entries[0] != model.EntryMCPInbound {
+			t.Fatalf("MCP inbound 用例必须由专用执行入口处理：case=%+v definition=%+v", c, definition)
 		}
 		return
 	}

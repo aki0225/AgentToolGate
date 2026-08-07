@@ -98,9 +98,30 @@ func TestGuardCLIRejectsUnsupportedEntryAndInvalidExecutable(t *testing.T) {
 	if _, err := New(Config{}); err == nil {
 		t.Fatal("空可执行文件必须被拒绝")
 	}
+	if _, err := New(Config{Executable: os.Args[0], EnableMCP: true}); err == nil {
+		t.Fatal("启用 MCP Inbound 时必须提供 sandbox root")
+	}
 	driver := newHelperDriver(t)
 	if _, err := driver.Evaluate(context.Background(), model.EntryGovernance, operations.GuardInput{}); err == nil {
 		t.Fatal("动作 Driver 不应接受 governance entry")
+	}
+}
+
+func TestGuardCLIMCPFailsClosedWithoutRuntimeAndCloseIsSafe(t *testing.T) {
+	driver := &GuardCLI{timeout: time.Second}
+	if _, err := driver.Evaluate(
+		context.Background(),
+		model.EntryMCPInbound,
+		operations.GuardInput{ToolName: "mcp.tools/list"},
+	); err == nil || !strings.Contains(err.Error(), "runtime 未启用") {
+		t.Fatalf("未启用 MCP runtime 时必须 fail closed，error=%v", err)
+	}
+	if err := driver.Close(); err != nil {
+		t.Fatalf("未启用 runtime 时 Close() 必须安全，error=%v", err)
+	}
+	var nilDriver *GuardCLI
+	if err := nilDriver.Close(); err != nil {
+		t.Fatalf("nil Driver 的 Close() 必须安全，error=%v", err)
 	}
 }
 

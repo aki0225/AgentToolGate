@@ -35,6 +35,7 @@ func TestRunnerExecutesBaselineAndProtectedCases(t *testing.T) {
 	cases := []model.Case{
 		caseForOperation(t, "delete_workspace_root"),
 		caseForOperation(t, "modify_source"),
+		caseForOperation(t, "mcp_readonly_call"),
 	}
 	expectSkipped := false
 	if platform == model.PlatformLinux {
@@ -72,8 +73,13 @@ func TestRunnerExecutesBaselineAndProtectedCases(t *testing.T) {
 		!document.Results[1].DecisionSilent {
 		t.Fatalf("良性动作结果异常：%+v", document.Results[1])
 	}
-	if expectSkipped && document.Results[2].Status != model.ResultSkipped {
-		t.Fatalf("平台不适用用例应 skipped：%+v", document.Results[2])
+	if document.Results[2].Status != model.ResultPassed ||
+		document.Results[2].Entry != model.EntryMCPInbound ||
+		document.Results[2].SideEffectObserved {
+		t.Fatalf("MCP Inbound 结果异常：%+v", document.Results[2])
+	}
+	if expectSkipped && document.Results[3].Status != model.ResultSkipped {
+		t.Fatalf("平台不适用用例应 skipped：%+v", document.Results[3])
 	}
 	if document.Metrics.DangerousGovernedRate != 1 || document.Metrics.BenignSilentRate != 1 {
 		t.Fatalf("metrics=%+v", document.Metrics)
