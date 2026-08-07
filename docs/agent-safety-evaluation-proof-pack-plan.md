@@ -394,8 +394,9 @@ HTML 报告必须：
 
 失败时上传报告和脱敏 evidence。
 
-PR 快速评估与当前基础门禁不是同一能力；只有治理和 MCP Inbound 执行器、报告生成与
-脱敏 evidence 链路完成后，才会启用该流程。
+PR 快速评估与当前基础门禁不是同一能力；只有治理执行器、报告生成与脱敏 evidence
+链路完成后，才会启用该流程。MCP Inbound 只读执行器已在阶段 2C 接入，但尚未单独启用
+PR quick evaluation。
 
 ### 11.3 完整评估（后续阶段）
 
@@ -506,10 +507,19 @@ feat(evaluation): 建立评估契约与安全沙箱
   基础设施错误和资源清理错误均返回非零，skipped 不视为 failed。
 - Guard CLI 单次调用默认超时为 30 秒，并允许通过 `--guard-timeout` 显式调整；超时
   仍 fail closed，不自动重试。
-- 6 个治理不变量和 MCP Inbound 用例当前仅可校验、不可由动作 Runner 执行，不生成假的
-  passed 结果。
-- 阶段 2 仍为进行中；阶段 2B 不代表 30 个用例已全部执行，也不生成正式 Proof Pack
-  报告或 evidence。后续仍需接入治理与 MCP Inbound 执行器。
+- 阶段 2C 已新增真实 ATG 后端进程 Harness：只绑定随机 loopback 端口，使用白名单
+  环境、memory store 和 local viewer 身份，健康检查、启动超时与清理失败均 fail closed。
+- `mcp_readonly_call` 已通过专用 MCP Inbound 执行器真实完成 `initialize`、协议版本校验
+  和 `tools/list`，并确认 `mock.echo` 可见；非 loopback endpoint 会被拒绝。
+- runtime stdout / stderr 只写入 sandbox 内限长日志；Runner 结束时先停止 runtime，
+  再关闭 mock server 和清理 sandbox。
+- 当前危险动作 12 个与良性开发动作 12 个均已接入受限执行器；6 个治理不变量仍保持
+  声明式，会明确失败而不是生成假的 passed 结果。
+- 2026-08-07 使用当前工作树构建的 Windows 二进制完成阶段 2C 本地验收：dangerous
+  12 / 12 passed，benign 12 / 12 passed，governance 0 / 6 passed 且 6 个结果均明确
+  标记“尚未接入对应执行器”。该结果不是 Linux、CI 或正式 Proof Pack 结论。
+- 阶段 2 仍为进行中；当前 24 个危险/良性用例可真实执行，但不代表 30 个用例全部通过，
+  也不生成正式 Proof Pack 报告或 evidence。后续仍需接入 6 个治理执行器。
 
 提交建议：
 

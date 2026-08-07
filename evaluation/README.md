@@ -30,14 +30,34 @@
 - stdout 只输出一个经过全局脱敏的 `runner.Document` JSON；日志和错误写入 stderr。
 - Runner 完成后存在 failed result、基础设施失败或资源清理失败时返回非零。
 
-6 个治理不变量当前是可校验但不可执行的声明式用例。`mcp_readonly_call` 也只声明
-MCP Inbound 的后续评估契约，当前动作 Runner 不会把它伪装成已经执行成功。治理不变量
-和真实 MCP Inbound 执行器将在后续阶段接入。
+阶段 2C 已接入真实 ATG 后端进程 Harness 与 MCP Inbound 执行器：
 
-阶段 2、Proof Pack 和正式 evidence 仍未完成。阶段 2B 只真实执行 `Executable=true`
-的 Guard Core operation，不代表 30 个用例已经全部得到真实结果，也不代表 PR quick
-evaluation 已经启用。用例发现生产缺陷时必须先单独修复并保留回归测试，不能通过放宽
-expected decision 隐藏问题。
+- 只有 suite 包含 `mcp_inbound` 用例时，才会在 sandbox 内启动真实 ATG 后端进程。
+- 后端只绑定随机 `127.0.0.1` 端口，使用 `memory` store、local viewer 身份和白名单
+  环境变量，不继承调用进程中的 token、DSN 或云凭据。
+- stdout / stderr 写入 sandbox 内的限长日志；健康检查失败、启动超时和清理失败均
+  fail closed。
+- `mcp_readonly_call` 真实执行 `initialize` 与 `tools/list`，校验 MCP 协议版本
+  `2024-11-05`，并确认受控工具 `mock.echo` 可见。
+- Runner 结束时先停止 ATG runtime，再关闭 loopback mock server，最后清理 sandbox。
+
+危险动作 12 个和良性开发动作 12 个当前均已接入受限执行器。6 个治理不变量仍是
+可校验但不可执行的声明式用例，会稳定生成 failed 结果和“尚未接入执行器”原因，不会
+伪装为 passed。
+
+阶段 2、Proof Pack 和正式 evidence 仍未完成。当前实现不代表 30 个用例已经全部通过，
+也不代表 PR quick evaluation 已经启用。用例发现生产缺陷时必须先单独修复并保留回归
+测试，不能通过放宽 expected decision 隐藏问题。
+
+阶段 2C 在 2026-08-07 的 Windows 本地真实进程验收结果：
+
+- dangerous suite：12 / 12 passed，`dangerous_governed_rate = 1`。
+- benign suite：12 / 12 passed，`benign_silent_rate = 1`，
+  `benign_interruption_rate = 0`。
+- governance suite：0 / 6 passed、6 / 6 failed，失败原因均明确为尚未接入对应执行器。
+
+这组数字来自当前工作树构建的真实 ATG 后端与评估工具，不是手工填写；它只作为阶段
+2C 的 Windows 本地恢复基线，不替代 Linux、CI、正式报告或可发布 Proof Pack。
 
 指标中的 sample count 统计非 skipped 用例，decision sample count 只统计获得有效
 `actualDecision` 的用例。Driver 不可用等基础设施失败保留在 `failed_count`，但不会计入
@@ -70,6 +90,10 @@ go -C tools/atg-eval build -buildvcs=false `
   > .\.tmp\evaluation-dangerous-result.json
 ```
 
+将 `--input` 和 `--run-id` 分别替换为 benign 或 governance suite 即可执行另外两组
+用例。governance suite 在 6 个执行器接入前预期返回 1，并输出 6 个带明确失败原因的
+结果；这不是基础设施启动失败。
+
 `--input`、`--atg` 和 `--run-id` 必填；`--sandbox-base` 默认是 `.tmp/evaluation`。
 `--guard-timeout` 使用 Go duration 格式，默认是 `30s`，可在较慢的 Windows 或 CI
 环境显式调大。超时仍按基础设施失败处理，不会自动重试或把失败改写为通过。
@@ -95,6 +119,8 @@ go -C tools/atg-eval run . validate `
 - 用例 target 使用 `<sandbox>` 占位符，不接受真实绝对路径。
 - Runner 可执行的网络动作只允许显式 loopback IP 和端口；`safe_http_get` 的 Guard 输入
   保留公开 GET 语义，受限执行只访问 loopback `/status`，不会访问声明中的公网 URL。
+- MCP Inbound Harness 只允许 loopback endpoint，使用隔离子进程环境；协议、响应大小、
+  JSON-RPC 错误或后端可用性证据不足时均 fail closed。
 - sandbox 清理必须同时通过路径 containment、随机 nonce 标记和根目录复核。
 - 脱敏失败时返回错误，不把原始 JSON 作为降级结果。
 - 评估不是 OS sandbox、EDR、DLP 或完整红队平台。
