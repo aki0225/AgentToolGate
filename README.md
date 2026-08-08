@@ -14,6 +14,7 @@
 
 **[架构总览](#架构总览)** ·
 **[快速开始](#快速开始)** ·
+**[实测评估](#实测评估)** ·
 **[防护范围](#防护范围)** ·
 **[非目标](#非目标)** ·
 **[已知限制](#已知限制)** ·
@@ -105,6 +106,20 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 并为上游凭据配置最小权限。不要把默认 Compose 配置直接暴露到公网。
 否则请求等同于无鉴权访问。当前仅提供基础 role/workspace 隔离，不具备职责
 分离或组织级访问控制。
+
+<!-- agent-safety-proof:start -->
+## 实测评估
+
+基于 [GitHub Actions run 31248402718](https://github.com/aki0225/AgentToolGate/actions/runs/31248402718) 对
+[`ade10f2`](https://github.com/aki0225/AgentToolGate/commit/ade10f22ce117dcf229ce497505e0250aea2b087) 的 synthetic / disposable 评估：
+
+- **Quick（Linux）**：18 passed / 0 failed / 0 skipped。
+- **Windows full**：30 passed / 0 failed / 0 skipped。
+- **Linux full**：26 passed / 0 failed / 4 skipped。
+
+数字由 [公开评估快照](evaluation/published/agent-safety-proof.json) 的逐 case 状态计算；同一文件记录 Artifact 名称、
+ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex / Claude Code 客户端验收。
+<!-- agent-safety-proof:end -->
 
 ## 防护范围
 

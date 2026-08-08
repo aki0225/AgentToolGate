@@ -639,6 +639,175 @@ pre {
   width: 15px;
 }
 
+.evaluation-proof {
+  padding-block: 76px;
+}
+
+.evaluation-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 32px;
+}
+
+.evaluation-heading h2 {
+  margin: 8px 0 0;
+  font-size: var(--text-section);
+  letter-spacing: 0;
+  line-height: 1.08;
+}
+
+.evaluation-heading > div > p:last-child {
+  margin: 14px 0 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.evaluation-kicker {
+  margin: 0;
+  color: var(--primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+}
+
+.evaluation-heading > a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.evaluation-heading > a:hover,
+.evaluation-meta a:hover {
+  color: var(--primary);
+}
+
+.evaluation-heading > a svg {
+  width: 16px;
+}
+
+.evaluation-ledger {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 40px;
+  border-block: 1px solid var(--border-strong);
+}
+
+.evaluation-measure {
+  min-width: 0;
+  padding: 28px 30px;
+  border-right: 1px solid var(--border);
+}
+
+.evaluation-measure:first-child {
+  padding-left: 0;
+}
+
+.evaluation-measure:last-child {
+  padding-right: 0;
+  border-right: 0;
+}
+
+.evaluation-measure > span {
+  color: var(--muted-strong);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.evaluation-measure strong {
+  display: block;
+  margin-top: 12px;
+  color: var(--foreground);
+  font-size: 3rem;
+  font-weight: 720;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.evaluation-measure p,
+.evaluation-measure small {
+  display: block;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.evaluation-measure small {
+  margin-top: 4px;
+  color: var(--muted-strong);
+}
+
+.evaluation-invariants {
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.evaluation-invariants > div {
+  display: grid;
+  grid-template-columns: 215px minmax(0, 1fr);
+  gap: 20px;
+  padding: 13px 0;
+  border-top: 1px solid var(--border);
+  font-size: var(--text-xs);
+  line-height: 1.65;
+}
+
+.evaluation-invariants > div:first-child {
+  border-top: 0;
+}
+
+.evaluation-invariants span {
+  color: var(--muted);
+  font-family: var(--font-mono);
+}
+
+.evaluation-invariants p {
+  margin: 0;
+  color: var(--muted-strong);
+}
+
+.evaluation-invariants strong {
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
+.evaluation-invariants i {
+  margin-inline: 9px;
+  color: #60758e;
+  font-style: normal;
+}
+
+.evaluation-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px 32px;
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.evaluation-meta > span {
+  font-family: var(--font-mono);
+}
+
+.evaluation-meta > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px 22px;
+}
+
+.evaluation-meta a {
+  color: var(--accent);
+  font-weight: 700;
+}
+
 .scenario-shell {
   min-width: 0;
 }
@@ -1572,6 +1741,79 @@ pre {
   .proof-links {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .evaluation-heading {
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 20px;
+  }
+
+  .evaluation-proof {
+    padding-block: 56px;
+  }
+
+  .evaluation-ledger {
+    grid-template-columns: 1fr;
+    margin-top: 30px;
+  }
+
+  .evaluation-measure,
+  .evaluation-measure:first-child,
+  .evaluation-measure:last-child {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 5px 14px;
+    padding: 17px 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .evaluation-measure:last-child {
+    border-bottom: 0;
+  }
+
+  .evaluation-measure strong {
+    grid-column: 2;
+    grid-row: 1;
+    margin: 0;
+    font-size: 2rem;
+  }
+
+  .evaluation-measure p,
+  .evaluation-measure small {
+    margin: 0;
+  }
+
+  .evaluation-measure p {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .evaluation-measure small {
+    grid-column: 2;
+    grid-row: 2;
+    text-align: right;
+  }
+
+  .evaluation-meta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .evaluation-meta > div {
+    justify-content: flex-start;
+  }
+
+  .evaluation-invariants > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+    padding-block: 12px;
+  }
+
+  .evaluation-invariants i {
+    margin-inline: 5px;
   }
 
   .scenario-tabs {

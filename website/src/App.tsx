@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { ArchitectureFlow } from "./components/ArchitectureFlow";
+import { EvaluationProof } from "./components/EvaluationProof";
 import { HeroPipeline } from "./components/HeroPipeline";
 import { Icon, type IconName } from "./components/Icon";
 import { ScenarioTabs } from "./components/ScenarioTabs";
@@ -12,6 +13,7 @@ const latestDownloadRoot = `${githubRoot}/releases/latest/download`;
 
 const navItems = [
   { label: "工作方式", href: "#workflow" },
+  { label: "实测", href: "#evaluation" },
   { label: "交互演示", href: "#demo" },
   { label: "安全边界", href: "#boundaries" },
   { label: "下载", href: "#download" }
@@ -210,6 +212,8 @@ export function App() {
             ))}
           </div>
         </section>
+
+        <EvaluationProof />
 
         <section className="section section-shell section-demo" id="demo">
           <SectionHeading

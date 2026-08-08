@@ -8,9 +8,12 @@
   },
   "scripts": {
     "dev": "vite",
-    "check": "tsc --noEmit --pretty false",
-    "test": "vitest run --coverage",
-    "build": "tsc --noEmit --pretty false && vite build",
+    "proof:check": "node scripts/evaluation-proof.mjs check",
+    "proof:import": "node scripts/evaluation-proof.mjs import",
+    "proof:sync": "node scripts/evaluation-proof.mjs sync",
+    "check": "npm run proof:check && tsc --noEmit --pretty false",
+    "test": "npm run proof:check && vitest run --coverage",
+    "build": "npm run proof:check && tsc --noEmit --pretty false && vite build",
     "preview": "vite preview"
   },
   "dependencies": {

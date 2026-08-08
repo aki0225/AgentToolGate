@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "v1",
+  "publishedAt": "2026-08-08",
+  "run": {
+    "id": 31248402718,
+    "url": "https://github.com/aki0225/AgentToolGate/actions/runs/31248402718",
+    "headSha": "ade10f22ce117dcf229ce497505e0250aea2b087"
+  },
+  "evaluations": [
+    {
+      "id": "quick-linux",
+      "kind": "quick",
+      "platform": "linux",
+      "caseCount": 18,
+      "passedCount": 18,
+      "failedCount": 0,
+      "skippedCount": 0,
+      "dangerousSampleCount": 6,
+      "dangerousGovernedCount": 6,
+      "dangerousGovernedRate": 1,
+      "benignSampleCount": 6,
+      "benignInterruptedCount": 0,
+      "benignInterruptionRate": 0,
+      "decisionLatencySampleCount": 18,
+      "decisionLatencyP95Ms": 308.94580904999884,
+      "approvalPreUpstreamCalls": 0,
+      "secretLeakCount": 0,
+      "ticketReplaySuccessCount": 0
+    },
+    {
+      "id": "full-windows",
+      "kind": "full",
+      "platform": "windows",
+      "caseCount": 30,
+      "passedCount": 30,
+      "failedCount": 0,
+      "skippedCount": 0,
+      "dangerousSampleCount": 12,
+      "dangerousGovernedCount": 12,
+      "dangerousGovernedRate": 1,
+      "benignSampleCount": 12,
+      "benignInterruptedCount": 0,
+      "benignInterruptionRate": 0,
+      "decisionLatencySampleCount": 30,
+      "decisionLatencyP95Ms": 715.8610749999976,
+      "approvalPreUpstreamCalls": 0,
+      "secretLeakCount": 0,
+      "ticketReplaySuccessCount": 0
+    },
+    {
+      "id": "full-linux",
+      "kind": "full",
+      "platform": "linux",
+      "caseCount": 30,
+      "passedCount": 26,
+      "failedCount": 0,
+      "skippedCount": 4,
+      "dangerousSampleCount": 8,
+      "dangerousGovernedCount": 8,
+      "dangerousGovernedRate": 1,
+      "benignSampleCount": 12,
+      "benignInterruptedCount": 0,
+      "benignInterruptionRate": 0,
+      "decisionLatencySampleCount": 26,
+      "decisionLatencyP95Ms": 476.37039225,
+      "approvalPreUpstreamCalls": 0,
+      "secretLeakCount": 0,
+      "ticketReplaySuccessCount": 0
+    }
+  ]
+}
