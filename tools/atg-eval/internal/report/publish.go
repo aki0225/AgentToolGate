@@ -49,10 +49,17 @@ type evidenceArtifact struct {
 	bytes    []byte
 }
 
+type fileArtifact struct {
+	path      string
+	mediaType string
+	bytes     []byte
+}
+
 type preparedReport struct {
 	document      evalrunner.Document
 	resultsBytes  []byte
 	evidence      []evidenceArtifact
+	reports       []fileArtifact
 	manifest      Manifest
 	manifestBytes []byte
 }
@@ -128,8 +135,17 @@ func prepareReport(options PublishOptions) (preparedReport, error) {
 	if err := validateEvidenceSet(validatedDocument, options.Cases, artifacts); err != nil {
 		return preparedReport{}, err
 	}
+	reports, err := renderReports(validatedDocument)
+	if err != nil {
+		return preparedReport{}, err
+	}
+	if err := validateReportArtifactSizes(reports); err != nil {
+		return preparedReport{}, err
+	}
 
 	manifest := buildManifest(validatedDocument, options.Cases, options.InputSHA256, resultsBytes, artifacts)
+	manifest.Files = append(manifest.Files, fileEntriesForReports(reports)...)
+	sort.Slice(manifest.Files, func(i, j int) bool { return manifest.Files[i].Path < manifest.Files[j].Path })
 	manifestBytes, err := encodeCanonical(manifest)
 	if err != nil {
 		return preparedReport{}, err
@@ -145,9 +161,24 @@ func prepareReport(options PublishOptions) (preparedReport, error) {
 		document:      validatedDocument,
 		resultsBytes:  resultsBytes,
 		evidence:      artifacts,
+		reports:       reports,
 		manifest:      decodedManifest,
 		manifestBytes: manifestBytes,
 	}, nil
+}
+
+func validateReportArtifactSizes(reports []fileArtifact) error {
+	var total int
+	for _, artifact := range reports {
+		if len(artifact.bytes) == 0 || len(artifact.bytes) > maxResultsBytes {
+			return fmt.Errorf("%s 报告大小不符合限制", artifact.path)
+		}
+		total += len(artifact.bytes)
+	}
+	if total > 3*maxResultsBytes {
+		return fmt.Errorf("人读报告总大小超过限制")
+	}
+	return nil
 }
 
 func evidenceFor(c model.Case, result model.Result, capturedAt string) Evidence {
@@ -221,14 +252,14 @@ func buildManifest(
 		Path:      ResultsFileName,
 		SizeBytes: int64(len(resultsBytes)),
 		SHA256:    hashBytes(resultsBytes),
-		MediaType: "application/json",
+		MediaType: mediaTypeJSON,
 	}}
 	for _, artifact := range artifacts {
 		files = append(files, FileEntry{
 			Path:      artifact.path,
 			SizeBytes: int64(len(artifact.bytes)),
 			SHA256:    hashBytes(artifact.bytes),
-			MediaType: "application/json",
+			MediaType: mediaTypeJSON,
 		})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
@@ -255,6 +286,19 @@ func buildManifest(
 		Suites: suites,
 		Files:  files,
 	}
+}
+
+func fileEntriesForReports(reports []fileArtifact) []FileEntry {
+	entries := make([]FileEntry, 0, len(reports))
+	for _, artifact := range reports {
+		entries = append(entries, FileEntry{
+			Path:      artifact.path,
+			SizeBytes: int64(len(artifact.bytes)),
+			SHA256:    hashBytes(artifact.bytes),
+			MediaType: artifact.mediaType,
+		})
+	}
+	return entries
 }
 
 func validateDocument(document evalrunner.Document, cases []model.Case, requireEvidence bool) error {
@@ -403,6 +447,11 @@ func publishPrepared(output string, prepared preparedReport) (err error) {
 			return err
 		}
 	}
+	for _, artifact := range prepared.reports {
+		if err := writeRootFile(root, filepath.Join(stagingName, artifact.path), artifact.bytes); err != nil {
+			return err
+		}
+	}
 	if err := writeRootFile(root, filepath.Join(stagingName, ResultsFileName), prepared.resultsBytes); err != nil {
 		return err
 	}
@@ -461,7 +510,12 @@ func verifyStaging(root *os.Root, stagingName string, prepared preparedReport) e
 	if err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(entries, []string{EvidenceDirName + "/", ResultsFileName, ManifestFileName}) {
+	wantTopLevel := []string{EvidenceDirName + "/", ResultsFileName, ManifestFileName}
+	for _, artifact := range prepared.reports {
+		wantTopLevel = append(wantTopLevel, artifact.path)
+	}
+	sort.Strings(wantTopLevel)
+	if !reflect.DeepEqual(entries, wantTopLevel) {
 		return fmt.Errorf("staging 顶层文件集合不符合契约：%v", entries)
 	}
 	evidenceRoot, err := staging.OpenRoot(EvidenceDirName)
@@ -476,6 +530,12 @@ func verifyStaging(root *os.Root, stagingName string, prepared preparedReport) e
 	wantEvidenceEntries := make([]string, 0, len(prepared.evidence))
 	for _, artifact := range prepared.evidence {
 		wantEvidenceEntries = append(wantEvidenceEntries, strings.TrimPrefix(artifact.path, EvidenceDirName+"/"))
+	}
+	for _, artifact := range prepared.reports {
+		raw, readErr := staging.ReadFile(filepath.FromSlash(artifact.path))
+		if readErr != nil || !bytes.Equal(raw, artifact.bytes) {
+			return fmt.Errorf("复核人读报告文件失败：%s", artifact.path)
+		}
 	}
 	sort.Strings(wantEvidenceEntries)
 	if !reflect.DeepEqual(evidenceEntries, wantEvidenceEntries) {

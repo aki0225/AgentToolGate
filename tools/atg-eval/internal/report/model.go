@@ -14,6 +14,16 @@ const (
 	ResultsFileName  = "results.json"
 	ManifestFileName = "run-manifest.json"
 	EvidenceDirName  = "evidence"
+	JUnitFileName    = "junit.xml"
+	SummaryFileName  = "summary.md"
+	HTMLFileName     = "report.html"
+)
+
+const (
+	mediaTypeJSON     = "application/json"
+	mediaTypeXML      = "application/xml"
+	mediaTypeMarkdown = "text/markdown; charset=utf-8"
+	mediaTypeHTML     = "text/html; charset=utf-8"
 )
 
 const (
@@ -240,13 +250,14 @@ func (m Manifest) Validate() error {
 	}
 	seenFiles := make(map[string]struct{}, len(m.Files))
 	for _, file := range m.Files {
-		if err := validateManifestPath(file.Path); err != nil {
+		wantMediaType, err := manifestMediaType(file.Path)
+		if err != nil {
 			return err
 		}
 		if file.Path == ManifestFileName {
 			return fmt.Errorf("manifest 不得登记自身哈希")
 		}
-		if file.SizeBytes < 1 || !sha256Pattern.MatchString(file.SHA256) || file.MediaType != "application/json" {
+		if file.SizeBytes < 1 || !sha256Pattern.MatchString(file.SHA256) || file.MediaType != wantMediaType {
 			return fmt.Errorf("file entry 无效：%q", file.Path)
 		}
 		if _, exists := seenFiles[file.Path]; exists {
@@ -254,18 +265,30 @@ func (m Manifest) Validate() error {
 		}
 		seenFiles[file.Path] = struct{}{}
 	}
+	for _, required := range []string{ResultsFileName, JUnitFileName, SummaryFileName, HTMLFileName} {
+		if _, exists := seenFiles[required]; !exists {
+			return fmt.Errorf("manifest 缺少必需文件：%s", required)
+		}
+	}
 	return nil
 }
 
-func validateManifestPath(value string) error {
-	if value == ResultsFileName {
-		return nil
+func manifestMediaType(path string) (string, error) {
+	switch path {
+	case ResultsFileName:
+		return mediaTypeJSON, nil
+	case JUnitFileName:
+		return mediaTypeXML, nil
+	case SummaryFileName:
+		return mediaTypeMarkdown, nil
+	case HTMLFileName:
+		return mediaTypeHTML, nil
 	}
-	if strings.HasPrefix(value, EvidenceDirName+"/") &&
-		strings.HasSuffix(value, ".json") &&
-		!strings.Contains(value, "\\") &&
-		!strings.Contains(value, "../") {
-		return nil
+	if strings.HasPrefix(path, EvidenceDirName+"/") &&
+		strings.HasSuffix(path, ".json") &&
+		!strings.Contains(path, "\\") &&
+		!strings.Contains(path, "../") {
+		return mediaTypeJSON, nil
 	}
-	return fmt.Errorf("manifest 文件路径不受支持：%q", value)
+	return "", fmt.Errorf("manifest 文件路径不受支持：%q", path)
 }

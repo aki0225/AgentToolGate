@@ -1,10 +1,11 @@
 # AgentToolGate Agent 安全评估
 
 该目录保存公开、可重复生成的评估契约和用例。评估工具位于
-`tools/atg-eval/`。`run` 命令将脱敏后的 `results.json`、`run-manifest.json` 和结构化
-`evidence/` 原子发布到显式 `--output` 目录；stdout 与 `results.json` 保持完全相同的
-字节。disposable sandbox 默认位于 `.tmp/evaluation/<run-id>/`，仅在资源清理成功后
-删除，不与持久化输出混用。清理或发布失败按基础设施错误返回非零。
+`tools/atg-eval/`。`run` 命令将脱敏后的 `results.json`、`run-manifest.json`、结构化
+`evidence/`、`junit.xml`、`summary.md` 和离线 `report.html` 原子发布到显式 `--output`
+目录；stdout 与 `results.json` 保持完全相同的字节。disposable sandbox 默认位于
+`.tmp/evaluation/<run-id>/`，仅在资源清理成功后删除，不与持久化输出混用。清理、
+渲染或发布失败按基础设施错误返回非零。
 
 ## 当前阶段
 
@@ -74,6 +75,14 @@
 - 同父目录 staging 通过文件集、语义和摘要复核后原子发布；失败不留下半成品目录。
 - failed result 仍发布完整 Proof Pack 并返回 1；基础设施失败不发布最终目录。
 
+阶段 3B 已完成人读与 CI 报告：
+
+- `junit.xml` 按 suite 输出 testcase，failed / skipped 与 results 保持一致。
+- `summary.md` 和单文件 `report.html` 展示相同 metrics、case 决策和 evidence 链接。
+- 三种报告只读取 Stage 3A 已严格验证的最终 results 模型，不重新解释日志。
+- HTML 使用自动转义、内联样式和无脚本 CSP，不引用 CDN、外部字体或分析服务。
+- `ask`、`approval_required` 和 `deny_with_ticket` 保留原始治理语义，不折叠成失败。
+
 阶段 2D 在 2026-08-07 的 Windows 本地真实进程验收结果：
 
 - dangerous suite：12 / 12 passed，`dangerous_governed_rate = 1`。
@@ -87,10 +96,10 @@
 2026-08-08 使用阶段 3A 的真实 Windows 二进制重新执行三套 suite，结果仍为 dangerous
 12 / 12、benign 12 / 12、governance 6 / 6 passed。三套输出均通过 manifest SHA256、
 evidence 引用、stdout 精确字节、sandbox 清理、进程残留和敏感信息核对。这是本地
-Stage 3A 验收，不替代 Linux、CI、JUnit、Markdown、HTML 或正式发布结论。
+Stage 3A/3B 验收，不替代 Linux、CI Artifact 或正式发布结论。
 
-阶段 2 的 30 个用例现已具备真实执行路径，Stage 3A 已能生成可追溯的机器可读产物，
-但人读报告与 CI Artifact 仍未完成，也不代表 PR quick evaluation 已经启用。用例发现
+阶段 2 的 30 个用例现已具备真实执行路径，Stage 3A/3B 已能生成可追溯的机器可读和
+人读产物，但 CI Artifact 仍未完成，也不代表 PR quick evaluation 已经启用。用例发现
 生产缺陷时必须先单独修复并保留回归测试，不能通过放宽 expected decision 隐藏问题。
 
 指标中的 sample count 统计非 skipped 用例，decision sample count 只统计获得有效
@@ -134,8 +143,8 @@ go -C tools/atg-eval build -buildvcs=false `
 `--guard-timeout` 使用 Go duration 格式，默认是 `30s`，可在较慢的 Windows 或 CI
 环境显式调大。超时仍按基础设施失败处理，不会自动重试或把失败改写为通过。
 参数错误返回 2，基础设施错误或 Document 中存在 failed result 返回 1，仅包含 passed /
-skipped 时返回 0。Stage 3A 输出是机器可读 Proof Pack；JUnit、Markdown 和单文件 HTML
-将在 Stage 3B 由同一份 results 模型生成。
+skipped 时返回 0。failed result 仍会发布完整 Proof Pack；基础设施、清理、渲染或发布
+失败不产生最终目录。
 
 校验三份 JSONL：
 

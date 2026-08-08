@@ -78,11 +78,25 @@ func TestPublishWritesVerifiedProofPack(t *testing.T) {
 	if err := decodeStrict(manifestRaw, &manifest); err != nil || manifest.Validate() != nil {
 		t.Fatalf("manifest 无效：decode=%v validate=%v", err, manifest.Validate())
 	}
+	wantMediaTypes := map[string]string{
+		JUnitFileName:   mediaTypeXML,
+		SummaryFileName: mediaTypeMarkdown,
+		HTMLFileName:    mediaTypeHTML,
+	}
 	for _, file := range manifest.Files {
 		raw, err := os.ReadFile(filepath.Join(output, filepath.FromSlash(file.Path)))
 		if err != nil || int64(len(raw)) != file.SizeBytes || hashBytes(raw) != file.SHA256 {
 			t.Fatalf("manifest 文件摘要异常：%+v err=%v", file, err)
 		}
+		if want, exists := wantMediaTypes[file.Path]; exists {
+			if file.MediaType != want {
+				t.Fatalf("%s mediaType=%q want=%q", file.Path, file.MediaType, want)
+			}
+			delete(wantMediaTypes, file.Path)
+		}
+	}
+	if len(wantMediaTypes) != 0 {
+		t.Fatalf("缺少人读报告：%v", wantMediaTypes)
 	}
 }
 
@@ -256,6 +270,30 @@ func TestManifestValidationRejectsUnsortedOrSelfHashedFiles(t *testing.T) {
 	}
 	if err := manifest.Validate(); err == nil {
 		t.Fatal("manifest 不得登记自身哈希")
+	}
+}
+
+func TestManifestValidationRequiresEveryReport(t *testing.T) {
+	cases, document := reportFixture()
+	prepared, err := prepareReport(PublishOptions{
+		InputSHA256: hashBytes([]byte("synthetic suite\n")),
+		Cases:       cases,
+		Document:    document,
+		Redactor:    redact.New(redact.Options{}),
+	})
+	if err != nil {
+		t.Fatalf("prepareReport() error = %v", err)
+	}
+	manifest := prepared.manifest
+	files := manifest.Files[:0]
+	for _, file := range manifest.Files {
+		if file.Path != HTMLFileName {
+			files = append(files, file)
+		}
+	}
+	manifest.Files = files
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), HTMLFileName) {
+		t.Fatalf("缺少 HTML 报告必须失败：%v", err)
 	}
 }
 

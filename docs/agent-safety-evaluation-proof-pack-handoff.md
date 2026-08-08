@@ -6,13 +6,13 @@
 >
 > 前置基线提交：`2d3a5f2`（阶段 2D.1）
 >
-> 当前里程碑：阶段 3A 机器可读 Proof Pack
+> 当前里程碑：阶段 3B 人读与 CI 报告
 
 ## 1. 当前结论
 
-Agent 安全评估计划的阶段 0～2D.1 和阶段 3A 已完成。评估器可以使用真实
+Agent 安全评估计划的阶段 0～2D.1 和阶段 3A/3B 已完成。评估器可以使用真实
 AgentToolGate 后端、产品 Hook、SQLite 多 Actor 状态和 loopback OTel collector 执行
-三套评估，并原子发布机器可读 Proof Pack。
+三套评估，并原子发布机器可读和人读 Proof Pack。
 
 2026-08-08 的 Windows 本地真实二进制结果：
 
@@ -27,14 +27,14 @@ AgentToolGate 后端、产品 Hook、SQLite 多 Actor 状态和 loopback OTel co
 - `secret_leak_count` 为 0。
 - `offline_high_risk_allow_count` 为 0。
 
-每套输出均包含 `results.json`、`run-manifest.json` 和逐 case 结构化 evidence；stdout
-与 `results.json` 字节完全一致，manifest SHA256、evidence 引用、sandbox 清理、进程
-残留和敏感信息扫描均通过。当前还没有 JUnit、Markdown、HTML、CI Artifact 或正式
-发布的跨平台 Proof Pack。
+每套输出均包含 `results.json`、`run-manifest.json`、逐 case 结构化 evidence、
+`junit.xml`、`summary.md` 和离线 `report.html`；stdout 与 `results.json` 字节完全一致，
+manifest SHA256、evidence 引用、JUnit 汇总、报告追溯、sandbox 清理、进程残留和敏感
+信息扫描均通过。当前还没有 CI Artifact 或正式发布的跨平台 Proof Pack。
 
 ## 2. 已完成的提交
 
-本轮已经推送以下提交：
+当前实现链包含以下提交：
 
 ```text
 2ced4fb 功能：接入真实 MCP Inbound 评估执行器
@@ -45,8 +45,8 @@ b40e302 文档：记录阶段 2D 真实治理验收
 2d3a5f2 修复：增强评估运行时验证可靠性
 ```
 
-阶段 3A 与本文同一提交，新增 `--output`、机器可读 Proof Pack、严格 Schema、原子
-发布和对应回归测试。
+阶段 3A 提交为 `b162384`，新增 `--output`、机器可读 Proof Pack、严格 Schema、原子
+发布和对应回归测试。阶段 3B 与本文同一提交，新增 JUnit、Markdown 和单文件 HTML。
 
 主要实现：
 
@@ -78,6 +78,9 @@ b40e302 文档：记录阶段 2D 真实治理验收
   - loader 在解析 suite 的同一次读取中固定输入 SHA256，避免运行期间变更造成摘要漂移。
   - 对文档、时间、顺序、metrics、引用、大小和文件 SHA256 做严格复核。
   - 在同父目录 staging 写入并复核后原子重命名，禁止覆盖已有输出。
+  - 从同一份最终 results 模型派生 JUnit、Markdown 和 HTML，保持 failed、skipped 与
+    原始决策语义。
+  - HTML 使用自动转义、内联样式和无脚本 CSP，不引用外部资源。
 
 完整设计与阶段记录见：
 
@@ -117,20 +120,22 @@ git diff --check
 
 Windows 上已使用仓库 `.tmp` 内的 Go cache 重新构建真实 backend 与 evaluator，并执行
 完整三套 suite。每套使用独立 output 和 run ID，均验证了结果、evidence、manifest、
-stdout、清理与敏感扫描。Linux amd64 尚未在真实 Linux 环境运行三套 suite。
+JUnit、Markdown、HTML、stdout、清理与敏感扫描。另用 `1ns` Guard 超时验证 failed
+Proof Pack：命令返回 1，12 个 failed、12 个 JUnit failure 和 12 份 evidence 完整保留。
+Linux amd64 尚未在真实 Linux 环境运行三套 suite。
 
 本地运行结果保存在被 Git 忽略的目录：
 
 ```text
-.tmp/proof-packs/*-stage3a-20260808/
+.tmp/proof-packs/*-stage3b-20260808/
 ```
 
 该目录只在当前机器上存在，不能作为公开仓库证据来源。
 
 ## 4. 当前边界与未完成内容
 
-实施计划验收清单当前为 8 / 13。核心执行链和机器可读证据已完成，剩余工作主要是
-人读报告、CI 展示、跨平台验收和正式发布。
+实施计划验收清单当前为 9 / 13。核心执行链、机器可读证据和人读报告已完成，剩余
+工作主要是 CI 展示、跨平台验收和正式发布。
 
 ### 阶段 3：报告与 evidence
 
@@ -139,9 +144,6 @@ stdout、清理与敏感扫描。Linux amd64 尚未在真实 Linux 环境运行�
 - `results.json`
 - `run-manifest.json`
 - 逐 case evidence 与 SHA256
-
-尚未实现：
-
 - `junit.xml`
 - `summary.md`
 - 单文件 `report.html`
@@ -167,30 +169,30 @@ stdout、清理与敏感扫描。Linux amd64 尚未在真实 Linux 环境运行�
 - evaluator Release 附件。
 - `v0.2.0-rc1` 和 `v0.2.0`。
 
-## 5. 下一步只做阶段 3B
+## 5. 下一步只做阶段 4A
 
-为了保持小步提交，下一次不要同时修改 CI、Pages 或 Release。
+为了保持小步提交，下一次只接 CI，不同时修改 Pages 或 Release。
 
-阶段 3B 只完成：
+阶段 4A 只完成：
 
-1. 从 Stage 3A 已验证的最终 results 模型生成 `junit.xml`。
-2. 从同一模型生成 `summary.md`。
-3. 从同一模型生成不依赖外部资源的单文件 `report.html`。
-4. 将三种文件纳入 manifest 大小与 SHA256 校验。
-5. failed、skipped、`ask`、`approval_required` 和 `deny_with_ticket` 必须保持原语义。
-6. 补 golden / escaping / 大小限制 / 原子发布回归测试和一次真实 Windows smoke。
-7. 验证通过后独立提交，不顺带修改 workflow、README 指标或 Pages。
+1. 为 PR 定义固定 quick suite，覆盖 6 个危险、6 个良性和 6 个治理不变量。
+2. 为 `workflow_dispatch` 定义 Windows / Linux full suite。
+3. 失败时仍上传完整脱敏 Proof Pack Artifact，成功时也保留可核对报告。
+4. CI 必须显式安装 Python，治理用例禁止静默 skip。
+5. output、Go cache、二进制和日志全部位于 runner workspace 的 `.tmp`。
+6. workflow 失败条件来自 evaluator 退出码，不读取人读文案猜测结果。
+7. 验证通过后独立提交，不顺带修改 README 指标、Pages 或 Release。
 
 必须保持的设计边界：
 
-- JUnit、Markdown 和 HTML 只能读取内存中的最终 results 模型，不能重新解释原始日志。
-- HTML 不得引用 CDN、外部字体、远程脚本、分析服务或真实 API。
-- 报告转义或渲染失败必须阻止最终目录发布，不能回退为未转义内容。
+- quick suite 必须是仓库内固定声明，不允许 workflow 运行时拼接任意 shell case。
+- Windows 与 Linux 平台不适用项必须记录 skipped，不能静默当作 passed。
+- Artifact 上传不得使用 `if: success()` 限制，评估失败时仍需执行。
 
-阶段 3B 建议提交信息：
+阶段 4A 建议提交信息：
 
 ```text
-功能：生成人读与 CI 评估报告
+CI：接入 Agent 安全评估报告
 ```
 
 ## 6. 恢复步骤
@@ -209,7 +211,7 @@ Get-Content docs/agent-safety-evaluation-proof-pack-plan.md
 - 没有残留 `agenttoolgate` / `atg-eval` 进程。
 - 不读取或提交 `.tmp/` 中的历史运行产物。
 
-然后只创建阶段 3B 的实现提交。
+然后只创建阶段 4A 的实现提交。
 
 ## 7. 禁止顺带修改
 
@@ -223,5 +225,5 @@ Get-Content docs/agent-safety-evaluation-proof-pack-plan.md
 - GitHub Pages
 - 前端控制台
 
-如果阶段 3A 发现生产安全缺陷，应保留 failed evidence，并单独创建修复提交，不允许
+如果评估发现生产安全缺陷，应保留 failed evidence，并单独创建修复提交，不允许
 通过放宽 expected decision 或跳过校验得到绿色结果。

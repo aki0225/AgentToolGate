@@ -93,6 +93,6 @@ run 当前真实执行危险、良性和治理不变量 suite 中已登记的受
 或 governance 用例时会在随机 loopback 端口启动隔离 ATG runtime；governance 使用
 disposable SQLite、多 Actor 身份和 loopback OTel collector 验证真实不变量。
 所有运行时资源都会在结束后受控清理。清理成功后，工具将 results.json、
-run-manifest.json 和结构化 evidence 原子发布到独立 output；stdout 与 results.json
-保持完全相同的字节。`)
+run-manifest.json、结构化 evidence、junit.xml、summary.md 和离线 report.html 原子
+发布到独立 output；stdout 与 results.json 保持完全相同的字节。`)
 }

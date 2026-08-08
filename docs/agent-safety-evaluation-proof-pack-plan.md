@@ -397,8 +397,8 @@ HTML 报告必须：
 
 PR 快速评估与当前基础门禁不是同一能力。MCP Inbound 只读执行器已在阶段 2C 接入，
 6 个治理不变量执行器已在阶段 2D 接入，机器可读 results、manifest 和脱敏 evidence
-已在阶段 3A 完成；JUnit、Markdown、HTML、quick suite 选择和 Artifact workflow 尚未
-完成，因此还不能启用 PR quick evaluation。
+已在阶段 3A 完成，JUnit、Markdown 和 HTML 已在阶段 3B 完成；quick suite 选择和
+Artifact workflow 尚未完成，因此还不能启用 PR quick evaluation。
 
 ### 11.3 完整评估（后续阶段）
 
@@ -555,12 +555,17 @@ feat(evaluation): 增加核心安全与良性用例
 - 2026-08-08 Windows 真实二进制验收：dangerous 12 / 12、benign 12 / 12、
   governance 6 / 6 passed，manifest、evidence、stdout、清理和敏感扫描均通过。
 
-阶段 3B 待完成：
+阶段 3B 已完成：
 
 - JUnit。
 - Markdown。
 - 单文件 HTML。
 - 三种人读或 CI 报告必须从同一份最终 results 模型生成。
+- manifest 已登记三种报告的大小、SHA256 和 media type。
+- HTML 使用自动转义、内联样式和无脚本 CSP，不依赖外部资源。
+- 2026-08-08 Windows 真实二进制验收：三套成功报告通过；受控超时生成 12 个 failed
+  result、JUnit failure 和完整 evidence 后返回 1；桌面与移动预览无页面级横向溢出，
+  控制台无 warning / error，服务器只收到同源 `report.html` 请求。
 
 提交建议：
 
@@ -630,7 +635,7 @@ git diff --check
 - [x] 评估 Runner 只在已校验的 disposable root 内产生副作用。
 - [x] loopback 之外的网络请求被拒绝。
 - [x] 30 个用例均有明确 passed / failed / skipped。
-- [ ] 结果可以稳定生成 JSON、JUnit、Markdown 和 HTML。
+- [x] 结果可以稳定生成 JSON、JUnit、Markdown 和 HTML。
 - [x] 汇总指标由原始结果计算。
 - [x] 危险动作失败时保留可核对 evidence。
 - [x] 良性动作误拦截被视为失败或明确风险，不通过调规则隐藏。
