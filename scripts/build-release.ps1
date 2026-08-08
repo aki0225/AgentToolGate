@@ -11,6 +11,8 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $FrontendDir = Join-Path $RepoRoot "frontend"
 $BackendDir = Join-Path $RepoRoot "backend"
+$EvaluatorDir = Join-Path (Join-Path $RepoRoot "tools") "atg-eval"
+$EvaluationDir = Join-Path $RepoRoot "evaluation"
 $FrontendDist = Join-Path $FrontendDir "dist"
 $EmbedDist = Join-Path (Join-Path $BackendDir "internal") (Join-Path "static" "site")
 $DistDir = Join-Path $RepoRoot "dist"
@@ -56,7 +58,8 @@ function Resolve-GitValue {
     )
 
     try {
-        $value = & git -C $RepoRoot @Arguments 2>$null
+        $safeRepoRoot = $RepoRoot -replace '\\', '/'
+        $value = & git -c "safe.directory=$safeRepoRoot" -C $RepoRoot @Arguments 2>$null
         if ($LASTEXITCODE -eq 0) {
             $trimmed = ($value -join "`n").Trim()
             if ($trimmed) {
@@ -103,7 +106,9 @@ function Assert-SmokePlatformSupported {
 function Invoke-HealthSmoke {
     param(
         [Parameter(Mandatory = $true)][string]$BinaryPath,
-        [Parameter(Mandatory = $true)][string]$TargetPlatform
+        [Parameter(Mandatory = $true)][string]$TargetPlatform,
+        [Parameter(Mandatory = $true)][string]$ExpectedVersion,
+        [Parameter(Mandatory = $true)][string]$ExpectedCommit
     )
 
     if ($SkipSmoke) {
@@ -115,8 +120,12 @@ function Invoke-HealthSmoke {
     if ($LASTEXITCODE -ne 0) {
         throw "$TargetPlatform doctor 验证失败，退出码 $LASTEXITCODE"
     }
-    if (($doctorOutput -join "`n") -notmatch "AgentToolGate 本地诊断") {
+    $doctorText = $doctorOutput -join "`n"
+    if ($doctorText -notmatch "AgentToolGate 本地诊断") {
         throw "$TargetPlatform doctor 输出缺少诊断标题"
+    }
+    if (-not $doctorText.Contains("版本: $ExpectedVersion") -or -not $doctorText.Contains("提交: $ExpectedCommit")) {
+        throw "$TargetPlatform doctor 元数据与当前发布不一致"
     }
 
     $oldEnv = @{}
@@ -180,12 +189,47 @@ function Invoke-HealthSmoke {
     }
 }
 
+function Invoke-EvaluatorSmoke {
+    param(
+        [Parameter(Mandatory = $true)][string]$EvaluatorPath,
+        [Parameter(Mandatory = $true)][string]$SuitePath,
+        [Parameter(Mandatory = $true)][string]$TargetPlatform
+    )
+
+    if ($SkipSmoke) {
+        Write-Host "==> 已跳过 $TargetPlatform evaluator smoke" -ForegroundColor Yellow
+        return
+    }
+
+    $output = & $EvaluatorPath validate --input $SuitePath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "$TargetPlatform evaluator validate 失败，退出码 $LASTEXITCODE`n$($output -join "`n")"
+    }
+    try {
+        $summary = ($output -join "`n") | ConvertFrom-Json
+    }
+    catch {
+        throw "$TargetPlatform evaluator validate 未返回合法 JSON"
+    }
+    if ($summary.schemaVersion -ne "v1" -or $summary.caseCount -ne 18) {
+        throw "$TargetPlatform evaluator validate 摘要不符合预期"
+    }
+}
+
 if (-not (Test-Path $FrontendDir)) {
     throw "未找到前端目录：$FrontendDir"
 }
 
 if (-not (Test-Path $BackendDir)) {
     throw "未找到后端目录：$BackendDir"
+}
+
+if (-not (Test-Path $EvaluatorDir)) {
+    throw "未找到评估工具目录：$EvaluatorDir"
+}
+
+if (-not (Test-Path $EvaluationDir)) {
+    throw "未找到评估契约目录：$EvaluationDir"
 }
 
 $Platform = Resolve-Platform -RequestedPlatform $Platform
@@ -200,16 +244,27 @@ else {
 $releaseCommit = Resolve-GitValue -Arguments @("rev-parse", "HEAD")
 $releaseBuildTime = (Get-Date).ToUniversalTime().ToString("o")
 $releaseLdflags = "-X main.version=$releaseVersion -X main.commit=$releaseCommit -X main.buildTime=$releaseBuildTime"
+if ($releaseVersion -ne "dev" -and $releaseCommit -eq "unknown") {
+    throw "正式发布构建无法解析源码 commit"
+}
 
 $goOS = if ($Platform -eq "linux-amd64") { "linux" } else { "windows" }
 $goArch = "amd64"
 $binaryName = if ($Platform -eq "linux-amd64") { "agenttoolgate" } else { "agenttoolgate.exe" }
+$evaluatorBinaryName = if ($Platform -eq "linux-amd64") { "atg-eval" } else { "atg-eval.exe" }
 $packageName = if ($Platform -eq "linux-amd64") { "agenttoolgate-linux-amd64.tar.gz" } else { "agenttoolgate-windows-amd64.zip" }
+$evaluationPackageName = if ($Platform -eq "linux-amd64") { "agenttoolgate-evaluation-linux-amd64.tar.gz" } else { "agenttoolgate-evaluation-windows-amd64.zip" }
 $packagePath = Join-Path $ReleaseDir $packageName
+$evaluationPackagePath = Join-Path $ReleaseDir $evaluationPackageName
 $StageDir = Join-Path $SmokeDir ("stage-" + $Platform)
 $PackageDir = Join-Path $StageDir "package"
+$EvaluationPackageDir = Join-Path $StageDir "evaluation-package"
 $BinaryPath = Join-Path $PackageDir $binaryName
+$EvaluationBinaryPath = Join-Path $EvaluationPackageDir $evaluatorBinaryName
+$EvaluationProductBinaryPath = Join-Path $EvaluationPackageDir $binaryName
+$EvaluationBuildMetadataPath = Join-Path $EvaluationPackageDir "BUILD-METADATA.json"
 $ExtractDir = Join-Path $SmokeDir ("extract-" + $Platform)
+$EvaluationExtractDir = Join-Path $SmokeDir ("extract-evaluation-" + $Platform)
 
 Write-Host "==> 构建平台: $Platform" -ForegroundColor Cyan
 Write-Host "==> 发布元数据: $releaseVersion / $releaseCommit / $releaseBuildTime" -ForegroundColor Cyan
@@ -241,14 +296,26 @@ try {
     if (Test-Path $StageDir) {
         Remove-Item -LiteralPath $StageDir -Recurse -Force
     }
-    New-Item -ItemType Directory -Force -Path $PackageDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $PackageDir, $EvaluationPackageDir | Out-Null
     [Environment]::SetEnvironmentVariable("GOOS", $goOS, "Process")
     [Environment]::SetEnvironmentVariable("GOARCH", $goArch, "Process")
     Push-Location $BackendDir
     try {
-        & $GoExe build -ldflags $releaseLdflags -o $BinaryPath ./cmd/server
+        & $GoExe build -buildvcs=false -trimpath -ldflags $releaseLdflags -o $BinaryPath ./cmd/server
         if ($LASTEXITCODE -ne 0) {
             throw "Go 构建失败，退出码 $LASTEXITCODE"
+        }
+    }
+    finally {
+        Pop-Location
+    }
+
+    Write-Host "==> 构建 $Platform 评估工具" -ForegroundColor Cyan
+    Push-Location $EvaluatorDir
+    try {
+        & $GoExe build -buildvcs=false -trimpath -o $EvaluationBinaryPath .
+        if ($LASTEXITCODE -ne 0) {
+            throw "评估工具构建失败，退出码 $LASTEXITCODE"
         }
     }
     finally {
@@ -269,8 +336,32 @@ if (-not (Test-Path $BinaryPath)) {
     throw "未找到构建产物：$BinaryPath"
 }
 
+if (-not (Test-Path $EvaluationBinaryPath)) {
+    throw "未找到评估工具构建产物：$EvaluationBinaryPath"
+}
+
+Copy-Item -LiteralPath $BinaryPath -Destination $EvaluationProductBinaryPath -Force
+$PackagedEvaluationDir = Join-Path $EvaluationPackageDir "evaluation"
+New-Item -ItemType Directory -Force -Path $PackagedEvaluationDir | Out-Null
+Copy-Item -LiteralPath (Join-Path $EvaluationDir "README.md") -Destination $PackagedEvaluationDir -Force
+Copy-Item -LiteralPath (Join-Path $EvaluationDir "RELEASE.md") -Destination $PackagedEvaluationDir -Force
+Copy-Item -LiteralPath (Join-Path $EvaluationDir "schema") -Destination $PackagedEvaluationDir -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $EvaluationDir "suites") -Destination $PackagedEvaluationDir -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination $EvaluationPackageDir -Force
+$buildMetadata = [ordered]@{
+    schemaVersion = "v1"
+    version = $releaseVersion
+    commit = $releaseCommit
+    buildTime = $releaseBuildTime
+    platform = $Platform
+    productBinary = $binaryName
+    evaluatorBinary = $evaluatorBinaryName
+}
+$buildMetadataJSON = $buildMetadata | ConvertTo-Json
+[System.IO.File]::WriteAllText($EvaluationBuildMetadataPath, ($buildMetadataJSON + "`n"), [System.Text.UTF8Encoding]::new($false))
+
 if ($Platform -eq "linux-amd64") {
-    & chmod +x $BinaryPath
+    & chmod +x $BinaryPath $EvaluationBinaryPath $EvaluationProductBinaryPath
     if ($LASTEXITCODE -ne 0) {
         throw "chmod 失败，退出码 $LASTEXITCODE"
     }
@@ -287,16 +378,22 @@ if ($Platform -eq "linux-amd64") {
     if ($LASTEXITCODE -ne 0) {
         throw "tar.gz 打包失败，退出码 $LASTEXITCODE"
     }
+    & tar -czf $evaluationPackagePath -C $EvaluationPackageDir .
+    if ($LASTEXITCODE -ne 0) {
+        throw "评估 tar.gz 打包失败，退出码 $LASTEXITCODE"
+    }
 }
 else {
     Compress-Archive -LiteralPath $BinaryPath -DestinationPath $packagePath -Force
+    Compress-Archive -Path (Join-Path $EvaluationPackageDir '*') -DestinationPath $evaluationPackagePath -Force
 }
 
 $checksumLine = "{0}  {1}" -f ((Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()), (Split-Path -Leaf $packagePath)
-[System.IO.File]::WriteAllText($ChecksumFile, ($checksumLine + "`n"), [System.Text.UTF8Encoding]::new($false))
+$evaluationChecksumLine = "{0}  {1}" -f ((Get-FileHash -LiteralPath $evaluationPackagePath -Algorithm SHA256).Hash.ToLowerInvariant()), (Split-Path -Leaf $evaluationPackagePath)
+[System.IO.File]::WriteAllText($ChecksumFile, ($checksumLine + "`n" + $evaluationChecksumLine + "`n"), [System.Text.UTF8Encoding]::new($false))
 
 Write-Host "==> 验证发布产物" -ForegroundColor Cyan
-foreach ($artifact in @($packagePath, $ChecksumFile)) {
+foreach ($artifact in @($packagePath, $evaluationPackagePath, $ChecksumFile)) {
     if (-not (Test-Path $artifact)) {
         throw "发布产物缺失：$artifact"
     }
@@ -305,6 +402,9 @@ foreach ($artifact in @($packagePath, $ChecksumFile)) {
 $checksumText = Get-Content -Raw $ChecksumFile
 if ($checksumText -notmatch [regex]::Escape($checksumLine)) {
     throw "SHA256SUMS 未包含正确校验值：$packageName"
+}
+if ($checksumText -notmatch [regex]::Escape($evaluationChecksumLine)) {
+    throw "SHA256SUMS 未包含正确校验值：$evaluationPackageName"
 }
 
 if (Test-Path $ExtractDir) {
@@ -328,8 +428,40 @@ if ($Platform -eq "linux-amd64") {
     & chmod +x $SmokeBinary
 }
 
-Invoke-HealthSmoke -BinaryPath $SmokeBinary -TargetPlatform $Platform
+Invoke-HealthSmoke -BinaryPath $SmokeBinary -TargetPlatform $Platform -ExpectedVersion $releaseVersion -ExpectedCommit $releaseCommit
+
+if (Test-Path $EvaluationExtractDir) {
+    Remove-Item -LiteralPath $EvaluationExtractDir -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $EvaluationExtractDir | Out-Null
+if ($Platform -eq "linux-amd64") {
+    & tar -xzf $evaluationPackagePath -C $EvaluationExtractDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "评估 tar.gz 解包失败，退出码 $LASTEXITCODE"
+    }
+}
+else {
+    Expand-Archive -LiteralPath $evaluationPackagePath -DestinationPath $EvaluationExtractDir -Force
+}
+$SmokeEvaluator = Join-Path $EvaluationExtractDir $evaluatorBinaryName
+$SmokeEvaluationSuite = Join-Path (Join-Path (Join-Path $EvaluationExtractDir "evaluation") "suites") "pr-quick-v1.jsonl"
+$SmokeBuildMetadata = Join-Path $EvaluationExtractDir "BUILD-METADATA.json"
+if (-not (Test-Path $SmokeEvaluator) -or -not (Test-Path $SmokeEvaluationSuite) -or -not (Test-Path $SmokeBuildMetadata)) {
+    throw "$evaluationPackageName 缺少评估工具、quick suite 或构建元数据"
+}
+$verifiedMetadata = Get-Content -LiteralPath $SmokeBuildMetadata -Raw | ConvertFrom-Json
+if ($verifiedMetadata.schemaVersion -ne "v1" -or
+    $verifiedMetadata.version -ne $releaseVersion -or
+    $verifiedMetadata.commit -ne $releaseCommit -or
+    $verifiedMetadata.platform -ne $Platform) {
+    throw "$evaluationPackageName 构建元数据不符合当前源码和平台"
+}
+if ($Platform -eq "linux-amd64") {
+    & chmod +x $SmokeEvaluator
+}
+Invoke-EvaluatorSmoke -EvaluatorPath $SmokeEvaluator -SuitePath $SmokeEvaluationSuite -TargetPlatform $Platform
 
 Write-Host "==> 发布产物已生成" -ForegroundColor Green
 Write-Host "    $packagePath"
+Write-Host "    $evaluationPackagePath"
 Write-Host "    $ChecksumFile"

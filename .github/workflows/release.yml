@@ -55,7 +55,9 @@ jobs:
         with:
           name: release-windows-amd64
           if-no-files-found: error
-          path: dist/release/agenttoolgate-windows-amd64.zip
+          path: |
+            dist/release/agenttoolgate-windows-amd64.zip
+            dist/release/agenttoolgate-evaluation-windows-amd64.zip
 
   linux-amd64:
     name: Linux amd64 发版包
@@ -93,7 +95,9 @@ jobs:
         with:
           name: release-linux-amd64
           if-no-files-found: error
-          path: dist/release/agenttoolgate-linux-amd64.tar.gz
+          path: |
+            dist/release/agenttoolgate-linux-amd64.tar.gz
+            dist/release/agenttoolgate-evaluation-linux-amd64.tar.gz
 
   release:
     name: 创建 GitHub Release
@@ -114,7 +118,11 @@ jobs:
         run: |
           set -euo pipefail
           cd dist/release
-          sha256sum agenttoolgate-windows-amd64.zip agenttoolgate-linux-amd64.tar.gz > SHA256SUMS
+          sha256sum \
+            agenttoolgate-windows-amd64.zip \
+            agenttoolgate-linux-amd64.tar.gz \
+            agenttoolgate-evaluation-windows-amd64.zip \
+            agenttoolgate-evaluation-linux-amd64.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
       - name: 创建 GitHub Release
@@ -127,6 +135,8 @@ jobs:
           files: |
             dist/release/agenttoolgate-windows-amd64.zip
             dist/release/agenttoolgate-linux-amd64.tar.gz
+            dist/release/agenttoolgate-evaluation-windows-amd64.zip
+            dist/release/agenttoolgate-evaluation-linux-amd64.tar.gz
             dist/release/SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
