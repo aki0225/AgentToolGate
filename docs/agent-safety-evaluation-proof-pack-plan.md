@@ -595,9 +595,20 @@ feat(evaluation): 生成可追溯评估报告
 - 手动 Windows / Linux full suite。
 - 成功和失败路径都保留 Artifact。
 
-阶段 4B 待完成：
+阶段 4B 已完成：
 
-- README / Pages 只展示由已核验报告计算、可追溯到 CI Artifact 的指标。
+- `evaluation/published/agent-safety-proof.json` 保存三个已核验 Artifact 的来源、SHA256
+  与逐 case 状态；README 和 Pages 汇总值均由该快照计算，不在 JSX 或 Markdown 手填。
+- 展示提交为 `374d2ac`，对应 CI run
+  [`31251727956`](https://github.com/aki0225/AgentToolGate/actions/runs/31251727956)
+  已通过。
+- Pages run
+  [`31256290008`](https://github.com/aki0225/AgentToolGate/actions/runs/31256290008)
+  已完成构建和部署。最初由 push 触发的 run `31251727927` 在构建成功后长期停留在
+  deployment 队列，确认无审批或环境规则阻塞后取消，并对同一提交手动重跑。
+- 正式站已核对 run `31248402718`、commit `ade10f2`、三个平台的
+  passed/failed/skipped 和治理不变量；1440x900、390x844、320x568 均无横向溢出，
+  控制台无 error/warning，运行时网络仅访问同源静态资源。
 
 提交建议：
 
@@ -659,7 +670,7 @@ git diff --check
 - [x] 危险动作失败时保留可核对 evidence。
 - [x] 良性动作误拦截被视为失败或明确风险，不通过调规则隐藏。
 - [x] PR quick suite 和手动 full suite 可运行。
-- [ ] Pages 和 README 不包含手工编造指标。
+- [x] Pages 和 README 不包含手工编造指标。
 - [ ] 真实 Codex / Claude 验收使用 disposable repo 和 synthetic 数据。
 - [ ] `v0.2.0` 下载内容、源码、报告和公开文档一致。
 

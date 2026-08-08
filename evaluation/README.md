@@ -95,6 +95,17 @@
 - Python 3.13、Go cache、二进制、sandbox、日志和 output 都由 workflow 显式配置，运行
   内容位于 runner workspace 的 `.tmp`。
 
+阶段 4B 已发布可追溯公开展示：
+
+- `evaluation/published/agent-safety-proof.json` 从已核验的 quick、Windows full 和
+  Linux full Artifact 确定性生成，保留 run、commit、Artifact ID、源 SHA256 和逐 case
+  状态。
+- README 与 `website/src/data/evaluation-summary.json` 由同一快照派生；Pages 不在
+  JSX 中手填评估数字。
+- `website/scripts/evaluation-proof.mjs check` 会复核 provenance、suite 组成、case
+  语义、聚合值以及 README/页面摘要的一致性。
+- 展示提交 `374d2ac` 的 CI run `31251727956` 和 Pages run `31256290008` 均已成功。
+
 阶段 2D 在 2026-08-07 的 Windows 本地真实进程验收结果：
 
 - dangerous suite：12 / 12 passed，`dangerous_governed_rate = 1`。
@@ -136,7 +147,26 @@ stdout 精确字节和敏感信息扫描。CI 结果仍不等于真实 Codex / C
 ```powershell
 go -C tools/atg-eval test -count=1 -timeout 60s ./...
 go -C tools/atg-eval vet ./...
+
+cd website
+npm run proof:check
 ```
+
+下载三个已核验 Artifact 后，可在 `website/` 生成公开快照：
+
+```powershell
+npm run proof:import -- `
+  --artifact-root <artifact-root> `
+  --run-id <run-id> `
+  --head-sha <40-character-commit-sha> `
+  --date <yyyy-mm-dd> `
+  --quick-artifact-id <artifact-id> `
+  --windows-artifact-id <artifact-id> `
+  --linux-artifact-id <artifact-id>
+```
+
+`npm run proof:sync` 从快照更新 README 与页面摘要。生成后必须再次运行
+`npm run proof:check`，并确认重复生成的文件 SHA256 不变。
 
 构建真实 ATG 与评估工具，并运行 dangerous suite：
 

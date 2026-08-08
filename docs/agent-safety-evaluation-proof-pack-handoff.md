@@ -6,14 +6,15 @@
 >
 > 前置基线提交：`2d3a5f2`（阶段 2D.1）
 >
-> 当前里程碑：阶段 4A CI 与跨平台 Proof Pack
+> 当前里程碑：阶段 4B 可追溯公开展示
 
 ## 1. 当前结论
 
-Agent 安全评估计划的阶段 0～2D.1、阶段 3A/3B 和阶段 4A 已完成。评估器可以使用真实
+Agent 安全评估计划的阶段 0～2D.1、阶段 3A/3B 和阶段 4A/4B 已完成。评估器可以使用真实
 AgentToolGate 后端、产品 Hook、SQLite 多 Actor 状态和 loopback OTel collector 执行
 三套评估，并原子发布机器可读和人读 Proof Pack；CI 已运行固定 quick suite 和手动
-Windows / Linux full matrix。
+Windows / Linux full matrix。README 与 GitHub Pages 已展示从已核验 Artifact 逐 case
+快照计算出的指标。
 
 2026-08-08 的 Windows 本地真实二进制结果：
 
@@ -62,12 +63,15 @@ b40e302 文档：记录阶段 2D 真实治理验收
 b162384 功能：生成评估清单与脱敏证据
 a91eb16 功能：生成人读与 CI 评估报告
 ade10f2 CI：接入 Agent 安全评估报告
+283587d 文档：记录跨平台评估证据
+374d2ac 功能：展示可追溯评估证据
 ```
 
 阶段 3A 提交为 `b162384`，新增 `--output`、机器可读 Proof Pack、严格 Schema、原子
 发布和对应回归测试。阶段 3B 提交为 `a91eb16`，新增 JUnit、Markdown 和单文件 HTML。
 阶段 4A 提交为 `ade10f2`，新增固定 quick suite、默认 quick evaluation、手动
-Windows / Linux full matrix 和始终上传的 Artifact。
+Windows / Linux full matrix 和始终上传的 Artifact。阶段 4B 提交为 `374d2ac`，新增
+公开逐 case 快照、确定性 import/check/sync、README 摘要和 Pages 实测区。
 
 主要实现：
 
@@ -167,8 +171,8 @@ failed/skipped 计数与 results 一致，报告完整且敏感扫描无命中�
 
 ## 4. 当前边界与未完成内容
 
-实施计划验收清单当前为 10 / 13。核心执行链、机器可读证据、人读报告和跨平台 CI
-已完成，剩余工作是公开展示、真实客户端验收和正式发布。
+实施计划验收清单当前为 11 / 13。核心执行链、机器可读证据、人读报告、跨平台 CI
+和公开展示已完成，剩余工作是真实客户端验收和正式发布一致性审计。
 
 ### 阶段 3：报告与 evidence
 
@@ -190,10 +194,19 @@ failed/skipped 计数与 results 一致，报告完整且敏感扫描无命中�
 - `workflow_dispatch` 在 Windows / Linux 运行三套 full suite。
 - Artifact 使用 `if: always()`，评估失败时也进入上传步骤。
 
-阶段 4B 尚未实现：
+阶段 4B 已实现：
 
-- README 和 GitHub Pages 展示由报告计算、可追溯到 CI Artifact 的指标。
-- 页面不得手填无法从 results 复核的数字。
+- `evaluation/published/agent-safety-proof.json` 保存三个 Artifact 的来源、SHA256 和
+  78 条逐 case 状态。
+- `website/scripts/evaluation-proof.mjs` 提供 `import`、`check` 和 `sync`，README 与
+  页面摘要由同一公开快照生成。
+- 展示提交 `374d2ac` 的 CI run
+  [`31251727956`](https://github.com/aki0225/AgentToolGate/actions/runs/31251727956)
+  已通过，Pages run
+  [`31256290008`](https://github.com/aki0225/AgentToolGate/actions/runs/31256290008)
+  已部署到正式站。
+- 正式站已核对 1440x900、390x844、320x568，无横向溢出、控制台错误或第三方运行时
+  请求。Linux 的 4 个平台不适用用例仍明确显示为 skipped。
 
 ### 阶段 5：真实客户端与 v0.2.0
 
@@ -203,31 +216,17 @@ failed/skipped 计数与 results 一致，报告完整且敏感扫描无命中�
 - evaluator Release 附件。
 - `v0.2.0-rc1` 和 `v0.2.0`。
 
-## 5. 下一步只做阶段 4B
+## 5. 下一步只做阶段 5A
 
-为了保持小步提交，下一次只接公开展示，不同时修改真实客户端或 Release。
+阶段 5A 先完成 disposable repository 中的真实 Codex 与 Claude Code 验收，不同时创建
+Release tag：
 
-阶段 4B 只完成：
-
-1. 从已核验的 `results.json` 派生公开指标数据，不在 JSX 或 Markdown 中手填结论。
-2. README 只展示少量关键指标，并链接到评估说明、CI run 和 Artifact 来源。
-3. GitHub Pages 增加克制的 Evaluation 区域，复用现有视觉语言，不复制整份报告。
-4. 指标必须同时表达样本数、passed/failed/skipped 和平台，不能只展示百分比。
-5. 保留 synthetic、disposable、guardrail 和非真实客户端测试边界。
-6. 为数据派生和页面展示补测试，完成 website check、test、build 与视口验收。
-7. 验证通过后独立提交，不顺带创建 Release 或真实客户端证据。
-
-必须保持的设计边界：
-
-- 公开指标必须能追溯到同一份已验证 results，不能从日志文本猜测。
-- Linux 的 4 个平台不适用项必须显示为 skipped，不能并入 passed。
-- CI Artifact 会过期，页面必须同时保留 run、commit 和生成口径，不能只留临时下载链接。
-
-阶段 4B 建议提交信息：
-
-```text
-文档：发布 Agent 安全实测证据
-```
+1. 固定客户端版本、ATG commit、Windows 版本和 hook mode。
+2. 只使用 synthetic README、tool output、Secret 和仓库内敏感落点，不接触真实系统目录。
+3. 每个客户端至少验证一个良性动作和一个高危动作，保存脱敏终端记录与对应 Audit。
+4. 保存 60～90 秒脱敏录屏；不把未运行、timeout 或非确定结果写成通过。
+5. 验证 disposable repo 未产生高危目标、无残留进程、证据无本机绝对路径或真实凭据。
+6. 独立提交 Stage 5A 证据，再进入评估器 Release 附件和 `v0.2.0-rc1`。
 
 ## 6. 恢复步骤
 
@@ -245,17 +244,17 @@ Get-Content docs/agent-safety-evaluation-proof-pack-plan.md
 - 没有残留 `agenttoolgate` / `atg-eval` 进程。
 - 不读取或提交 `.tmp/` 中的历史运行产物。
 
-然后只创建阶段 4B 的展示提交。
+然后只创建阶段 5A 的真实客户端验收提交。
 
 ## 7. 禁止顺带修改
 
-阶段 4B 不要顺带修改：
+阶段 5A 不要顺带修改：
 
 - `.codex/hooks/**`
 - `.claude/hooks/**`
 - `backend/internal/guard/**`
 - Policy / Approval 的生产安全语义
-- Release workflow
+- Release workflow 和正式 tag
 - 前端控制台
 
 如果评估发现生产安全缺陷，应保留 failed evidence，并单独创建修复提交，不允许
