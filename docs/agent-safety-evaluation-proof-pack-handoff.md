@@ -1,27 +1,25 @@
 # Agent 安全评估 Proof Pack 交接
 
-> 交接日期：2026-08-07
+> 交接日期：2026-08-08
 >
 > 分支：`main`
 >
-> 实现基线提交：`b40e302`
+> 前置基线提交：`2d3a5f2`（阶段 2D.1）
 >
-> 远端：实现基线已推送，交接文档随本次提交继续推送
->
-> 预期状态：交接提交完成后，`main` 与 `origin/main` 对齐且工作区干净
+> 当前里程碑：阶段 3A 机器可读 Proof Pack
 
 ## 1. 当前结论
 
-Agent 安全评估计划的阶段 0～2 已完成。当前已经不是只有声明式用例或 mock
-结论，而是可以使用真实 AgentToolGate 后端、产品 Hook、SQLite 多 Actor 状态和
-loopback OTLP collector 执行三套评估。
+Agent 安全评估计划的阶段 0～2D.1 和阶段 3A 已完成。评估器可以使用真实
+AgentToolGate 后端、产品 Hook、SQLite 多 Actor 状态和 loopback OTel collector 执行
+三套评估，并原子发布机器可读 Proof Pack。
 
-2026-08-07 的 Windows 本地真实二进制结果：
+2026-08-08 的 Windows 本地真实二进制结果：
 
 - dangerous：12 / 12 passed。
 - benign：12 / 12 passed。
 - governance：6 / 6 passed。
-- 三组 stderr 均为空。
+- 三组命令退出码均为 0。
 - `approval_pre_upstream_calls` 为 0。
 - `self_review_success_count` 为 0。
 - `frozen_argument_mutation_success_count` 为 0。
@@ -29,8 +27,10 @@ loopback OTLP collector 执行三套评估。
 - `secret_leak_count` 为 0。
 - `offline_high_risk_allow_count` 为 0。
 
-这些结果是阶段恢复证据，不是正式发布的 Proof Pack。当前还没有生成 JUnit、
-Markdown、HTML、manifest 和可发布 evidence。
+每套输出均包含 `results.json`、`run-manifest.json` 和逐 case 结构化 evidence；stdout
+与 `results.json` 字节完全一致，manifest SHA256、evidence 引用、sandbox 清理、进程
+残留和敏感信息扫描均通过。当前还没有 JUnit、Markdown、HTML、CI Artifact 或正式
+发布的跨平台 Proof Pack。
 
 ## 2. 已完成的提交
 
@@ -42,7 +42,11 @@ Markdown、HTML、manifest 和可发布 evidence。
 811a39d 功能：增强评估运行时隔离与 OTLP 检测
 2df319f 功能：执行真实治理不变量评估
 b40e302 文档：记录阶段 2D 真实治理验收
+2d3a5f2 修复：增强评估运行时验证可靠性
 ```
+
+阶段 3A 与本文同一提交，新增 `--output`、机器可读 Proof Pack、严格 Schema、原子
+发布和对应回归测试。
 
 主要实现：
 
@@ -69,6 +73,12 @@ b40e302 文档：记录阶段 2D 真实治理验收
   - governance 使用专用执行入口，不经过通用 baseline / protected 副作用路径。
   - 证据不足、状态不一致或 Driver 异常时均生成 failed，不会伪装为 passed。
 
+- `tools/atg-eval/internal/report/`
+  - 将最终 results 派生为逐 case 的 action / governance evidence。
+  - loader 在解析 suite 的同一次读取中固定输入 SHA256，避免运行期间变更造成摘要漂移。
+  - 对文档、时间、顺序、metrics、引用、大小和文件 SHA256 做严格复核。
+  - 在同父目录 staging 写入并复核后原子重命名，禁止覆盖已有输出。
+
 完整设计与阶段记录见：
 
 - `docs/agent-safety-evaluation-proof-pack-plan.md`
@@ -79,7 +89,7 @@ b40e302 文档：记录阶段 2D 真实治理验收
 已通过：
 
 ```powershell
-go -C tools/atg-eval test -count=1 -timeout 240s ./...
+go -C tools/atg-eval test -count=1 -timeout 60s ./...
 go -C tools/atg-eval vet ./...
 
 go -C backend test ./...
@@ -105,32 +115,36 @@ git diff --check
 - backendruntime：81.5%。
 - otelcollector：82.1%。
 
-Windows 上已重新构建真实 backend 与 evaluator，并执行完整三套 suite。Linux amd64
-已完成交叉编译，但尚未在真实 Linux 环境运行三套 suite。
+Windows 上已使用仓库 `.tmp` 内的 Go cache 重新构建真实 backend 与 evaluator，并执行
+完整三套 suite。每套使用独立 output 和 run ID，均验证了结果、evidence、manifest、
+stdout、清理与敏感扫描。Linux amd64 尚未在真实 Linux 环境运行三套 suite。
 
 本地运行结果保存在被 Git 忽略的目录：
 
 ```text
-.tmp/evaluation-results/phase2d-final-20260807/
+.tmp/proof-packs/*-stage3a-20260808/
 ```
 
 该目录只在当前机器上存在，不能作为公开仓库证据来源。
 
 ## 4. 当前边界与未完成内容
 
-实施计划验收清单当前为 6 / 13。核心执行链已完成，剩余工作主要是证据产品化、
-CI 展示和正式发布。
+实施计划验收清单当前为 8 / 13。核心执行链和机器可读证据已完成，剩余工作主要是
+人读报告、CI 展示、跨平台验收和正式发布。
 
 ### 阶段 3：报告与 evidence
 
-尚未实现：
+已实现：
 
 - `results.json`
+- `run-manifest.json`
+- 逐 case evidence 与 SHA256
+
+尚未实现：
+
 - `junit.xml`
 - `summary.md`
 - 单文件 `report.html`
-- `run-manifest.json`
-- evidence 文件与 SHA256
 
 ### 阶段 4：CI 与展示
 
@@ -153,31 +167,30 @@ CI 展示和正式发布。
 - evaluator Release 附件。
 - `v0.2.0-rc1` 和 `v0.2.0`。
 
-## 5. 下一步只做阶段 3A
+## 5. 下一步只做阶段 3B
 
-为了保持小步提交，下一次不要同时实现 HTML、CI、Pages 或 Release。
+为了保持小步提交，下一次不要同时修改 CI、Pages 或 Release。
 
-阶段 3A 建议只完成：
+阶段 3B 只完成：
 
-1. 新增显式 `--output <directory>`，将保留产物与 disposable sandbox 分离。
-2. 生成脱敏后的 `results.json`。
-3. 生成 `run-manifest.json`，记录 schema、run ID、平台、时间、suite 和文件 SHA256。
-4. 建立 `evidence/` 目录，只保存结构化、脱敏、限长证据。
-5. 使用临时目录和原子重命名，失败时不留下半成品 Proof Pack。
-6. 补单元测试和一次真实 Windows smoke。
-7. 验证通过后立即独立提交，不继续做 JUnit、Markdown 或 HTML。
+1. 从 Stage 3A 已验证的最终 results 模型生成 `junit.xml`。
+2. 从同一模型生成 `summary.md`。
+3. 从同一模型生成不依赖外部资源的单文件 `report.html`。
+4. 将三种文件纳入 manifest 大小与 SHA256 校验。
+5. failed、skipped、`ask`、`approval_required` 和 `deny_with_ticket` 必须保持原语义。
+6. 补 golden / escaping / 大小限制 / 原子发布回归测试和一次真实 Windows smoke。
+7. 验证通过后独立提交，不顺带修改 workflow、README 指标或 Pages。
 
-需要先解决的设计冲突：
+必须保持的设计边界：
 
-- 当前 `--sandbox-base .tmp/evaluation` 下的 run root 会在结束时受控删除。
-- 正式报告不能直接写进这个会被删除的 run root。
-- 推荐新增独立 `--output .tmp/evaluation-results/<run-id>`，继续保持 sandbox
-  disposable；不要为了保留报告而放松 sandbox 清理。
+- JUnit、Markdown 和 HTML 只能读取内存中的最终 results 模型，不能重新解释原始日志。
+- HTML 不得引用 CDN、外部字体、远程脚本、分析服务或真实 API。
+- 报告转义或渲染失败必须阻止最终目录发布，不能回退为未转义内容。
 
-阶段 3A 建议提交信息：
+阶段 3B 建议提交信息：
 
 ```text
-功能：生成评估清单与脱敏证据
+功能：生成人读与 CI 评估报告
 ```
 
 ## 6. 恢复步骤
@@ -196,7 +209,7 @@ Get-Content docs/agent-safety-evaluation-proof-pack-plan.md
 - 没有残留 `agenttoolgate` / `atg-eval` 进程。
 - 不读取或提交 `.tmp/` 中的历史运行产物。
 
-然后只创建阶段 3A 的实现提交。
+然后只创建阶段 3B 的实现提交。
 
 ## 7. 禁止顺带修改
 

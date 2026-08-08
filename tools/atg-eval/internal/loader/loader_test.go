@@ -1,7 +1,9 @@
 package loader
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -51,7 +53,8 @@ func TestLoadRejectsEmptyInput(t *testing.T) {
 
 func TestLoadFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cases.jsonl")
-	if err := os.WriteFile(path, []byte(validCaseLine+"\n"), 0o600); err != nil {
+	raw := []byte(validCaseLine + "\n")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
 	cases, err := LoadFile(path)
@@ -60,6 +63,14 @@ func TestLoadFile(t *testing.T) {
 	}
 	if _, err := LoadFile(filepath.Join(t.TempDir(), "missing.jsonl")); err == nil {
 		t.Fatal("不存在的文件必须返回错误")
+	}
+	snapshot, err := LoadFileSnapshot(path)
+	if err != nil {
+		t.Fatalf("LoadFileSnapshot() error = %v", err)
+	}
+	wantHash := fmt.Sprintf("%x", sha256.Sum256(raw))
+	if len(snapshot.Cases) != 1 || snapshot.SHA256 != wantHash {
+		t.Fatalf("snapshot=%+v wantHash=%s", snapshot, wantHash)
 	}
 }
 

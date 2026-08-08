@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,10 +16,13 @@ import (
 	"time"
 
 	"agenttoolgate/evaluation/internal/driver"
+	"agenttoolgate/evaluation/internal/loader"
+	"agenttoolgate/evaluation/internal/metrics"
 	"agenttoolgate/evaluation/internal/mockserver"
 	"agenttoolgate/evaluation/internal/model"
 	"agenttoolgate/evaluation/internal/operations"
 	"agenttoolgate/evaluation/internal/redact"
+	"agenttoolgate/evaluation/internal/report"
 	evalrunner "agenttoolgate/evaluation/internal/runner"
 	"agenttoolgate/evaluation/internal/sandbox"
 )
@@ -115,8 +119,9 @@ func TestRunEvaluationRequiresArguments(t *testing.T) {
 		{"missing input", []string{"run", "--atg", "agenttoolgate", "--run-id", "run-001"}, "--input"},
 		{"missing atg", []string{"run", "--input", "cases.jsonl", "--run-id", "run-001"}, "--atg"},
 		{"missing run id", []string{"run", "--input", "cases.jsonl", "--atg", "agenttoolgate"}, "--run-id"},
-		{"invalid guard timeout", []string{"run", "--input", "cases.jsonl", "--atg", "agenttoolgate", "--run-id", "run-001", "--guard-timeout", "0s"}, "必须大于 0"},
-		{"extra args", []string{"run", "--input", "cases.jsonl", "--atg", "agenttoolgate", "--run-id", "run-001", "extra"}, "额外位置参数"},
+		{"missing output", []string{"run", "--input", "cases.jsonl", "--atg", "agenttoolgate", "--run-id", "run-001"}, "--output"},
+		{"invalid guard timeout", []string{"run", "--input", "cases.jsonl", "--atg", "agenttoolgate", "--run-id", "run-001", "--output", "proof", "--guard-timeout", "0s"}, "必须大于 0"},
+		{"extra args", []string{"run", "--input", "cases.jsonl", "--atg", "agenttoolgate", "--run-id", "run-001", "--output", "proof", "extra"}, "额外位置参数"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -254,7 +259,7 @@ func TestRunEvaluationUsesConfiguredGuardTimeout(t *testing.T) {
 
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
-			code := runWithDependencies(args, &stdout, &stderr, dependencies)
+			code := runWithTestOutput(t, args, &stdout, &stderr, dependencies)
 			if code != 0 {
 				t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 			}
@@ -290,7 +295,7 @@ func TestRunEvaluationOutputsStrictDocumentAndCleansResources(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := runWithDependencies([]string{
+	code := runWithTestOutput(t, []string{
 		"run",
 		"--input", input,
 		"--atg", "synthetic-agenttoolgate",
@@ -315,13 +320,61 @@ func TestRunEvaluationOutputsStrictDocumentAndCleansResources(t *testing.T) {
 	}
 }
 
+func TestRunEvaluationManifestUsesLoadedInputSnapshot(t *testing.T) {
+	original := []byte(benignGitStatusCase + "\n")
+	input := filepath.Join(t.TempDir(), "cases.jsonl")
+	if err := os.WriteFile(input, original, 0o600); err != nil {
+		t.Fatalf("WriteFile(input) error = %v", err)
+	}
+	dependencies := testRunDependencies(t, model.DecisionAllow)
+	realNewRunner := dependencies.newRunner
+	modified := []byte("modified after suite load\n")
+	dependencies.newRunner = func(config evalrunner.Config) (documentRunner, error) {
+		if err := os.WriteFile(input, modified, 0o600); err != nil {
+			return nil, err
+		}
+		return realNewRunner(config)
+	}
+	output := filepath.Join(t.TempDir(), "proof-pack")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := runWithTestOutput(t, []string{
+		"run",
+		"--input", input,
+		"--atg", "synthetic-agenttoolgate",
+		"--run-id", "cli-input-snapshot",
+		"--output", output,
+		"--sandbox-base", filepath.Join(t.TempDir(), "evaluation"),
+	}, &stdout, &stderr, dependencies)
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s stdout=%s", code, stderr.String(), stdout.String())
+	}
+	manifestRaw, err := os.ReadFile(filepath.Join(output, report.ManifestFileName))
+	if err != nil {
+		t.Fatalf("ReadFile(manifest) error = %v", err)
+	}
+	var manifest report.Manifest
+	if err := json.Unmarshal(manifestRaw, &manifest); err != nil {
+		t.Fatalf("Unmarshal(manifest) error = %v", err)
+	}
+	wantHash := fmt.Sprintf("%x", sha256.Sum256(original))
+	modifiedHash := fmt.Sprintf("%x", sha256.Sum256(modified))
+	if len(manifest.Suites) != 1 || manifest.Suites[0].InputSHA256 != wantHash {
+		t.Fatalf("manifest suite hash=%+v want=%s", manifest.Suites, wantHash)
+	}
+	if manifest.Suites[0].InputSHA256 == modifiedHash {
+		t.Fatal("manifest 不得在运行结束后重新读取已变更的 suite")
+	}
+}
+
 func TestRunEvaluationOutputsFailedDocumentAndReturnsOne(t *testing.T) {
 	input := writeRunCase(t, benignGitStatusCase)
 	dependencies := testRunDependencies(t, model.DecisionAsk)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := runWithDependencies([]string{
+	code := runWithTestOutput(t, []string{
 		"run",
 		"--input", input,
 		"--atg", "synthetic-agenttoolgate",
@@ -346,7 +399,7 @@ func TestRunEvaluationTreatsSkippedAsSuccessfulCompletion(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := runWithDependencies([]string{
+	code := runWithTestOutput(t, []string{
 		"run",
 		"--input", input,
 		"--atg", "synthetic-agenttoolgate",
@@ -365,6 +418,10 @@ func TestRunEvaluationTreatsSkippedAsSuccessfulCompletion(t *testing.T) {
 }
 
 func TestRunEvaluationShortRelativePathsDoNotCorruptDocument(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("a", []byte(benignGitStatusCase+"\n"), 0o600); err != nil {
+		t.Fatalf("写入短路径 input 失败：%v", err)
+	}
 	dependencies := testRunDependencies(t, model.DecisionAllow)
 	inputAbsolute, err := filepath.Abs("a")
 	if err != nil {
@@ -374,11 +431,14 @@ func TestRunEvaluationShortRelativePathsDoNotCorruptDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("解析短 sandbox base 路径失败：%v", err)
 	}
-	dependencies.loadCases = func(path string) ([]model.Case, error) {
+	dependencies.loadSuite = func(path string) (loader.Snapshot, error) {
 		if path != filepath.Clean(inputAbsolute) {
 			t.Fatalf("loader 收到未规范化 input：%q", path)
 		}
-		return []model.Case{decodeRunCase(t, benignGitStatusCase)}, nil
+		return loader.Snapshot{
+			Cases:  []model.Case{decodeRunCase(t, benignGitStatusCase)},
+			SHA256: strings.Repeat("a", 64),
+		}, nil
 	}
 	realCreateSandbox := dependencies.createSandbox
 	dependencies.createSandbox = func(base, runID string) (*sandbox.Root, error) {
@@ -390,7 +450,7 @@ func TestRunEvaluationShortRelativePathsDoNotCorruptDocument(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := runWithDependencies([]string{
+	code := runWithTestOutput(t, []string{
 		"run",
 		"--input", "a",
 		"--atg", "c",
@@ -437,11 +497,14 @@ func TestRunEvaluationRedactsRelativeSandboxFailurePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("解析仓库根目录失败：%v", err)
 	}
-	dependencies.loadCases = func(path string) ([]model.Case, error) {
+	dependencies.loadSuite = func(path string) (loader.Snapshot, error) {
 		if path != filepath.Clean(inputAbsolute) {
 			t.Fatalf("loader 收到未规范化 input：%q", path)
 		}
-		return []model.Case{decodeRunCase(t, benignGitStatusCase)}, nil
+		return loader.Snapshot{
+			Cases:  []model.Case{decodeRunCase(t, benignGitStatusCase)},
+			SHA256: strings.Repeat("a", 64),
+		}, nil
 	}
 	dependencies.createSandbox = func(base, _ string) (*sandbox.Root, error) {
 		if base != filepath.Clean(sandboxBaseAbsolute) {
@@ -452,7 +515,7 @@ func TestRunEvaluationRedactsRelativeSandboxFailurePath(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := runWithDependencies([]string{
+	code := runWithTestOutput(t, []string{
 		"run",
 		"--input", "a",
 		"--atg", "synthetic-agenttoolgate",
@@ -511,39 +574,44 @@ func TestRunEvaluationRedactsDocumentPathsAndSecrets(t *testing.T) {
 	}
 	dependencies.newRunner = func(config evalrunner.Config) (documentRunner, error) {
 		fingerprint := strings.Repeat("a", 64)
+		startedAt := time.Now().UTC()
+		results := []model.Result{{
+			SchemaVersion:    model.SchemaVersionV1,
+			RunID:            config.RunID,
+			CaseID:           "benign.git-status",
+			Suite:            model.SuiteBenignDevelopmentV1,
+			Category:         "safe_command",
+			Platform:         config.Platform,
+			Entry:            model.EntryGuardCore,
+			Status:           model.ResultFailed,
+			ExpectedDecision: []model.Decision{model.DecisionAllow},
+			Signals:          []string{},
+			Evidence:         []model.EvidenceRef{},
+			FailureReason: strings.Join([]string{
+				syntheticSecret,
+				inputAbsolute,
+				sandboxBaseAbsolute,
+				config.Root.Path(),
+				atgPath,
+				"Authorization: Bearer raw-token-value",
+				"approval_id=approval-value",
+				"fingerprint=" + fingerprint,
+			}, " "),
+		}}
 		return staticDocumentRunner{document: evalrunner.Document{
 			SchemaVersion: model.SchemaVersionV1,
 			RunID:         config.RunID,
 			Platform:      config.Platform,
-			Results: []model.Result{{
-				SchemaVersion:    model.SchemaVersionV1,
-				RunID:            config.RunID,
-				CaseID:           "synthetic.redaction",
-				Suite:            model.SuiteDangerousActionsV1,
-				Category:         "redaction",
-				Platform:         config.Platform,
-				Entry:            model.EntryGuardCore,
-				Status:           model.ResultFailed,
-				ExpectedDecision: []model.Decision{model.DecisionDeny},
-				Signals:          []string{},
-				Evidence:         []model.EvidenceRef{},
-				FailureReason: strings.Join([]string{
-					syntheticSecret,
-					inputAbsolute,
-					sandboxBaseAbsolute,
-					config.Root.Path(),
-					atgPath,
-					"Authorization: Bearer raw-token-value",
-					"approval_id=approval-value",
-					"fingerprint=" + fingerprint,
-				}, " "),
-			}},
+			StartedAt:     startedAt.Format(time.RFC3339Nano),
+			CompletedAt:   startedAt.Add(time.Millisecond).Format(time.RFC3339Nano),
+			Results:       results,
+			Metrics:       metrics.Aggregate(results),
 		}}, nil
 	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := runWithDependencies([]string{
+	code := runWithTestOutput(t, []string{
 		"run",
 		"--input", input,
 		"--atg", "synthetic-agenttoolgate",
@@ -684,7 +752,7 @@ func TestRunEvaluationRejectsInvalidInfrastructure(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
-			code := runWithDependencies([]string{
+			code := runWithTestOutput(t, []string{
 				"run",
 				"--input", test.input,
 				"--atg", test.atg,
@@ -721,7 +789,7 @@ func TestRunEvaluationCleansResourcesOnSetupAndCleanupFailure(t *testing.T) {
 
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
-		code := runWithDependencies([]string{
+		code := runWithTestOutput(t, []string{
 			"run",
 			"--input", input,
 			"--atg", "synthetic-agenttoolgate",
@@ -747,7 +815,7 @@ func TestRunEvaluationCleansResourcesOnSetupAndCleanupFailure(t *testing.T) {
 
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
-		code := runWithDependencies([]string{
+		code := runWithTestOutput(t, []string{
 			"run",
 			"--input", input,
 			"--atg", "synthetic-agenttoolgate",
@@ -757,7 +825,9 @@ func TestRunEvaluationCleansResourcesOnSetupAndCleanupFailure(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("cleanup 失败必须返回 1，code=%d stderr=%s", code, stderr.String())
 		}
-		_ = decodeRunDocument(t, stdout.Bytes())
+		if stdout.Len() != 0 {
+			t.Fatalf("cleanup 失败时不得输出未发布 Document：%s", stdout.String())
+		}
 		if !strings.Contains(stderr.String(), "清理 sandbox") {
 			t.Fatalf("stderr 缺少 cleanup 错误：%s", stderr.String())
 		}
@@ -787,7 +857,7 @@ func TestRunEvaluationClosesRuntimeDriverBeforeSandboxCleanup(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := runWithDependencies([]string{
+	code := runWithTestOutput(t, []string{
 		"run",
 		"--input", input,
 		"--atg", "synthetic-agenttoolgate",
@@ -816,11 +886,13 @@ func TestRunEvaluationOutputFailureStillCleansResources(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	code := runWithDependencies([]string{
+	output := filepath.Join(t.TempDir(), "proof-pack")
+	code := runWithTestOutput(t, []string{
 		"run",
 		"--input", input,
 		"--atg", "synthetic-agenttoolgate",
 		"--run-id", "cli-output-failure",
+		"--output", output,
 		"--sandbox-base", filepath.Join(t.TempDir(), "evaluation"),
 	}, failingWriter{}, &stderr, dependencies)
 	if code != 1 || !strings.Contains(stderr.String(), "输出评估结果失败") {
@@ -828,6 +900,9 @@ func TestRunEvaluationOutputFailureStillCleansResources(t *testing.T) {
 	}
 	if !mockClosed || !sandboxCleaned {
 		t.Fatalf("输出失败前资源应已清理：mockClosed=%v sandboxCleaned=%v", mockClosed, sandboxCleaned)
+	}
+	if _, err := os.Stat(filepath.Join(output, "results.json")); err != nil {
+		t.Fatalf("stdout 失败不得删除已发布 Proof Pack：%v", err)
 	}
 }
 
@@ -856,7 +931,7 @@ func TestRunEvaluationPassesExecutableGovernance(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := runWithDependencies([]string{
+	code := runWithTestOutput(t, []string{
 		"run",
 		"--input", input,
 		"--atg", "synthetic-agenttoolgate",
@@ -902,7 +977,7 @@ func TestRunEvaluationPassesExecutableMCPInbound(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := runWithDependencies([]string{
+	code := runWithTestOutput(t, []string{
 		"run",
 		"--input", input,
 		"--atg", "synthetic-agenttoolgate",
@@ -1012,6 +1087,24 @@ func testRunDependencies(t *testing.T, decision model.Decision) runDependencies 
 		}, nil
 	}
 	return dependencies
+}
+
+func runWithTestOutput(
+	t *testing.T,
+	args []string,
+	stdout,
+	stderr io.Writer,
+	dependencies runDependencies,
+) int {
+	t.Helper()
+	for _, argument := range args {
+		if argument == "--output" {
+			return runWithDependencies(args, stdout, stderr, dependencies)
+		}
+	}
+	withOutput := append([]string(nil), args...)
+	withOutput = append(withOutput, "--output", filepath.Join(t.TempDir(), "proof-pack"))
+	return runWithDependencies(withOutput, stdout, stderr, dependencies)
 }
 
 func writeRunCase(t *testing.T, raw string) string {

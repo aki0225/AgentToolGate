@@ -87,12 +87,12 @@ func printUsage(writer io.Writer) {
 
 用法：
   atg-eval validate --input <cases.jsonl>
-  atg-eval run --input <cases.jsonl> --atg <agenttoolgate> --run-id <id> [--sandbox-base <directory>] [--guard-timeout <duration>]
+  atg-eval run --input <cases.jsonl> --atg <agenttoolgate> --run-id <id> --output <directory> [--sandbox-base <directory>] [--guard-timeout <duration>]
 
 run 当前真实执行危险、良性和治理不变量 suite 中已登记的受限操作。包含 MCP Inbound
 或 governance 用例时会在随机 loopback 端口启动隔离 ATG runtime；governance 使用
 disposable SQLite、多 Actor 身份和 loopback OTel collector 验证真实不变量。
-所有运行时资源都会在结束后受控清理。
-stdout 仅输出脱敏后的原始 runner.Document JSON，正式 Proof Pack 报告将在后续
-阶段加入。`)
+所有运行时资源都会在结束后受控清理。清理成功后，工具将 results.json、
+run-manifest.json 和结构化 evidence 原子发布到独立 output；stdout 与 results.json
+保持完全相同的字节。`)
 }

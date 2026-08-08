@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aki0225/AgentToolGate/evaluation/schema/run-manifest.schema.json",
+  "title": "AgentToolGate Proof Pack manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "platform",
+    "startedAt",
+    "completedAt",
+    "outcome",
+    "schemas",
+    "suites",
+    "files"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "v1" },
+    "runId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$" },
+    "platform": { "enum": ["windows", "linux"] },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "outcome": { "enum": ["passed", "failed"] },
+    "schemas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["results", "result", "evidence", "manifest"],
+      "properties": {
+        "results": { "const": "evaluation/schema/results.schema.json" },
+        "result": { "const": "evaluation/schema/result.schema.json" },
+        "evidence": { "const": "evaluation/schema/evidence.schema.json" },
+        "manifest": { "const": "evaluation/schema/run-manifest.schema.json" }
+      }
+    },
+    "suites": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "caseCount", "inputSha256"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
+          "caseCount": { "type": "integer", "minimum": 1 },
+          "inputSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sizeBytes", "sha256", "mediaType"],
+        "properties": {
+          "path": {
+            "oneOf": [
+              { "const": "results.json" },
+              { "type": "string", "pattern": "^evidence/[a-z0-9][a-z0-9._-]{0,127}\\.json$" }
+            ]
+          },
+          "sizeBytes": { "type": "integer", "minimum": 1 },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "mediaType": { "const": "application/json" }
+        }
+      }
+    }
+  }
+}

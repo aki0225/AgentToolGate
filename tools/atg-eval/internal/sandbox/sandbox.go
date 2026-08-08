@@ -20,7 +20,7 @@ const (
 	markerVersion  = "v1"
 )
 
-var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`)
+var runIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,79}$`)
 
 type Root struct {
 	path   string

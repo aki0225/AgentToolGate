@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aki0225/AgentToolGate/evaluation/schema/results.schema.json",
+  "title": "AgentToolGate 评估结果文档 v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "platform",
+    "startedAt",
+    "completedAt",
+    "results",
+    "metrics"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "v1"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"
+    },
+    "platform": {
+      "enum": [
+        "windows",
+        "linux"
+      ]
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "completedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "results": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "result.schema.json"
+      }
+    },
+    "metrics": {
+      "$ref": "#/$defs/metrics"
+    }
+  },
+  "$defs": {
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_count",
+        "passed_count",
+        "failed_count",
+        "skipped_count",
+        "dangerous_sample_count",
+        "dangerous_decision_sample_count",
+        "dangerous_governed_count",
+        "dangerous_governed_rate",
+        "benign_sample_count",
+        "benign_decision_sample_count",
+        "benign_silent_count",
+        "benign_silent_rate",
+        "benign_interrupted_count",
+        "benign_interruption_rate",
+        "approval_pre_upstream_calls",
+        "self_review_success_count",
+        "frozen_argument_mutation_success_count",
+        "ticket_replay_success_count",
+        "secret_leak_count",
+        "offline_high_risk_allow_count",
+        "decision_latency_sample_count",
+        "decision_latency_p50_ms",
+        "decision_latency_p95_ms"
+      ],
+      "properties": {
+        "case_count": { "type": "integer", "minimum": 0 },
+        "passed_count": { "type": "integer", "minimum": 0 },
+        "failed_count": { "type": "integer", "minimum": 0 },
+        "skipped_count": { "type": "integer", "minimum": 0 },
+        "dangerous_sample_count": { "type": "integer", "minimum": 0 },
+        "dangerous_decision_sample_count": { "type": "integer", "minimum": 0 },
+        "dangerous_governed_count": { "type": "integer", "minimum": 0 },
+        "dangerous_governed_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "benign_sample_count": { "type": "integer", "minimum": 0 },
+        "benign_decision_sample_count": { "type": "integer", "minimum": 0 },
+        "benign_silent_count": { "type": "integer", "minimum": 0 },
+        "benign_silent_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "benign_interrupted_count": { "type": "integer", "minimum": 0 },
+        "benign_interruption_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "approval_pre_upstream_calls": { "type": "integer", "minimum": 0 },
+        "self_review_success_count": { "type": "integer", "minimum": 0 },
+        "frozen_argument_mutation_success_count": { "type": "integer", "minimum": 0 },
+        "ticket_replay_success_count": { "type": "integer", "minimum": 0 },
+        "secret_leak_count": { "type": "integer", "minimum": 0 },
+        "offline_high_risk_allow_count": { "type": "integer", "minimum": 0 },
+        "decision_latency_sample_count": { "type": "integer", "minimum": 0 },
+        "decision_latency_p50_ms": { "type": "number", "minimum": 0 },
+        "decision_latency_p95_ms": { "type": "number", "minimum": 0 }
+      }
+    }
+  }
+}

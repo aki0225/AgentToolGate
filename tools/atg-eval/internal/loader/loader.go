@@ -3,6 +3,7 @@ package loader
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,18 +17,32 @@ import (
 
 const MaxCaseLineBytes = 1 << 20
 
+type Snapshot struct {
+	Cases  []model.Case
+	SHA256 string
+}
+
 func LoadFile(path string) ([]model.Case, error) {
+	snapshot, err := LoadFileSnapshot(path)
+	if err != nil {
+		return nil, err
+	}
+	return snapshot.Cases, nil
+}
+
+func LoadFileSnapshot(path string) (snapshot Snapshot, err error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("打开评估用例失败：%w", err)
+		return Snapshot{}, fmt.Errorf("打开评估用例失败：%w", err)
 	}
-	defer file.Close()
+	defer func() { err = errors.Join(err, file.Close()) }()
 
-	cases, err := Load(file)
+	hash := sha256.New()
+	cases, err := Load(io.TeeReader(file, hash))
 	if err != nil {
-		return nil, fmt.Errorf("读取 %s 失败：%w", path, err)
+		return Snapshot{}, fmt.Errorf("读取 %s 失败：%w", path, err)
 	}
-	return cases, nil
+	return Snapshot{Cases: cases, SHA256: fmt.Sprintf("%x", hash.Sum(nil))}, nil
 }
 
 // Load 严格解析 JSONL。未知字段和重复用例 ID 都会失败，避免格式漂移被静默忽略。

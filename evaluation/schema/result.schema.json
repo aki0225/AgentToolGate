@@ -33,7 +33,7 @@
       "const": "v1"
     },
     "runId": {
-      "$ref": "#/$defs/token"
+      "$ref": "#/$defs/runId"
     },
     "caseId": {
       "$ref": "#/$defs/token"
@@ -86,6 +86,7 @@
     },
     "signals": {
       "type": "array",
+      "maxItems": 512,
       "uniqueItems": true,
       "items": {
         "type": "string",
@@ -127,20 +128,82 @@
     },
     "evidence": {
       "type": "array",
+      "maxItems": 1,
       "items": {
         "$ref": "#/$defs/evidence"
       }
     },
     "skipReason": {
       "type": "string",
-      "maxLength": 1000
+      "maxLength": 4096
     },
     "failureReason": {
       "type": "string",
-      "maxLength": 2000
+      "maxLength": 4096
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "skipped"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "maxItems": 0
+          }
+        },
+        "required": [
+          "skipReason"
+        ]
+      },
+      "else": {
+        "properties": {
+          "evidence": {
+            "minItems": 1,
+            "maxItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "passed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "actualDecision"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "failed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "failureReason"
+        ]
+      }
+    }
+  ],
   "$defs": {
+    "runId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"
+    },
     "token": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
@@ -159,16 +222,19 @@
       "additionalProperties": false,
       "required": [
         "kind",
-        "path"
+        "path",
+        "sha256"
       ],
       "properties": {
         "kind": {
-          "$ref": "#/$defs/token"
+          "enum": [
+            "action_observation",
+            "governance_observation"
+          ]
         },
         "path": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 1024
+          "pattern": "^evidence/[a-z0-9][a-z0-9._-]{0,127}\\.json$"
         },
         "sha256": {
           "type": "string",

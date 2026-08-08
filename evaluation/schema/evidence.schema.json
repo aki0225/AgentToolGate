@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aki0225/AgentToolGate/evaluation/schema/evidence.schema.json",
+  "title": "AgentToolGate 结构化评估证据 v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "caseId",
+    "suite",
+    "platform",
+    "kind",
+    "capturedAt",
+    "truncated"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "v1" },
+    "runId": { "$ref": "#/$defs/runId" },
+    "caseId": { "$ref": "#/$defs/token" },
+    "suite": { "$ref": "#/$defs/token" },
+    "platform": { "enum": ["windows", "linux"] },
+    "kind": { "enum": ["action_observation", "governance_observation"] },
+    "capturedAt": { "type": "string", "format": "date-time" },
+    "truncated": { "type": "boolean" },
+    "action": { "$ref": "#/$defs/action" },
+    "governance": { "$ref": "#/$defs/governance" }
+  },
+  "oneOf": [
+    {
+      "properties": { "kind": { "const": "action_observation" } },
+      "required": ["action"],
+      "not": { "required": ["governance"] }
+    },
+    {
+      "properties": { "kind": { "const": "governance_observation" } },
+      "required": ["governance"],
+      "not": { "required": ["action"] }
+    }
+  ],
+  "$defs": {
+    "runId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$"
+    },
+    "token": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "decision": {
+      "enum": ["allow", "ask", "deny", "approval_required", "deny_with_ticket"]
+    },
+    "decisions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/decision" }
+    },
+    "signals": {
+      "type": "array",
+      "maxItems": 512,
+      "items": { "type": "string", "minLength": 1, "maxLength": 160 }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "actionType",
+        "entry",
+        "expectedDecision",
+        "decisionSilent",
+        "signals",
+        "durationMs",
+        "sideEffectAttempted",
+        "baselineSideEffectObserved",
+        "sideEffectObserved",
+        "upstreamCalls",
+        "secretLeakDetected"
+      ],
+      "properties": {
+        "operation": { "$ref": "#/$defs/token" },
+        "actionType": { "enum": ["command", "read", "write", "delete", "network", "tool_call"] },
+        "entry": { "enum": ["guard_core", "claude_hook", "codex_hook", "mcp_inbound"] },
+        "expectedDecision": { "$ref": "#/$defs/decisions" },
+        "actualDecision": { "$ref": "#/$defs/decision" },
+        "riskLevel": { "type": "string", "maxLength": 32 },
+        "decisionSilent": { "type": "boolean" },
+        "signals": { "$ref": "#/$defs/signals" },
+        "durationMs": { "type": "number", "minimum": 0 },
+        "sideEffectAttempted": { "type": "boolean" },
+        "baselineSideEffectObserved": { "type": "boolean" },
+        "sideEffectObserved": { "type": "boolean" },
+        "upstreamCalls": { "type": "integer", "minimum": 0 },
+        "secretLeakDetected": { "type": "boolean" },
+        "failureReason": { "type": "string", "maxLength": 4096 }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "expectedDecision",
+        "signals",
+        "durationMs",
+        "sideEffectObserved",
+        "upstreamCallsBeforeApproval",
+        "selfReviewSucceeded",
+        "frozenArgumentMutationSucceeded",
+        "ticketReplaySucceeded",
+        "secretLeakDetected",
+        "offlineHighRiskAllowed"
+      ],
+      "properties": {
+        "operation": { "$ref": "#/$defs/token" },
+        "expectedDecision": { "$ref": "#/$defs/decisions" },
+        "actualDecision": { "$ref": "#/$defs/decision" },
+        "riskLevel": { "type": "string", "maxLength": 32 },
+        "signals": { "$ref": "#/$defs/signals" },
+        "durationMs": { "type": "number", "minimum": 0 },
+        "sideEffectObserved": { "type": "boolean" },
+        "upstreamCallsBeforeApproval": { "type": "integer", "minimum": 0 },
+        "selfReviewSucceeded": { "type": "boolean" },
+        "frozenArgumentMutationSucceeded": { "type": "boolean" },
+        "ticketReplaySucceeded": { "type": "boolean" },
+        "secretLeakDetected": { "type": "boolean" },
+        "offlineHighRiskAllowed": { "type": "boolean" },
+        "failureReason": { "type": "string", "maxLength": 4096 }
+      }
+    }
+  }
+}

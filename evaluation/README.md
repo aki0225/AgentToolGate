@@ -1,10 +1,10 @@
 # AgentToolGate Agent 安全评估
 
 该目录保存公开、可重复生成的评估契约和用例。评估工具位于
-`tools/atg-eval/`。当前 `run` 命令只向 stdout 输出脱敏后的 `runner.Document` JSON；
-disposable sandbox 默认位于 `.tmp/evaluation/<run-id>/`，仅在资源清理成功后删除。
-清理失败按基础设施错误返回非零。正式持久化报告将在阶段 3 使用独立输出目录，不会
-与 sandbox 混用。
+`tools/atg-eval/`。`run` 命令将脱敏后的 `results.json`、`run-manifest.json` 和结构化
+`evidence/` 原子发布到显式 `--output` 目录；stdout 与 `results.json` 保持完全相同的
+字节。disposable sandbox 默认位于 `.tmp/evaluation/<run-id>/`，仅在资源清理成功后
+删除，不与持久化输出混用。清理或发布失败按基础设施错误返回非零。
 
 ## 当前阶段
 
@@ -59,6 +59,21 @@ disposable sandbox 默认位于 `.tmp/evaluation/<run-id>/`，仅在资源清理
 - evaluator 的默认 Go 测试会构建真实 ATG 后端，并覆盖 MCP Inbound 与 6 个治理不变量
   的 loopback 集成路径；它仍不会通过 `atg-eval run` 执行完整 30 个 suite 或上传报告。
 
+阶段 2D.1 已加固评估运行时验证：
+
+- 集成测试构建禁用 VCS stamping，CI 固定 Python 3.13，并禁止治理用例静默跳过 Python。
+- runtime 使用 `os.OpenRoot` 约束日志和 SQLite 路径，TEMP / TMP / TMPDIR 固定在 sandbox。
+- 子进程启动、等待、停止、日志关闭和 sandbox 清理错误均明确返回，不吞掉失败。
+
+阶段 3A 已完成机器可读 Proof Pack：
+
+- `--output` 与 disposable sandbox 必须分离，已有输出不会被覆盖。
+- 非 skipped case 各生成一份限长、脱敏、严格校验的结构化 evidence。
+- loader 在同一次读取中解析 suite 并固定输入 SHA256；manifest 登记该快照以及
+  `results.json` 和 evidence 的大小与 SHA256，不在运行结束后重读输入，也不登记自身哈希。
+- 同父目录 staging 通过文件集、语义和摘要复核后原子发布；失败不留下半成品目录。
+- failed result 仍发布完整 Proof Pack 并返回 1；基础设施失败不发布最终目录。
+
 阶段 2D 在 2026-08-07 的 Windows 本地真实进程验收结果：
 
 - dangerous suite：12 / 12 passed，`dangerous_governed_rate = 1`。
@@ -69,12 +84,14 @@ disposable sandbox 默认位于 `.tmp/evaluation/<run-id>/`，仅在资源清理
   `frozen_argument_mutation_success_count`、`ticket_replay_success_count`、
   `secret_leak_count` 和 `offline_high_risk_allow_count` 均为 0。
 
-这组数字来自当前工作树构建的真实 ATG 后端与评估工具，不是手工填写；它只作为阶段
-2D 的 Windows 本地恢复基线，不替代 Linux、CI、正式报告或可发布 Proof Pack。
+2026-08-08 使用阶段 3A 的真实 Windows 二进制重新执行三套 suite，结果仍为 dangerous
+12 / 12、benign 12 / 12、governance 6 / 6 passed。三套输出均通过 manifest SHA256、
+evidence 引用、stdout 精确字节、sandbox 清理、进程残留和敏感信息核对。这是本地
+Stage 3A 验收，不替代 Linux、CI、JUnit、Markdown、HTML 或正式发布结论。
 
-阶段 2 的 30 个用例现已具备真实执行路径，但 Proof Pack 和正式 evidence 仍未完成，
-也不代表 PR quick evaluation 已经启用。用例发现生产缺陷时必须先单独修复并保留回归
-测试，不能通过放宽 expected decision 隐藏问题。
+阶段 2 的 30 个用例现已具备真实执行路径，Stage 3A 已能生成可追溯的机器可读产物，
+但人读报告与 CI Artifact 仍未完成，也不代表 PR quick evaluation 已经启用。用例发现
+生产缺陷时必须先单独修复并保留回归测试，不能通过放宽 expected decision 隐藏问题。
 
 指标中的 sample count 统计非 skipped 用例，decision sample count 只统计获得有效
 `actualDecision` 的用例。Driver 不可用等基础设施失败保留在 `failed_count`，但不会计入
@@ -102,6 +119,7 @@ go -C tools/atg-eval build -buildvcs=false `
   --input .\evaluation\suites\dangerous-actions-v1.jsonl `
   --atg .\.tmp\bin\agenttoolgate.exe `
   --run-id local-dangerous `
+  --output .\.tmp\evaluation-results\local-dangerous `
   --sandbox-base .\.tmp\evaluation `
   --guard-timeout 30s `
   > .\.tmp\evaluation-dangerous-result.json
@@ -111,11 +129,13 @@ go -C tools/atg-eval build -buildvcs=false `
 用例。governance suite 会启动多组隔离的真实后端、共享 loopback OTel collector，并
 执行产品 Hook，因此通常比 dangerous / benign suite 更慢。
 
-`--input`、`--atg` 和 `--run-id` 必填；`--sandbox-base` 默认是 `.tmp/evaluation`。
+`--input`、`--atg`、`--run-id` 和 `--output` 必填；`--sandbox-base` 默认是
+`.tmp/evaluation`。`--output` 必须不存在，且不能与 sandbox base 相同或互为父目录。
 `--guard-timeout` 使用 Go duration 格式，默认是 `30s`，可在较慢的 Windows 或 CI
 环境显式调大。超时仍按基础设施失败处理，不会自动重试或把失败改写为通过。
 参数错误返回 2，基础设施错误或 Document 中存在 failed result 返回 1，仅包含 passed /
-skipped 时返回 0。输出是原始、脱敏的 JSON Document，不是正式 Proof Pack 报告。
+skipped 时返回 0。Stage 3A 输出是机器可读 Proof Pack；JUnit、Markdown 和单文件 HTML
+将在 Stage 3B 由同一份 results 模型生成。
 
 校验三份 JSONL：
 

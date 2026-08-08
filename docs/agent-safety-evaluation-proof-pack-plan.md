@@ -395,10 +395,10 @@ HTML 报告必须：
 
 失败时上传报告和脱敏 evidence。
 
-PR 快速评估与当前基础门禁不是同一能力；只有治理执行器、报告生成与脱敏 evidence
-链路完成后，才会启用该流程。MCP Inbound 只读执行器已在阶段 2C 接入，6 个治理不变量
-执行器已在阶段 2D 接入，但报告和 evidence 尚未完成，因此还不能启用 PR quick
-evaluation。
+PR 快速评估与当前基础门禁不是同一能力。MCP Inbound 只读执行器已在阶段 2C 接入，
+6 个治理不变量执行器已在阶段 2D 接入，机器可读 results、manifest 和脱敏 evidence
+已在阶段 3A 完成；JUnit、Markdown、HTML、quick suite 选择和 Artifact workflow 尚未
+完成，因此还不能启用 PR quick evaluation。
 
 ### 11.3 完整评估（后续阶段）
 
@@ -533,8 +533,9 @@ feat(evaluation): 建立评估契约与安全沙箱
 - 2026-08-07 使用阶段 2D 当前工作树重新构建 Windows 二进制并执行三套 suite：
   dangerous 12 / 12 passed，benign 12 / 12 passed，governance 6 / 6 passed；6 项治理
   违规计数均为 0。
-- 阶段 2 的 30 个用例现已具备真实执行路径。正式 Proof Pack 报告、可追溯 evidence、
-  Linux 真实运行和 CI 评估仍属于后续阶段，不能用本地恢复基线替代。
+- 阶段 2 的 30 个用例现已具备真实执行路径；机器可读 results、manifest 和可追溯
+  evidence 已由阶段 3A 完成。Linux 真实运行、CI 评估和人读报告仍属于后续阶段，
+  不能用 Windows 本地验收替代。
 
 提交建议：
 
@@ -544,10 +545,22 @@ feat(evaluation): 增加核心安全与良性用例
 
 ### 阶段 3：报告
 
-- JSON。
+阶段 3A 已完成：
+
+- 显式 `--output`，与 disposable sandbox 分离且禁止覆盖。
+- 严格、脱敏的 `results.json` 与逐 case evidence。
+- 在同一次 suite 读取中固定输入摘要，并登记输入与产物 SHA256 的 `run-manifest.json`。
+- 同父目录 staging 复核与原子发布；失败不留下半成品。
+- failed result 发布完整机器可读 Proof Pack 后返回非零。
+- 2026-08-08 Windows 真实二进制验收：dangerous 12 / 12、benign 12 / 12、
+  governance 6 / 6 passed，manifest、evidence、stdout、清理和敏感扫描均通过。
+
+阶段 3B 待完成：
+
 - JUnit。
 - Markdown。
 - 单文件 HTML。
+- 三种人读或 CI 报告必须从同一份最终 results 模型生成。
 
 提交建议：
 
@@ -619,8 +632,8 @@ git diff --check
 - [x] 30 个用例均有明确 passed / failed / skipped。
 - [ ] 结果可以稳定生成 JSON、JUnit、Markdown 和 HTML。
 - [x] 汇总指标由原始结果计算。
-- [ ] 危险动作失败时保留可核对 evidence。
-- [ ] 良性动作误拦截被视为失败或明确风险，不通过调规则隐藏。
+- [x] 危险动作失败时保留可核对 evidence。
+- [x] 良性动作误拦截被视为失败或明确风险，不通过调规则隐藏。
 - [ ] PR quick suite 和手动 full suite 可运行。
 - [ ] Pages 和 README 不包含手工编造指标。
 - [ ] 真实 Codex / Claude 验收使用 disposable repo 和 synthetic 数据。

@@ -21,6 +21,7 @@ import (
 	"agenttoolgate/evaluation/internal/mockserver"
 	"agenttoolgate/evaluation/internal/model"
 	"agenttoolgate/evaluation/internal/redact"
+	"agenttoolgate/evaluation/internal/report"
 	evalrunner "agenttoolgate/evaluation/internal/runner"
 	"agenttoolgate/evaluation/internal/sandbox"
 )
@@ -35,7 +36,7 @@ type documentRunner interface {
 }
 
 type runDependencies struct {
-	loadCases               func(string) ([]model.Case, error)
+	loadSuite               func(string) (loader.Snapshot, error)
 	currentPlatform         func() (model.Platform, error)
 	generateSyntheticSecret func() (string, error)
 	resolveExecutable       func(string) (string, error)
@@ -46,19 +47,21 @@ type runDependencies struct {
 	newRunner               func(evalrunner.Config) (documentRunner, error)
 	closeMockServer         func(*mockserver.Server) error
 	cleanupSandbox          func(*sandbox.Root) error
+	publishReport           func(report.PublishOptions) (report.Published, error)
 }
 
 type runOptions struct {
 	input        string
 	atg          string
 	runID        string
+	output       string
 	sandboxBase  string
 	guardTimeout time.Duration
 }
 
 func defaultRunDependencies() runDependencies {
 	return runDependencies{
-		loadCases:               loader.LoadFile,
+		loadSuite:               loader.LoadFileSnapshot,
 		currentPlatform:         evalrunner.CurrentPlatform,
 		generateSyntheticSecret: generateSyntheticSecret,
 		resolveExecutable:       resolveATGExecutable,
@@ -77,6 +80,7 @@ func defaultRunDependencies() runDependencies {
 		cleanupSandbox: func(root *sandbox.Root) error {
 			return root.Cleanup()
 		},
+		publishReport: report.Publish,
 	}
 }
 
@@ -86,6 +90,7 @@ func runEvaluation(args []string, stdout, stderr io.Writer, dependencies runDepe
 	input := flags.String("input", "", "待执行的 JSONL 文件")
 	atg := flags.String("atg", "", "agenttoolgate 可执行文件")
 	runID := flags.String("run-id", "", "本次评估 run ID")
+	output := flags.String("output", "", "最终 Proof Pack 输出目录")
 	sandboxBase := flags.String("sandbox-base", defaultSandboxBase, "disposable sandbox base 目录")
 	guardTimeout := flags.Duration("guard-timeout", defaultGuardTimeout, "单次 ATG Guard CLI 调用超时")
 	if err := flags.Parse(args); err != nil {
@@ -106,6 +111,10 @@ func runEvaluation(args []string, stdout, stderr io.Writer, dependencies runDepe
 		fmt.Fprintln(stderr, "run 需要 --run-id <id>")
 		return 2
 	}
+	if strings.TrimSpace(*output) == "" {
+		fmt.Fprintln(stderr, "run 需要 --output <directory>")
+		return 2
+	}
 	if strings.TrimSpace(*sandboxBase) == "" {
 		fmt.Fprintln(stderr, "run 的 --sandbox-base 不能为空")
 		return 2
@@ -119,25 +128,54 @@ func runEvaluation(args []string, stdout, stderr io.Writer, dependencies runDepe
 		return 2
 	}
 
+	trimmedRunID := strings.TrimSpace(*runID)
+	if err := report.ValidateRunID(trimmedRunID); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	location, err := report.NormalizeLocation(strings.TrimSpace(*output), strings.TrimSpace(*sandboxBase))
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		if errors.Is(err, report.ErrOutputExists) {
+			return 1
+		}
+		return 2
+	}
 	options := runOptions{
 		input:        strings.TrimSpace(*input),
 		atg:          strings.TrimSpace(*atg),
-		runID:        strings.TrimSpace(*runID),
-		sandboxBase:  strings.TrimSpace(*sandboxBase),
+		runID:        trimmedRunID,
+		output:       location.Output,
+		sandboxBase:  location.SandboxBase,
 		guardTimeout: *guardTimeout,
 	}
-	document, redactor, completed, runErr := executeEvaluation(context.Background(), options, dependencies)
-	if completed {
-		if err := writeRunDocument(stdout, redactor, document); err != nil {
-			fmt.Fprintf(stderr, "输出评估结果失败：%v\n", err)
-			if runErr != nil {
-				writeRunError(stderr, redactor, runErr)
-			}
-			return 1
-		}
-	}
+	document, cases, inputSHA256, redactor, completed, runErr := executeEvaluation(
+		context.Background(),
+		options,
+		dependencies,
+	)
 	if runErr != nil {
 		writeRunError(stderr, redactor, runErr)
+		return 1
+	}
+	if !completed {
+		writeRunError(stderr, redactor, fmt.Errorf("评估未生成完整结果"))
+		return 1
+	}
+	published, err := dependencies.publishReport(report.PublishOptions{
+		Output:      options.output,
+		SandboxBase: options.sandboxBase,
+		InputSHA256: inputSHA256,
+		Cases:       cases,
+		Document:    document,
+		Redactor:    redactor,
+	})
+	if err != nil {
+		writeRunError(stderr, redactor, fmt.Errorf("发布 Proof Pack 失败：%w", err))
+		return 1
+	}
+	if err := writeExact(stdout, published.ResultsBytes); err != nil {
+		fmt.Fprintf(stderr, "输出评估结果失败：%v\n", err)
 		return 1
 	}
 	if documentHasFailedResult(document) {
@@ -152,6 +190,8 @@ func executeEvaluation(
 	dependencies runDependencies,
 ) (
 	document evalrunner.Document,
+	cases []model.Case,
+	inputSHA256 string,
 	redactor *redact.Redactor,
 	completed bool,
 	err error,
@@ -159,42 +199,48 @@ func executeEvaluation(
 	redactor = redact.New(redact.Options{})
 	inputAbsolute, err := normalizeRunPath(options.input, "input")
 	if err != nil {
-		return document, redactor, false, err
+		return document, nil, "", redactor, false, err
 	}
 	sandboxBaseAbsolute, err := normalizeRunPath(options.sandboxBase, "sandbox base")
 	if err != nil {
-		return document, redactor, false, err
+		return document, nil, "", redactor, false, err
 	}
-	redactor = newRunRedactor("", inputAbsolute, "", sandboxBaseAbsolute, "", "")
-
-	cases, err := dependencies.loadCases(inputAbsolute)
+	outputAbsolute, err := normalizeRunPath(options.output, "output")
 	if err != nil {
-		return document, redactor, false, err
+		return document, nil, "", redactor, false, err
 	}
+	redactor = newRunRedactor("", inputAbsolute, "", sandboxBaseAbsolute, "", "", outputAbsolute)
+
+	snapshot, err := dependencies.loadSuite(inputAbsolute)
+	if err != nil {
+		return document, nil, "", redactor, false, err
+	}
+	cases = snapshot.Cases
+	inputSHA256 = snapshot.SHA256
 	platform, err := dependencies.currentPlatform()
 	if err != nil {
-		return document, redactor, false, err
+		return document, cases, inputSHA256, redactor, false, err
 	}
 	syntheticSecret, err := dependencies.generateSyntheticSecret()
 	if err != nil {
-		return document, redactor, false, fmt.Errorf("生成 synthetic secret 失败：%w", err)
+		return document, cases, inputSHA256, redactor, false, fmt.Errorf("生成 synthetic secret 失败：%w", err)
 	}
 	executable, err := dependencies.resolveExecutable(options.atg)
 	if err != nil {
-		return document, redactor, false, fmt.Errorf("ATG 可执行文件不可用")
+		return document, cases, inputSHA256, redactor, false, fmt.Errorf("ATG 可执行文件不可用")
 	}
 	if !filepath.IsAbs(executable) {
-		return document, redactor, false, fmt.Errorf("ATG 可执行文件不可用")
+		return document, cases, inputSHA256, redactor, false, fmt.Errorf("ATG 可执行文件不可用")
 	}
 	executable = filepath.Clean(executable)
 	repositoryRoot := ""
 	if casesContainEntry(cases, model.EntryGovernance) {
 		if dependencies.resolveRepositoryRoot == nil {
-			return document, redactor, false, fmt.Errorf("缺少 evaluation repository root 解析器")
+			return document, cases, inputSHA256, redactor, false, fmt.Errorf("缺少 evaluation repository root 解析器")
 		}
 		repositoryRoot, err = dependencies.resolveRepositoryRoot(inputAbsolute)
 		if err != nil {
-			return document, redactor, false, err
+			return document, cases, inputSHA256, redactor, false, err
 		}
 	}
 	redactor = newRunRedactor(
@@ -204,11 +250,12 @@ func executeEvaluation(
 		sandboxBaseAbsolute,
 		"",
 		repositoryRoot,
+		outputAbsolute,
 	)
 
 	root, err := dependencies.createSandbox(sandboxBaseAbsolute, options.runID)
 	if err != nil {
-		return document, redactor, false, fmt.Errorf("创建 sandbox 失败：%w", err)
+		return document, cases, inputSHA256, redactor, false, fmt.Errorf("创建 sandbox 失败：%w", err)
 	}
 	redactor = newRunRedactor(
 		syntheticSecret,
@@ -217,6 +264,7 @@ func executeEvaluation(
 		sandboxBaseAbsolute,
 		root.Path(),
 		repositoryRoot,
+		outputAbsolute,
 	)
 
 	var server *mockserver.Server
@@ -243,7 +291,7 @@ func executeEvaluation(
 
 	server, err = dependencies.newMockServer(mockserver.Options{Redactor: redactor})
 	if err != nil {
-		return document, redactor, false, err
+		return document, cases, inputSHA256, redactor, false, err
 	}
 	decisionDriver, err = dependencies.newDriver(driver.Config{
 		Executable:           executable,
@@ -259,7 +307,7 @@ func executeEvaluation(
 		MCPStartupTimeout:    options.guardTimeout,
 	})
 	if err != nil {
-		return document, redactor, false, fmt.Errorf("创建 Guard CLI Driver 失败：%w", err)
+		return document, cases, inputSHA256, redactor, false, fmt.Errorf("创建 Guard CLI Driver 失败：%w", err)
 	}
 	instance, err := dependencies.newRunner(evalrunner.Config{
 		RunID:           options.runID,
@@ -272,12 +320,12 @@ func executeEvaluation(
 		Redactor:        redactor,
 	})
 	if err != nil {
-		return document, redactor, false, fmt.Errorf("创建 Runner 失败：%w", err)
+		return document, cases, inputSHA256, redactor, false, fmt.Errorf("创建 Runner 失败：%w", err)
 	}
 
 	document = instance.Run(ctx)
 	completed = true
-	return document, redactor, completed, nil
+	return document, cases, inputSHA256, redactor, completed, nil
 }
 
 func generateSyntheticSecret() (string, error) {
@@ -340,9 +388,10 @@ func newRunRedactor(
 	executableAbsolute,
 	sandboxBaseAbsolute,
 	sandboxRootAbsolute,
-	repositoryRootAbsolute string,
+	repositoryRootAbsolute,
+	outputAbsolute string,
 ) *redact.Redactor {
-	paths := make([]redact.PathReplacement, 0, 5)
+	paths := make([]redact.PathReplacement, 0, 6)
 	if inputAbsolute != "" {
 		paths = append(paths, redact.PathReplacement{
 			Path:        inputAbsolute,
@@ -373,11 +422,28 @@ func newRunRedactor(
 			Replacement: "<repository>",
 		})
 	}
+	if outputAbsolute != "" {
+		paths = append(paths, redact.PathReplacement{
+			Path:        outputAbsolute,
+			Replacement: "<output>",
+		})
+	}
 	secrets := []string{}
 	if secret != "" {
 		secrets = append(secrets, secret)
 	}
 	return redact.New(redact.Options{Secrets: secrets, Paths: paths})
+}
+
+func writeExact(writer io.Writer, raw []byte) error {
+	written, err := writer.Write(raw)
+	if err != nil {
+		return err
+	}
+	if written != len(raw) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func writeRunDocument(writer io.Writer, redactor *redact.Redactor, document evalrunner.Document) error {
