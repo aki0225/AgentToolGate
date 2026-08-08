@@ -23,9 +23,9 @@
   良性开发动作 12 个、治理不变量 6 个。
 - 危险与良性用例恰好覆盖 24 个代码内受限 operation；统一元数据校验 operation
   与 action type、entry、mode、platform 和目标声明的一致性。
-- CI 的 `evaluation` job 独立运行评估工具的 test、vet 和三份 suite validate，不通过
-  `atg-eval run` 执行完整 30 个 suite，也不持久化评估报告或上传 evaluation artifact。
-  默认 Go 集成测试会启动仅绑定 loopback 的真实后端、mock server 和 OTel collector。
+- CI 的 `evaluation` job 独立运行评估工具的 test、vet 和三份 suite validate；阶段 4A
+  在同一 job 上增加固定 quick evaluation 和 Artifact。默认 Go 集成测试会启动仅绑定
+  loopback 的真实后端、mock server 和 OTel collector。
 
 阶段 2B 已完成最小 Guard Core 执行链：
 
@@ -83,6 +83,18 @@
 - HTML 使用自动转义、内联样式和无脚本 CSP，不引用 CDN、外部字体或分析服务。
 - `ask`、`approval_required` 和 `deny_with_ticket` 保留原始治理语义，不折叠成失败。
 
+阶段 4A 已接入 CI 与跨平台 Proof Pack：
+
+- `evaluation/suites/pr-quick-v1.jsonl` 固定选择 6 个危险、6 个良性和 6 个治理用例；
+  CI 校验 18 个 ID 唯一且均来自 canonical suite。
+- `push`、`pull_request` 和 `workflow_dispatch` 在 Ubuntu runner 实际执行 quick suite。
+- `workflow_dispatch` 额外在 Windows / Linux 原生 runner 执行完整三套 suite；一套失败
+  不会阻止后续 suite 运行，最终统一返回非零。
+- quick 和 full Artifact 都使用 `if: always()` 上传 Proof Pack 与日志，成功和失败均保留
+  可核对证据。
+- Python 3.13、Go cache、二进制、sandbox、日志和 output 都由 workflow 显式配置，运行
+  内容位于 runner workspace 的 `.tmp`。
+
 阶段 2D 在 2026-08-07 的 Windows 本地真实进程验收结果：
 
 - dangerous suite：12 / 12 passed，`dangerous_governed_rate = 1`。
@@ -98,9 +110,22 @@
 evidence 引用、stdout 精确字节、sandbox 清理、进程残留和敏感信息核对。这是本地
 Stage 3A/3B 验收，不替代 Linux、CI Artifact 或正式发布结论。
 
-阶段 2 的 30 个用例现已具备真实执行路径，Stage 3A/3B 已能生成可追溯的机器可读和
-人读产物，但 CI Artifact 仍未完成，也不代表 PR quick evaluation 已经启用。用例发现
-生产缺陷时必须先单独修复并保留回归测试，不能通过放宽 expected decision 隐藏问题。
+2026-08-08 的 GitHub Actions 手动 run
+[`31248402718`](https://github.com/aki0225/AgentToolGate/actions/runs/31248402718)
+已验证 Stage 4A：
+
+- quick：18 / 18 passed，危险/良性/治理各 6 个。
+- Windows full：dangerous 12 / 12、benign 12 / 12、governance 6 / 6 passed。
+- Linux full：dangerous 8 passed + 4 个明确平台不适用 skipped，benign 12 / 12、
+  governance 6 / 6 passed。
+- Artifact：`agent-safety-proof-pack-quick-31248402718`、
+  `agent-safety-proof-pack-full-windows-31248402718`、
+  `agent-safety-proof-pack-full-linux-31248402718`。
+
+三份 Artifact 已下载核对 manifest 大小/SHA256、results/JUnit/Markdown/HTML、evidence、
+stdout 精确字节和敏感信息扫描。CI 结果仍不等于真实 Codex / Claude Code 客户端验收，
+也不是正式 Release 证据。用例发现生产缺陷时必须先单独修复并保留回归测试，不能通过
+放宽 expected decision 隐藏问题。
 
 指标中的 sample count 统计非 skipped 用例，decision sample count 只统计获得有效
 `actualDecision` 的用例。Driver 不可用等基础设施失败保留在 `failed_count`，但不会计入

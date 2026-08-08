@@ -374,42 +374,56 @@ HTML 报告必须：
 
 ### 11.1 评估工具基础门禁（阶段 2A 建立，阶段 2D 加固）
 
-当前 CI 使用独立 job 执行：
+当前 CI 使用独立 `evaluation` job 执行：
 
 - `go -C tools/atg-eval test -count=1 -timeout 60s ./...`
 - `go -C tools/atg-eval vet ./...`
 - 分别 validate dangerous、benign 和 governance 三份 JSONL suite。
+- 构建真实 backend 与 evaluator，并执行仓库内固定的 quick suite。
 
-该 job 不通过 `atg-eval run` 执行完整 30 个 suite，也不生成或上传报告及 evidence。
-阶段 2D 后，默认 Go 测试会构建真实 ATG 后端，在随机 loopback 端口覆盖 MCP Inbound
-只读路径和 6 个治理不变量执行器；它不启动真实 Codex / Claude Code 客户端，不访问
-公网或真实上游。
+完整 30 个用例不进入默认 CI，而是由手动 full matrix 执行。默认 Go 测试和 quick
+evaluation 都不会启动真实 Codex / Claude Code 客户端，也不访问公网或真实上游。
 
-### 11.2 PR 快速评估（后续阶段）
+### 11.2 PR 快速评估（阶段 4A 已完成）
 
-每个 PR 执行：
+`push`、`pull_request` 和 `workflow_dispatch` 都执行固定 quick suite：
 
 - 6 个危险动作。
 - 6 个良性动作。
 - 6 个治理不变量。
 
-失败时上传报告和脱敏 evidence。
+无论成功或失败，均通过 `if: always()` 上传 results、manifest、JUnit、Markdown、离线
+HTML、脱敏 evidence 和运行日志。
 
-PR 快速评估与当前基础门禁不是同一能力。MCP Inbound 只读执行器已在阶段 2C 接入，
-6 个治理不变量执行器已在阶段 2D 接入，机器可读 results、manifest 和脱敏 evidence
-已在阶段 3A 完成，JUnit、Markdown 和 HTML 已在阶段 3B 完成；quick suite 选择和
-Artifact workflow 尚未完成，因此还不能启用 PR quick evaluation。
+2026-08-08 的 `workflow_dispatch` run
+[`31248402718`](https://github.com/aki0225/AgentToolGate/actions/runs/31248402718)
+中，quick suite 为 18 / 18 passed，Artifact
+`agent-safety-proof-pack-quick-31248402718`（ID `9019224577`）已完成 manifest
+大小/SHA256、stdout、报告和敏感信息核对。
 
-### 11.3 完整评估（后续阶段）
+### 11.3 完整评估（阶段 4A 已完成）
 
-完整 30 个用例在以下场景运行：
+完整 30 个用例当前通过 `workflow_dispatch` 手动运行：
 
-- `workflow_dispatch`
-- Release tag
-- 后续可选 nightly
+- Windows 与 Linux matrix 使用各自原生 runner。
+- 三套 suite 即使前一套失败也继续执行，最终统一返回失败。
+- 成功或失败均上传各平台完整 Proof Pack。
 
 Windows 与 Linux 分别运行适用用例，平台不适用必须记录 `skipped`，不能静默当作
-通过。
+通过。Release tag 和 nightly 触发仍是后续可选项，当前 workflow 未启用。
+
+2026-08-08 的同一手动 run 中：
+
+- Windows：dangerous 12 / 12、benign 12 / 12、governance 6 / 6 passed。
+- Linux：dangerous 8 passed + 4 个明确平台不适用 skipped，benign 12 / 12、
+  governance 6 / 6 passed。
+- Windows Artifact：`agent-safety-proof-pack-full-windows-31248402718`
+  （ID `9019225655`）。
+- Linux Artifact：`agent-safety-proof-pack-full-linux-31248402718`
+  （ID `9019223040`）。
+
+两份 Artifact 均已核对 manifest 文件大小与 SHA256、results/JUnit/Markdown/HTML、
+evidence 引用、stdout 精确字节和敏感信息扫描；报告不引用外部资源。
 
 ## 12. 真实客户端验收
 
@@ -533,9 +547,9 @@ feat(evaluation): 建立评估契约与安全沙箱
 - 2026-08-07 使用阶段 2D 当前工作树重新构建 Windows 二进制并执行三套 suite：
   dangerous 12 / 12 passed，benign 12 / 12 passed，governance 6 / 6 passed；6 项治理
   违规计数均为 0。
-- 阶段 2 的 30 个用例现已具备真实执行路径；机器可读 results、manifest 和可追溯
-  evidence 已由阶段 3A 完成。Linux 真实运行、CI 评估和人读报告仍属于后续阶段，
-  不能用 Windows 本地验收替代。
+- 阶段 2 的 30 个用例具备真实执行路径后，阶段 3A/3B 补齐机器可读 evidence 与人读
+  报告，阶段 4A 再补齐 Linux 和 Windows CI 运行；各阶段证据不能用更早的 Windows
+  本地验收替代。
 
 提交建议：
 
@@ -575,10 +589,15 @@ feat(evaluation): 生成可追溯评估报告
 
 ### 阶段 4：CI 与展示
 
+阶段 4A 已完成：
+
 - PR quick suite。
-- 手动 full suite。
-- Artifact。
-- README / Pages。
+- 手动 Windows / Linux full suite。
+- 成功和失败路径都保留 Artifact。
+
+阶段 4B 待完成：
+
+- README / Pages 只展示由已核验报告计算、可追溯到 CI Artifact 的指标。
 
 提交建议：
 
@@ -639,7 +658,7 @@ git diff --check
 - [x] 汇总指标由原始结果计算。
 - [x] 危险动作失败时保留可核对 evidence。
 - [x] 良性动作误拦截被视为失败或明确风险，不通过调规则隐藏。
-- [ ] PR quick suite 和手动 full suite 可运行。
+- [x] PR quick suite 和手动 full suite 可运行。
 - [ ] Pages 和 README 不包含手工编造指标。
 - [ ] 真实 Codex / Claude 验收使用 disposable repo 和 synthetic 数据。
 - [ ] `v0.2.0` 下载内容、源码、报告和公开文档一致。
