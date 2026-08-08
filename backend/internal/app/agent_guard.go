@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -25,6 +26,12 @@ import (
 
 const agentGuardEvaluateToolKey = "agent_guard.evaluate"
 const agentGuardApprovalTTL = 10 * time.Minute
+
+var agentGuardExecWriteTargetPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(^|[\s;&|])([0-9]*>>?|&>)[\s]*("[^"]+"|'[^']+'|[^\s;&|]+)`),
+	regexp.MustCompile(`(?i)(^|[;&|][\s]*|[\s]+)(mkdir|touch|tee|truncate)[\s]+(-[^\s]+[\s]+)*("[^"]+"|'[^']+'|[^\s;&|]+)`),
+	regexp.MustCompile(`(?i)(^|[\s]+)-(literalpath|filepath|path)[\s]+("[^"]+"|'[^']+'|[^\s;&|]+)`),
+}
 
 type agentGuardEvaluateRequest struct {
 	Adapter              string `json:"adapter"`
@@ -666,6 +673,9 @@ func deriveAgentGuardRisk(actionType, target string, isScript bool, content stri
 	if containsSensitiveAgentGuardContent(lowerContent) {
 		risk = maxRiskLevel(risk, "high")
 	}
+	if containsSensitiveAgentGuardExecWriteTarget(actionType, target, content) {
+		risk = maxRiskLevel(risk, "high")
+	}
 	if isScript {
 		if containsHiddenScriptExecutionFeatures(lowerContent) {
 			risk = maxRiskLevel(risk, "high")
@@ -680,6 +690,49 @@ func deriveAgentGuardRisk(actionType, target string, isScript bool, content stri
 		risk = maxRiskLevel(risk, "medium")
 	}
 	return risk
+}
+
+func containsSensitiveAgentGuardExecWriteTarget(actionType, target, content string) bool {
+	switch strings.ToLower(strings.TrimSpace(actionType)) {
+	case "exec", "execute", "run":
+	default:
+		return false
+	}
+
+	for _, command := range []string{target, content} {
+		for _, candidate := range agentGuardExecWriteTargets(command) {
+			normalized := normalizeAgentGuardTarget(candidate)
+			if isAgentGuardSensitiveTarget(normalized) || isAgentGuardSelfTamperTarget(normalized) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func agentGuardExecWriteTargets(command string) []string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil
+	}
+
+	targets := make([]string, 0, 2)
+	for _, pattern := range agentGuardExecWriteTargetPatterns {
+		for _, match := range pattern.FindAllStringSubmatch(command, -1) {
+			candidate := ""
+			for index := len(match) - 1; index > 0; index-- {
+				if strings.TrimSpace(match[index]) != "" {
+					candidate = match[index]
+					break
+				}
+			}
+			candidate = strings.Trim(strings.TrimRight(strings.TrimSpace(candidate), ",;)"), `"'`)
+			if candidate != "" && !strings.HasPrefix(candidate, "&") {
+				targets = append(targets, candidate)
+			}
+		}
+	}
+	return targets
 }
 
 func isAgentGuardSensitiveTarget(target string) bool {

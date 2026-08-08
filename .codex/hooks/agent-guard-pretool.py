@@ -141,22 +141,25 @@ def first_non_empty(*values: Any) -> str:
     return ""
 
 
-def infer_exec_target(command: str) -> str:
+def extract_exec_target_candidates(command: str) -> list[str]:
     command = command.strip()
     if not command:
-        return ""
+        return []
     patterns = [
-        r"""(?:^|\s)-(?:file|f)\s+(?:"([^"]+)"|'([^']+)'|([^\s]+))""",
+        r"""(?:^|\s)-(?:literalpath|filepath|path|file|f)\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))""",
         r"""(?:^|\s)(?:python|python3|pwsh|powershell|bash|sh|node)\s+(?:"([^"]+)"|'([^']+)'|([^\s]+))""",
+        r"""(?:^|[\s;&|])(?:\d*>>?|&>)\s*(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))""",
+        r"""(?:^|[;&|]\s*|\s)(?:mkdir|touch|tee|truncate)\s+(?:-[^\s]+\s+)*(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))""",
     ]
+    candidates: list[str] = []
     for pattern in patterns:
-        match = re.search(pattern, command, flags=re.IGNORECASE)
-        if match:
+        for match in re.finditer(pattern, command, flags=re.IGNORECASE):
             for group in match.groups():
                 text = get_text(group)
-                if text:
-                    return text
-    return command
+                if text and not text.startswith("&"):
+                    candidates.append(text.rstrip(",;)"))
+                    break
+    return candidates
 
 
 _HOOK_DIR = str(Path(__file__).resolve().parent)
@@ -177,6 +180,16 @@ except ImportError:  # pragma: no cover - 兼容直接复制单文件调试的�
         is_probably_high_risk_target,
         is_probably_script_target,
     )
+
+
+def infer_exec_target(command: str) -> str:
+    candidates = extract_exec_target_candidates(command)
+    for candidate in candidates:
+        if is_probably_high_risk_target(candidate):
+            return candidate
+    if candidates:
+        return candidates[0]
+    return command.strip()
 
 
 def read_script_file_content(target: str, cwd: str) -> str:

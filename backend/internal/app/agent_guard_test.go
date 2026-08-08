@@ -568,6 +568,65 @@ func TestAgentGuardSafeWorkspaceExecAllowsWithoutApproval(t *testing.T) {
 	}
 }
 
+func TestAgentGuardExecEmbeddedSensitiveWriteRequiresApproval(t *testing.T) {
+	t.Parallel()
+
+	srv, _, _ := newGovernanceTestApp(t)
+	command := "mkdir -p .ssh && printf synthetic-stage5-only > .ssh/id_rsa"
+	rec := postJSON(t, srv, "/api/agent-guard/evaluate", fmt.Sprintf(`{
+		"adapter":"claude",
+		"tool":"Bash",
+		"actionType":"exec",
+		"target":%q,
+		"isScript":false,
+		"contentEncoding":"plain",
+		"content":%q
+	}`, command, command))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var response agentGuardEvaluateResponse
+	decodeBody(t, rec.Body.Bytes(), &response)
+	if response.Decision != "deny_with_ticket" || response.ApprovalID == "" {
+		t.Fatalf("sensitive exec write must require approval, got %+v", response)
+	}
+	if response.Explanation == nil || response.Explanation.RiskLevel != "high" {
+		t.Fatalf("sensitive exec write must be high risk, got %+v", response.Explanation)
+	}
+	if response.Explanation.MatchedRule == "agent-guard-safe-workspace-exec-allow" {
+		t.Fatalf("sensitive exec write must not match safe workspace allow, got %+v", response.Explanation)
+	}
+}
+
+func TestAgentGuardExecRedirectToOrdinaryWorkspaceAllows(t *testing.T) {
+	t.Parallel()
+
+	srv, _, _ := newGovernanceTestApp(t)
+	command := "printf '.ssh is documented here' > docs/readme-note.txt"
+	rec := postJSON(t, srv, "/api/agent-guard/evaluate", fmt.Sprintf(`{
+		"adapter":"claude",
+		"tool":"Bash",
+		"actionType":"exec",
+		"target":%q,
+		"isScript":false,
+		"contentEncoding":"plain",
+		"content":%q
+	}`, command, command))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var response agentGuardEvaluateResponse
+	decodeBody(t, rec.Body.Bytes(), &response)
+	if response.Decision != "allow" || response.ApprovalID != "" {
+		t.Fatalf("ordinary workspace redirect should remain allowed, got %+v", response)
+	}
+	if response.Explanation == nil || response.Explanation.MatchedRule != "agent-guard-safe-workspace-exec-allow" {
+		t.Fatalf("ordinary workspace redirect should keep the safe exec rule, got %+v", response.Explanation)
+	}
+}
+
 func TestAgentGuardPosixAbsolutePathIsExternalAndRequiresApproval(t *testing.T) {
 	t.Parallel()
 

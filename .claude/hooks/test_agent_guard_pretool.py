@@ -63,6 +63,42 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
         self.assertFalse(HOOK.is_probably_script_target("rg startup ."))
         self.assertFalse(HOOK.is_probably_script_target("powershell -ExecutionPolicy Bypass -Command Get-ChildItem"))
 
+    def test_exec_target_prefers_sensitive_shell_write_target(self) -> None:
+        dangerous = "mkdir -p .ssh && printf synthetic-stage5-only > .ssh/id_rsa"
+        ordinary = "printf '.ssh is documented here' > docs/security-note.txt"
+        powershell = "'synthetic-stage5-only' | Out-File -FilePath .ssh/authorized_keys"
+
+        for module in (HOOK, CODEX_HOOK):
+            with self.subTest(module=module.__name__, command="dangerous"):
+                payload = module.build_agent_guard_request(
+                    module.detect_adapter(),
+                    {"cwd": os.getcwd()},
+                    "Bash",
+                    {"command": dangerous},
+                )
+                self.assertEqual(payload["target"], ".ssh/id_rsa")
+                self.assertTrue(module.is_high_risk_offline_target(payload))
+
+            with self.subTest(module=module.__name__, command="ordinary"):
+                payload = module.build_agent_guard_request(
+                    module.detect_adapter(),
+                    {"cwd": os.getcwd()},
+                    "Bash",
+                    {"command": ordinary},
+                )
+                self.assertEqual(payload["target"], "docs/security-note.txt")
+                self.assertFalse(module.is_high_risk_offline_target(payload))
+
+            with self.subTest(module=module.__name__, command="powershell"):
+                payload = module.build_agent_guard_request(
+                    module.detect_adapter(),
+                    {"cwd": os.getcwd()},
+                    "PowerShell",
+                    {"command": powershell},
+                )
+                self.assertEqual(payload["target"], ".ssh/authorized_keys")
+                self.assertTrue(module.is_high_risk_offline_target(payload))
+
     def test_agenttoolgate_mcp_tools_do_not_enter_local_guard_twice(self) -> None:
         for module in (HOOK, CODEX_HOOK):
             with self.subTest(module=module.__name__):
@@ -254,6 +290,7 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
                     "command": r'echo x > C:\Users\me\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\run.ps1',
                 },
             ),
+            ("bash", {"command": "mkdir -p .ssh && printf synthetic-stage5-only > .ssh/id_rsa"}),
             ("bash", {"command": r'reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d calc.exe'}),
             ("bash", {"command": r'type C:\Windows\System32\Config\SAM'}),
             (
