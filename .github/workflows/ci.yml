@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   backend:
@@ -82,6 +83,11 @@ jobs:
   evaluation:
     name: Agent Safety Evaluation Contracts
     runs-on: ubuntu-latest
+    env:
+      ATG_EVAL_REQUIRE_PYTHON: "1"
+      GOCACHE: ${{ github.workspace }}/.tmp/ci-go-cache
+      GOMODCACHE: ${{ github.workspace }}/.tmp/ci-go-mod-cache
+      GOPATH: ${{ github.workspace }}/.tmp/ci-gopath
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -101,21 +107,184 @@ jobs:
         run: python --version
 
       - name: Test evaluation tool
-        env:
-          ATG_EVAL_REQUIRE_PYTHON: "1"
         run: go -C tools/atg-eval test -count=1 -timeout 60s ./...
 
       - name: Vet evaluation tool
         run: go -C tools/atg-eval vet ./...
 
+      - name: Build evaluation binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .tmp/ci-bin
+          go -C backend build -buildvcs=false -o "$GITHUB_WORKSPACE/.tmp/ci-bin/agenttoolgate-backend" ./cmd/server
+          go -C tools/atg-eval build -buildvcs=false -o "$GITHUB_WORKSPACE/.tmp/ci-bin/atg-eval" .
+
       - name: Validate dangerous actions suite
-        run: go -C tools/atg-eval run . validate --input ../../evaluation/suites/dangerous-actions-v1.jsonl
+        run: ./.tmp/ci-bin/atg-eval validate --input evaluation/suites/dangerous-actions-v1.jsonl
 
       - name: Validate benign development suite
-        run: go -C tools/atg-eval run . validate --input ../../evaluation/suites/benign-development-v1.jsonl
+        run: ./.tmp/ci-bin/atg-eval validate --input evaluation/suites/benign-development-v1.jsonl
 
       - name: Validate governance invariants suite
-        run: go -C tools/atg-eval run . validate --input ../../evaluation/suites/governance-invariants-v1.jsonl
+        run: ./.tmp/ci-bin/atg-eval validate --input evaluation/suites/governance-invariants-v1.jsonl
+
+      - name: Validate PR quick suite composition
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./.tmp/ci-bin/atg-eval validate --input evaluation/suites/pr-quick-v1.jsonl
+          python - <<'PY'
+          import json
+          from collections import Counter
+          from pathlib import Path
+
+          path = Path("evaluation/suites/pr-quick-v1.jsonl")
+          cases = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+          counts = Counter(case["suite"] for case in cases)
+          expected = Counter({
+              "dangerous-actions-v1": 6,
+              "benign-development-v1": 6,
+              "governance-invariants-v1": 6,
+          })
+          if counts != expected or len({case["id"] for case in cases}) != 18:
+              raise SystemExit(f"PR quick suite 必须是 6+6+6 且 ID 唯一，实际={counts}")
+          PY
+
+      - name: Run PR quick evaluation
+        shell: bash
+        run: |
+          set -uo pipefail
+          run_id="pr-quick-${GITHUB_RUN_ID}"
+          output_root="$GITHUB_WORKSPACE/.tmp/ci-proof-packs"
+          output="$output_root/quick"
+          sandbox="$GITHUB_WORKSPACE/.tmp/ci-sandboxes/quick"
+          log_dir="$GITHUB_WORKSPACE/.tmp/ci-logs/quick"
+          mkdir -p "$output_root" "$sandbox" "$log_dir"
+          eval_bin="$GITHUB_WORKSPACE/.tmp/ci-bin/atg-eval"
+          backend_bin="$GITHUB_WORKSPACE/.tmp/ci-bin/agenttoolgate-backend"
+          set +e
+          "$eval_bin" run \
+            --input evaluation/suites/pr-quick-v1.jsonl \
+            --atg "$backend_bin" \
+            --run-id "$run_id" \
+            --output "$output" \
+            --sandbox-base "$sandbox" \
+            >"$log_dir/stdout.json" 2>"$log_dir/stderr.log"
+          status=$?
+          set -e
+          cat "$log_dir/stderr.log" >&2 || true
+          exit "$status"
+
+      - name: Upload PR quick Proof Pack
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-safety-proof-pack-quick-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            .tmp/ci-proof-packs/quick
+            .tmp/ci-logs/quick
+
+  evaluation-full:
+    name: Agent Safety Evaluation Full (${{ matrix.platform }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            exe_suffix: ""
+          - os: windows-latest
+            platform: windows
+            exe_suffix: ".exe"
+    env:
+      ATG_EVAL_REQUIRE_PYTHON: "1"
+      GOCACHE: ${{ github.workspace }}/.tmp/ci-go-cache
+      GOMODCACHE: ${{ github.workspace }}/.tmp/ci-go-mod-cache
+      GOPATH: ${{ github.workspace }}/.tmp/ci-gopath
+      EVAL_PLATFORM: ${{ matrix.platform }}
+      EVAL_EXE_SUFFIX: ${{ matrix.exe_suffix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Verify Python
+        run: python --version
+
+      - name: Build evaluation binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $workspace = $env:GITHUB_WORKSPACE
+          $binDir = Join-Path $workspace ".tmp/ci-bin"
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          $backendBin = Join-Path $binDir ("agenttoolgate-backend" + $env:EVAL_EXE_SUFFIX)
+          $evalBin = Join-Path $binDir ("atg-eval" + $env:EVAL_EXE_SUFFIX)
+          Push-Location $workspace
+          try {
+            go -C backend build -buildvcs=false -o $backendBin ./cmd/server
+            go -C tools/atg-eval build -buildvcs=false -o $evalBin .
+          } finally {
+            Pop-Location
+          }
+
+      - name: Run full evaluation suites
+        shell: pwsh
+        run: |
+          $workspace = $env:GITHUB_WORKSPACE
+          $binDir = Join-Path $workspace ".tmp/ci-bin"
+          $evalBin = Join-Path $binDir ("atg-eval" + $env:EVAL_EXE_SUFFIX)
+          $backendBin = Join-Path $binDir ("agenttoolgate-backend" + $env:EVAL_EXE_SUFFIX)
+          $outputRoot = Join-Path $workspace (".tmp/ci-proof-packs/full/" + $env:EVAL_PLATFORM)
+          $sandboxRoot = Join-Path $workspace (".tmp/ci-sandboxes/full/" + $env:EVAL_PLATFORM)
+          $logRoot = Join-Path $workspace (".tmp/ci-logs/full/" + $env:EVAL_PLATFORM)
+          New-Item -ItemType Directory -Force -Path $outputRoot, $sandboxRoot, $logRoot | Out-Null
+          $suites = @(
+            @{ Name = "dangerous"; Input = "evaluation/suites/dangerous-actions-v1.jsonl" },
+            @{ Name = "benign"; Input = "evaluation/suites/benign-development-v1.jsonl" },
+            @{ Name = "governance"; Input = "evaluation/suites/governance-invariants-v1.jsonl" }
+          )
+          $failures = 0
+          foreach ($suite in $suites) {
+            $runId = "full-$($env:GITHUB_RUN_ID)-$($env:EVAL_PLATFORM)-$($suite.Name)"
+            $output = Join-Path $outputRoot $suite.Name
+            $stdoutPath = Join-Path $logRoot ($suite.Name + ".stdout.json")
+            $stderrPath = Join-Path $logRoot ($suite.Name + ".stderr.log")
+            & $evalBin run --input $suite.Input --atg $backendBin --run-id $runId --output $output --sandbox-base $sandboxRoot 1> $stdoutPath 2> $stderrPath
+            $status = $LASTEXITCODE
+            if (Test-Path $stderrPath) { Get-Content $stderrPath | Write-Host }
+            if ($status -ne 0) {
+              $failures++
+              Write-Host "suite=$($suite.Name) exit_code=$status"
+            }
+          }
+          if ($failures -ne 0) { exit 1 }
+
+      - name: Upload full Proof Pack
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-safety-proof-pack-full-${{ matrix.platform }}-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            .tmp/ci-proof-packs/full/${{ matrix.platform }}
+            .tmp/ci-logs/full/${{ matrix.platform }}
 
   frontend:
     name: Node
