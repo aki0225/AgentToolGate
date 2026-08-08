@@ -5,6 +5,7 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "^(Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|command|powershell|pwsh|apply_patch)$",
         "hooks": [
           {
             "type": "command",

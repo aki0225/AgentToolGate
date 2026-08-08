@@ -109,6 +109,9 @@ def is_guarded_tool(tool_name: str) -> bool:
     normalized = tool_name.lower().strip()
     if normalized in {"task", "agent"}:
         return False
+    if normalized.startswith("mcp__agenttoolgate__"):
+        # ATG MCP 工具已经进入网关的策略、审批和审计链，避免重复治理。
+        return False
     if normalized.startswith("mcp__"):
         return True
     return normalized in {

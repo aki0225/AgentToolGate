@@ -65,6 +65,11 @@ class CodexHookBridgeTest(unittest.TestCase):
             )
             self.assertEqual(raw, "")
 
+    def test_agenttoolgate_mcp_tools_do_not_enter_local_guard_twice(self) -> None:
+        self.assertFalse(HOOK.is_guarded_tool("mcp__agenttoolgate__mock_echo"))
+        self.assertFalse(HOOK.is_guarded_tool("MCP__AGENTTOOLGATE__GITHUB_CREATE_ISSUE"))
+        self.assertTrue(HOOK.is_guarded_tool("mcp__external_server__write_file"))
+
     def test_explicit_off_control_noops(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)

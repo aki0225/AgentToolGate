@@ -97,6 +97,12 @@ JSON snippets 根部只保留客户端可消费字段；“不会自动写全局
 - Codex hook：需要本地动作 guard 时，再复制 `codex.hooks.json`；默认仍建议先保持项目 hook mode 为 `dry-run`。
 - Claude Code：复制 `claude.mcp.json` 或 `claude.settings.snippet.json`；Claude 默认使用 HTTP `/mcp`，workspace header 是 `X-Workspace-Org-Id`。
 
+Codex 片段只对 `agenttoolgate` 这个 MCP server 设置
+`default_tools_approval_mode = "approve"`，用于取消客户端重复确认；实际 allow、deny 或
+approval 仍由 ATG 服务端决定。生成的 PreToolUse matcher 只覆盖本地 Bash/Write/Edit 等
+动作，不会再次拦截已经进入 ATG 的 MCP 调用。直接配置到客户端的其他 MCP server 不在
+该 matcher 的保护范围内，应通过 ATG MCP Outbound 接入治理链。
+
 如果你只需要一个客户端：
 
 ```powershell

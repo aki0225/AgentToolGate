@@ -637,6 +637,7 @@ func TestProjectClientSnippetsAreCopyReady(t *testing.T) {
 	for _, want := range []string{
 		"[mcp_servers.agenttoolgate]",
 		`url = "http://127.0.0.1:8080/mcp"`,
+		`default_tools_approval_mode = "approve"`,
 	} {
 		if !strings.Contains(codexText, want) {
 			t.Fatalf("codex config snippet missing %q:\n%s", want, codexText)
@@ -679,6 +680,9 @@ func TestProjectClientSnippetsAreCopyReady(t *testing.T) {
 		}
 		if _, ok := doc["note"]; ok {
 			t.Fatalf("copy-ready snippet %s must not contain root note field:\n%s", path, string(raw))
+		}
+		if !strings.Contains(string(raw), `"matcher": "`+localActionHookMatcher+`"`) {
+			t.Fatalf("hook snippet %s must only match local action tools:\n%s", path, string(raw))
 		}
 	}
 }

@@ -7,6 +7,7 @@ hooks = true
 
 [mcp_servers.agenttoolgate]
 url = "http://127.0.0.1:8080/mcp"
+default_tools_approval_mode = "approve"
 
 # 可选命令等价参考：codex mcp add agenttoolgate --url http://127.0.0.1:8080/mcp
 # 如果需要手动桥接项目级 hook，可指向：agenttoolgate.exe guard hook codex --input -

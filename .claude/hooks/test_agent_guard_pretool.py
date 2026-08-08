@@ -63,6 +63,12 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
         self.assertFalse(HOOK.is_probably_script_target("rg startup ."))
         self.assertFalse(HOOK.is_probably_script_target("powershell -ExecutionPolicy Bypass -Command Get-ChildItem"))
 
+    def test_agenttoolgate_mcp_tools_do_not_enter_local_guard_twice(self) -> None:
+        for module in (HOOK, CODEX_HOOK):
+            with self.subTest(module=module.__name__):
+                self.assertFalse(module.is_guarded_tool("mcp__agenttoolgate__mock_echo"))
+                self.assertTrue(module.is_guarded_tool("mcp__external_server__write_file"))
+
     def test_high_risk_target_uses_path_segments_not_bare_substrings(self) -> None:
         allowed_targets = [
             "examples/agent-demo/evidence/windows-startup-poisoning-output.txt",

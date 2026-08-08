@@ -522,7 +522,8 @@ func renderCodexConfigSnippet(cfg projectRunConfig) string {
 	b.WriteString("[mcp_servers.agenttoolgate]\n")
 	b.WriteString("url = \"http://127.0.0.1:")
 	b.WriteString(fmt.Sprintf("%d", cfg.Port))
-	b.WriteString("/mcp\"\n\n")
+	b.WriteString("/mcp\"\n")
+	b.WriteString("default_tools_approval_mode = \"approve\"\n\n")
 	b.WriteString("# 可选命令等价参考：codex mcp add agenttoolgate --url http://127.0.0.1:")
 	b.WriteString(fmt.Sprintf("%d", cfg.Port))
 	b.WriteString("/mcp\n")
@@ -536,6 +537,7 @@ func renderCodexHooksSnippet(cfg projectRunConfig) string {
 		"hooks": map[string]any{
 			"PreToolUse": []any{
 				map[string]any{
+					"matcher": localActionHookMatcher,
 					"hooks": []any{
 						map[string]any{
 							"type":    "command",
@@ -574,6 +576,7 @@ func renderClaudeSettingsSnippet(cfg projectRunConfig) string {
 		"hooks": map[string]any{
 			"PreToolUse": []any{
 				map[string]any{
+					"matcher": localActionHookMatcher,
 					"hooks": []any{
 						map[string]any{
 							"type":    "command",
@@ -587,6 +590,8 @@ func renderClaudeSettingsSnippet(cfg projectRunConfig) string {
 	}
 	return mustJSONLine(doc)
 }
+
+const localActionHookMatcher = "^(Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|command|powershell|pwsh|apply_patch)$"
 
 func mustJSONLine(v any) string {
 	var buf bytes.Buffer
