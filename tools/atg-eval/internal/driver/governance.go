@@ -491,6 +491,17 @@ func (h *governanceHarness) evaluateOfflineHighRiskFailClosed(
 	if err != nil {
 		return GovernanceEvaluation{}, err
 	}
+	tempDirectory, err := h.root.Resolve(filepath.Join("governance", "offline-high-risk", "tmp"))
+	if err != nil {
+		return GovernanceEvaluation{}, err
+	}
+	if err := os.MkdirAll(tempDirectory, 0o700); err != nil {
+		return GovernanceEvaluation{}, fmt.Errorf("创建离线 Hook 临时目录失败：%w", err)
+	}
+	tempDirectory, err = h.root.Resolve(filepath.Join("governance", "offline-high-risk", "tmp"))
+	if err != nil {
+		return GovernanceEvaluation{}, err
+	}
 	payload, err := json.Marshal(map[string]any{
 		"cwd":       workspace,
 		"tool_name": "Write",
@@ -509,6 +520,9 @@ func (h *governanceHarness) evaluateOfflineHighRiskFailClosed(
 	command.Dir = workspace
 	command.Env = append(
 		backendruntime.SafeBaseEnvironment(),
+		"TEMP="+tempDirectory,
+		"TMP="+tempDirectory,
+		"TMPDIR="+tempDirectory,
 		"TRELLIS_HOOKS=1",
 		"TRELLIS_DISABLE_HOOKS=0",
 		"AGENTTOOLGATE_EXE="+missingExecutable,

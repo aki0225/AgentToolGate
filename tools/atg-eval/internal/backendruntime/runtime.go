@@ -50,7 +50,11 @@ type Config struct {
 type Server struct {
 	baseURL     string
 	command     *exec.Cmd
+	rootFS      *os.Root
 	done        chan struct{}
+	waitMu      sync.Mutex
+	waitErr     error
+	stopping    bool
 	stopOnce    sync.Once
 	stopErr     error
 	stopTimeout time.Duration
@@ -61,6 +65,16 @@ type Server struct {
 	redactor    *redact.Redactor
 }
 
+type runtimePaths struct {
+	runtimeDirectory string
+	tempDirectory    string
+	stdoutRelative   string
+	stderrRelative   string
+	dataDirectory    string
+	sqlitePath       string
+	policyPath       string
+}
+
 // Start 只在随机 loopback 端口启动受控 ATG 子进程，并使用经过白名单筛选的环境变量。
 // 评估进程不会继承调用者的 token、数据库连接串或云凭据。
 func Start(ctx context.Context, config Config) (*Server, error) {
@@ -68,41 +82,36 @@ func Start(ctx context.Context, config Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	runtimeDirectory, err := normalized.Root.Resolve(filepath.Join("runtime", normalized.Name))
+	rootFS, err := os.OpenRoot(normalized.Root.Path())
 	if err != nil {
-		return nil, fmt.Errorf("解析 ATG runtime 目录失败：%w", err)
+		return nil, fmt.Errorf("打开 ATG sandbox root 失败：%w", err)
 	}
-	if err := os.MkdirAll(runtimeDirectory, 0o700); err != nil {
-		return nil, fmt.Errorf("创建 ATG runtime 目录失败：%w", err)
-	}
-	stateDirectory, err := normalized.Root.Resolve(filepath.Join("runtime-state", normalized.StateName))
+	paths, err := prepareRuntimePaths(normalized, rootFS)
 	if err != nil {
-		return nil, fmt.Errorf("解析 ATG state 目录失败：%w", err)
+		return nil, errors.Join(err, rootFS.Close())
 	}
-	if err := os.MkdirAll(stateDirectory, 0o700); err != nil {
-		return nil, fmt.Errorf("创建 ATG state 目录失败：%w", err)
-	}
-	stdoutFile, err := os.OpenFile(filepath.Join(runtimeDirectory, "stdout.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	stdoutFile, err := rootFS.OpenFile(paths.stdoutRelative, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("创建 ATG stdout 日志失败：%w", err)
+		return nil, errors.Join(fmt.Errorf("创建 ATG stdout 日志失败：%w", err), rootFS.Close())
 	}
-	stderrFile, err := os.OpenFile(filepath.Join(runtimeDirectory, "stderr.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	stderrFile, err := rootFS.OpenFile(paths.stderrRelative, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		_ = stdoutFile.Close()
-		return nil, fmt.Errorf("创建 ATG stderr 日志失败：%w", err)
+		return nil, errors.Join(
+			fmt.Errorf("创建 ATG stderr 日志失败：%w", err),
+			stdoutFile.Close(),
+			rootFS.Close(),
+		)
 	}
 
 	addr, err := reserveLoopbackAddress()
 	if err != nil {
-		_ = stdoutFile.Close()
-		_ = stderrFile.Close()
-		return nil, err
+		return nil, errors.Join(err, stdoutFile.Close(), stderrFile.Close(), rootFS.Close())
 	}
 	args := append([]string(nil), normalized.PrefixArgs...)
 	args = append(args, "serve", "--addr", addr)
 	command := exec.Command(normalized.Executable, args...)
-	command.Dir = runtimeDirectory
-	command.Env = runtimeEnvironment(normalized, stateDirectory)
+	command.Dir = paths.runtimeDirectory
+	command.Env = runtimeEnvironment(normalized, paths)
 	stdout := newLimitedLogBuffer(maxCapturedLogBytes)
 	stderr := newLimitedLogBuffer(maxCapturedLogBytes)
 	command.Stdout = io.MultiWriter(stdoutFile, stdout)
@@ -111,6 +120,7 @@ func Start(ctx context.Context, config Config) (*Server, error) {
 	server := &Server{
 		baseURL:     "http://" + addr,
 		command:     command,
+		rootFS:      rootFS,
 		done:        make(chan struct{}),
 		stopTimeout: normalized.StopTimeout,
 		stdoutFile:  stdoutFile,
@@ -120,17 +130,19 @@ func Start(ctx context.Context, config Config) (*Server, error) {
 		redactor:    normalized.Redactor,
 	}
 	if err := command.Start(); err != nil {
-		server.closeLogFiles()
-		return nil, fmt.Errorf("启动 ATG 后端进程失败：%s", server.sanitize(err.Error()))
+		closeErr := server.closeResources()
+		return nil, errors.Join(
+			fmt.Errorf("启动 ATG 后端进程失败：%s", server.sanitize(err.Error())),
+			closeErr,
+		)
 	}
 	go func() {
-		_ = command.Wait()
+		server.recordWait(command.Wait())
 		close(server.done)
 	}()
 
 	if err := server.waitUntilHealthy(ctx, normalized.StartupTimeout); err != nil {
-		_ = server.Close()
-		return nil, err
+		return nil, errors.Join(err, server.Close())
 	}
 	return server, nil
 }
@@ -159,7 +171,9 @@ func (s *Server) Close() error {
 	s.stopOnce.Do(func() {
 		select {
 		case <-s.done:
+			s.stopErr = errors.Join(s.stopErr, s.unexpectedExitError())
 		default:
+			s.markStopping()
 			signalErr := s.command.Process.Signal(os.Interrupt)
 			if signalErr != nil {
 				if killErr := s.command.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
@@ -182,9 +196,33 @@ func (s *Server) Close() error {
 				s.stopErr = errors.Join(s.stopErr, fmt.Errorf("ATG 后端进程停止超时"))
 			}
 		}
-		s.closeLogFiles()
+		s.stopErr = errors.Join(s.stopErr, s.closeResources())
 	})
 	return s.stopErr
+}
+
+func (s *Server) recordWait(err error) {
+	s.waitMu.Lock()
+	defer s.waitMu.Unlock()
+	s.waitErr = err
+}
+
+func (s *Server) markStopping() {
+	s.waitMu.Lock()
+	defer s.waitMu.Unlock()
+	s.stopping = true
+}
+
+func (s *Server) unexpectedExitError() error {
+	s.waitMu.Lock()
+	defer s.waitMu.Unlock()
+	if s.stopping {
+		return nil
+	}
+	if s.waitErr == nil {
+		return fmt.Errorf("ATG 后端进程意外退出")
+	}
+	return fmt.Errorf("ATG 后端进程意外退出：%s", s.sanitize(s.waitErr.Error()))
 }
 
 func (s *Server) waitUntilHealthy(ctx context.Context, timeout time.Duration) error {
@@ -251,15 +289,21 @@ func (s *Server) sanitize(value string) string {
 	return strings.TrimSpace(s.redactor.Text(value))
 }
 
-func (s *Server) closeLogFiles() {
+func (s *Server) closeResources() error {
+	var result error
 	if s.stdoutFile != nil {
-		_ = s.stdoutFile.Close()
+		result = errors.Join(result, s.stdoutFile.Close())
 		s.stdoutFile = nil
 	}
 	if s.stderrFile != nil {
-		_ = s.stderrFile.Close()
+		result = errors.Join(result, s.stderrFile.Close())
 		s.stderrFile = nil
 	}
+	if s.rootFS != nil {
+		result = errors.Join(result, s.rootFS.Close())
+		s.rootFS = nil
+	}
+	return result
 }
 
 func normalizeConfig(config Config) (Config, error) {
@@ -402,15 +446,94 @@ func reserveLoopbackAddress() (string, error) {
 	return net.JoinHostPort("127.0.0.1", strconv.Itoa(addr.Port)), nil
 }
 
-func runtimeEnvironment(config Config, stateDirectory string) []string {
-	dataDirectory := filepath.Join(stateDirectory, "data")
-	policyPath := filepath.Join(stateDirectory, "missing-policies.yaml")
+func prepareRuntimePaths(config Config, rootFS *os.Root) (runtimePaths, error) {
+	runtimeRelative := filepath.Join("runtime", config.Name)
+	stateRelative := filepath.Join("runtime-state", config.StateName)
+	tempRelative := filepath.Join(runtimeRelative, "tmp")
+	dataRelative := filepath.Join(stateRelative, "data")
+
+	runtimeDirectory, err := prepareRuntimeDirectory(config.Root, rootFS, runtimeRelative, "runtime")
+	if err != nil {
+		return runtimePaths{}, err
+	}
+	_, err = prepareRuntimeDirectory(config.Root, rootFS, stateRelative, "state")
+	if err != nil {
+		return runtimePaths{}, err
+	}
+	tempDirectory, err := prepareRuntimeDirectory(config.Root, rootFS, tempRelative, "临时")
+	if err != nil {
+		return runtimePaths{}, err
+	}
+	dataDirectory, err := prepareRuntimeDirectory(config.Root, rootFS, dataRelative, "data")
+	if err != nil {
+		return runtimePaths{}, err
+	}
+
+	resolve := func(relative, label string) (string, error) {
+		path, resolveErr := config.Root.Resolve(relative)
+		if resolveErr != nil {
+			return "", fmt.Errorf("解析 ATG %s 路径失败：%w", label, resolveErr)
+		}
+		return path, nil
+	}
+	stdoutRelative := filepath.Join(runtimeRelative, "stdout.log")
+	stderrRelative := filepath.Join(runtimeRelative, "stderr.log")
+	sqliteRelative := filepath.Join(dataRelative, "agenttoolgate.db")
+	policyRelative := filepath.Join(stateRelative, "missing-policies.yaml")
+	if config.StoreDriver == "sqlite" {
+		database, openErr := rootFS.OpenFile(sqliteRelative, os.O_CREATE|os.O_RDWR, 0o600)
+		if openErr != nil {
+			return runtimePaths{}, fmt.Errorf("创建 ATG SQLite 文件失败：%w", openErr)
+		}
+		if closeErr := database.Close(); closeErr != nil {
+			return runtimePaths{}, fmt.Errorf("关闭 ATG SQLite 文件失败：%w", closeErr)
+		}
+	}
+	sqlitePath, err := resolve(sqliteRelative, "SQLite")
+	if err != nil {
+		return runtimePaths{}, err
+	}
+	if _, statErr := rootFS.Lstat(policyRelative); statErr == nil {
+		return runtimePaths{}, fmt.Errorf("ATG evaluation policy 路径必须保持不存在")
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return runtimePaths{}, fmt.Errorf("复核 ATG policy 路径失败：%w", statErr)
+	}
+	policyPath, err := resolve(policyRelative, "policy")
+	if err != nil {
+		return runtimePaths{}, err
+	}
+	return runtimePaths{
+		runtimeDirectory: runtimeDirectory,
+		tempDirectory:    tempDirectory,
+		stdoutRelative:   stdoutRelative,
+		stderrRelative:   stderrRelative,
+		dataDirectory:    dataDirectory,
+		sqlitePath:       sqlitePath,
+		policyPath:       policyPath,
+	}, nil
+}
+
+func prepareRuntimeDirectory(root *sandbox.Root, rootFS *os.Root, relative, label string) (string, error) {
+	if err := rootFS.MkdirAll(relative, 0o700); err != nil {
+		return "", fmt.Errorf("创建 ATG %s 目录失败：%w", label, err)
+	}
+	resolved, err := root.Resolve(relative)
+	if err != nil {
+		return "", fmt.Errorf("复核 ATG %s 目录失败：%w", label, err)
+	}
+	return resolved, nil
+}
+
+func runtimeEnvironment(config Config, paths runtimePaths) []string {
 	environment := safeBaseEnvironment()
 	environment = append(environment,
+		"TEMP="+paths.tempDirectory,
+		"TMP="+paths.tempDirectory,
+		"TMPDIR="+paths.tempDirectory,
 		"HOST=127.0.0.1",
 		"STORE_DRIVER="+config.StoreDriver,
-		"AGT_DATA_DIR="+dataDirectory,
-		"AGT_SQLITE_PATH="+filepath.Join(dataDirectory, "agenttoolgate.db"),
+		"AGT_DATA_DIR="+paths.dataDirectory,
+		"AGT_SQLITE_PATH="+paths.sqlitePath,
 		"AUTH_MODE=local",
 		"DEFAULT_WORKSPACE_NAME=Evaluation Workspace",
 		"DEFAULT_WORKSPACE_SLUG=default",
@@ -419,7 +542,7 @@ func runtimeEnvironment(config Config, stateDirectory string) []string {
 		"LOCAL_EMAIL=evaluation@agenttoolgate.local",
 		"LOCAL_NAME=Evaluation Runtime",
 		"LOCAL_ROLE="+strings.TrimSpace(config.Role),
-		"POLICY_CONFIG_PATH="+policyPath,
+		"POLICY_CONFIG_PATH="+paths.policyPath,
 		"OTEL_EXPORTER_OTLP_ENDPOINT="+config.OTLPEndpoint,
 		"HTTP_ALLOWED_HOSTS="+strings.Join(config.HTTPAllowedHosts, ","),
 		"CORS_ALLOWED_ORIGINS=http://127.0.0.1",
@@ -437,9 +560,6 @@ func safeBaseEnvironment() []string {
 		"WINDIR",
 		"ComSpec",
 		"PATHEXT",
-		"TEMP",
-		"TMP",
-		"TMPDIR",
 		"LANG",
 		"LC_ALL",
 		"TZ",

@@ -22,6 +22,9 @@ func TestGovernanceHarnessExecutesRealBackendInvariants(t *testing.T) {
 		t.Skip("短测试模式跳过真实后端治理验收")
 	}
 	_, pythonErr := resolvePythonExecutable()
+	if pythonErr != nil && os.Getenv("ATG_EVAL_REQUIRE_PYTHON") == "1" {
+		t.Fatalf("当前验证环境要求 Python，无法定位解释器：%v", pythonErr)
+	}
 
 	repositoryRoot := governanceTestRepositoryRoot(t)
 	executable := buildGovernanceTestBackend(t, repositoryRoot)
@@ -173,7 +176,7 @@ func buildGovernanceTestBackend(t *testing.T, repositoryRoot string) string {
 		}
 		goExecutable = resolved
 	}
-	command := exec.Command(goExecutable, "build", "-o", output, "./cmd/server")
+	command := exec.Command(goExecutable, "build", "-buildvcs=false", "-o", output, "./cmd/server")
 	command.Dir = filepath.Join(repositoryRoot, "backend")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

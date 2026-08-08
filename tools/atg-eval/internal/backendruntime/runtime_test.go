@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +59,11 @@ func TestStartUsesLoopbackAndScrubsInheritedEnvironment(t *testing.T) {
 		Host         string `json:"host"`
 		AllowedHosts string `json:"allowedHosts"`
 		OTLPEndpoint string `json:"otlpEndpoint"`
+		Temp         string `json:"temp"`
+		Tmp          string `json:"tmp"`
+		TmpDir       string `json:"tmpDir"`
+		SQLitePath   string `json:"sqlitePath"`
+		OSTempDir    string `json:"osTempDir"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode /inspect error = %v", err)
@@ -72,6 +79,17 @@ func TestStartUsesLoopbackAndScrubsInheritedEnvironment(t *testing.T) {
 		payload.OTLPEndpoint != "127.0.0.1:1" {
 		t.Fatalf("runtime 环境不符合预期：%+v", payload)
 	}
+	if payload.Temp == "" || payload.Temp != payload.Tmp || payload.Temp != payload.TmpDir {
+		t.Fatalf("runtime 临时目录必须显式统一：%+v", payload)
+	}
+	if payload.OSTempDir != payload.Temp {
+		t.Fatalf("os.TempDir() 必须使用 sandbox 临时目录：%+v", payload)
+	}
+	for _, path := range []string{payload.Temp, payload.SQLitePath} {
+		if !testPathContained(root.Path(), path) {
+			t.Fatalf("runtime 路径必须位于 sandbox：%s", path)
+		}
+	}
 	if !server.SensitiveValueDetected("runtime-sensitive-marker") {
 		t.Fatal("runtime 必须能以布尔值检测敏感日志")
 	}
@@ -83,6 +101,128 @@ func TestStartUsesLoopbackAndScrubsInheritedEnvironment(t *testing.T) {
 	}
 	if err := server.Close(); err != nil {
 		t.Fatalf("重复 Close() 必须幂等，error = %v", err)
+	}
+}
+
+func TestStartRejectsRuntimeFileSymlinkEscape(t *testing.T) {
+	root, err := sandbox.Create(t.TempDir(), "backend-runtime-link")
+	if err != nil {
+		t.Fatalf("sandbox.Create() error = %v", err)
+	}
+	t.Cleanup(func() { _ = root.Cleanup() })
+	runtimeDirectory, err := root.Resolve(filepath.Join("runtime", "linked"))
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if err := os.MkdirAll(runtimeDirectory, 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.log")
+	if err := os.WriteFile(outside, []byte("unchanged"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(runtimeDirectory, "stdout.log")); err != nil {
+		t.Skipf("当前平台无法创建测试符号链接：%v", err)
+	}
+
+	server, startErr := Start(context.Background(), Config{
+		Executable: os.Args[0],
+		PrefixArgs: []string{"-test.run=TestBackendRuntimeHelperProcess", "--"},
+		Environment: []string{
+			"ATG_EVAL_BACKEND_HELPER=1",
+		},
+		Root: root,
+		Name: "linked",
+	})
+	if server != nil {
+		_ = server.Close()
+		t.Fatal("链接逃逸不得启动 runtime")
+	}
+	if startErr == nil {
+		t.Fatalf("链接逃逸必须被拒绝，error=%v", startErr)
+	}
+	raw, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(raw) != "unchanged" {
+		t.Fatalf("sandbox 外文件不得被截断，got=%q", raw)
+	}
+}
+
+func TestStartRejectsSQLiteDirectorySymlinkEscape(t *testing.T) {
+	root, err := sandbox.Create(t.TempDir(), "backend-runtime-sqlite-link")
+	if err != nil {
+		t.Fatalf("sandbox.Create() error = %v", err)
+	}
+	t.Cleanup(func() { _ = root.Cleanup() })
+	stateDirectory, err := root.Resolve(filepath.Join("runtime-state", "linked-state"))
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if err := os.MkdirAll(stateDirectory, 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(stateDirectory, "data")); err != nil {
+		t.Skipf("当前平台无法创建测试目录链接：%v", err)
+	}
+
+	server, startErr := Start(context.Background(), Config{
+		Executable:  os.Args[0],
+		PrefixArgs:  []string{"-test.run=TestBackendRuntimeHelperProcess", "--"},
+		Environment: []string{"ATG_EVAL_BACKEND_HELPER=1"},
+		Root:        root,
+		Name:        "sqlite-link",
+		StateName:   "linked-state",
+		StoreDriver: "sqlite",
+	})
+	if server != nil {
+		_ = server.Close()
+		t.Fatal("SQLite 目录链接逃逸不得启动 runtime")
+	}
+	if startErr == nil {
+		t.Fatal("SQLite 目录链接逃逸必须被拒绝")
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("sandbox 外目录不得产生 SQLite 文件：%v", entries)
+	}
+}
+
+func TestCloseReportsUnexpectedBackendExit(t *testing.T) {
+	root, err := sandbox.Create(t.TempDir(), "backend-runtime-exit")
+	if err != nil {
+		t.Fatalf("sandbox.Create() error = %v", err)
+	}
+	t.Cleanup(func() { _ = root.Cleanup() })
+
+	server, err := Start(context.Background(), Config{
+		Executable: os.Args[0],
+		PrefixArgs: []string{"-test.run=TestBackendRuntimeHelperProcess", "--"},
+		Environment: []string{
+			"ATG_EVAL_BACKEND_HELPER=1",
+			"ATG_EVAL_BACKEND_EXIT_AFTER_HEALTH=17",
+		},
+		Root: root,
+		Name: "unexpected-exit",
+	})
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	select {
+	case <-server.done:
+	case <-time.After(3 * time.Second):
+		_ = server.Close()
+		t.Fatal("测试后端没有按预期退出")
+	}
+	if err := server.Close(); err == nil ||
+		!strings.Contains(err.Error(), "意外退出") ||
+		!strings.Contains(err.Error(), "exit status 17") {
+		t.Fatalf("Close() 必须报告后端意外退出，error=%v", err)
 	}
 }
 
@@ -201,6 +341,13 @@ func TestBackendRuntimeHelperProcess(t *testing.T) {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"status":"ok"}`)
+		if exitValue := os.Getenv("ATG_EVAL_BACKEND_EXIT_AFTER_HEALTH"); exitValue != "" {
+			exitCode, _ := strconv.Atoi(exitValue)
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				os.Exit(exitCode)
+			}()
+		}
 	})
 	mux.HandleFunc("/inspect", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -212,6 +359,11 @@ func TestBackendRuntimeHelperProcess(t *testing.T) {
 			"host":         os.Getenv("HOST"),
 			"allowedHosts": os.Getenv("HTTP_ALLOWED_HOSTS"),
 			"otlpEndpoint": os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+			"temp":         os.Getenv("TEMP"),
+			"tmp":          os.Getenv("TMP"),
+			"tmpDir":       os.Getenv("TMPDIR"),
+			"sqlitePath":   os.Getenv("AGT_SQLITE_PATH"),
+			"osTempDir":    os.TempDir(),
 		})
 	})
 	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: time.Second}
@@ -226,6 +378,14 @@ func TestBackendRuntimeHelperProcess(t *testing.T) {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+func testPathContained(root, candidate string) bool {
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func helperArgument(name string) string {

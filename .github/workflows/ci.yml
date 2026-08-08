@@ -92,7 +92,17 @@ jobs:
           go-version: "1.26.x"
           cache: false
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Verify Python
+        run: python --version
+
       - name: Test evaluation tool
+        env:
+          ATG_EVAL_REQUIRE_PYTHON: "1"
         run: go -C tools/atg-eval test -count=1 -timeout 60s ./...
 
       - name: Vet evaluation tool

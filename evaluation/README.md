@@ -1,7 +1,10 @@
 # AgentToolGate Agent 安全评估
 
 该目录保存公开、可重复生成的评估契约和用例。评估工具位于
-`tools/atg-eval/`，生成物默认写入 `.tmp/evaluation/<run-id>/`，不会提交到仓库。
+`tools/atg-eval/`。当前 `run` 命令只向 stdout 输出脱敏后的 `runner.Document` JSON；
+disposable sandbox 默认位于 `.tmp/evaluation/<run-id>/`，仅在资源清理成功后删除。
+清理失败按基础设施错误返回非零。正式持久化报告将在阶段 3 使用独立输出目录，不会
+与 sandbox 混用。
 
 ## 当前阶段
 
@@ -19,8 +22,9 @@
   良性开发动作 12 个、治理不变量 6 个。
 - 危险与良性用例恰好覆盖 24 个代码内受限 operation；统一元数据校验 operation
   与 action type、entry、mode、platform 和目标声明的一致性。
-- CI 独立运行评估工具的 test、vet 和三份 suite validate，不运行真实 Runner，不生成
-  报告或 artifact，也不启动网络服务。
+- CI 的 `evaluation` job 独立运行评估工具的 test、vet 和三份 suite validate，不通过
+  `atg-eval run` 执行完整 30 个 suite，也不持久化评估报告或上传 evaluation artifact。
+  默认 Go 集成测试会启动仅绑定 loopback 的真实后端、mock server 和 OTel collector。
 
 阶段 2B 已完成最小 Guard Core 执行链：
 
