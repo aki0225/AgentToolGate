@@ -71,7 +71,7 @@ func TestEvaluateMCPInboundAtURLPerformsHandshakeAndToolsList(t *testing.T) {
 		"local-org",
 		2*time.Second,
 		operations.GuardInput{ToolName: "mcp.tools/list"},
-		time.Now(),
+		time.Now().Add(-time.Millisecond),
 	)
 	if err != nil {
 		t.Fatalf("evaluateMCPInboundAtURL() error = %v", err)
