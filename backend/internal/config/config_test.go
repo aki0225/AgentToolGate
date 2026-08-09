@@ -37,3 +37,24 @@ func TestLoadKeepsPostgresWhenDatabaseURLExists(t *testing.T) {
 		t.Fatalf("expected postgres store, got %q", cfg.StoreDriver)
 	}
 }
+
+func TestLoadReadsTrustedProjectRoot(t *testing.T) {
+	projectRoot := t.TempDir()
+	t.Setenv("AGT_PROJECT_ROOT", projectRoot)
+
+	cfg := Load()
+	if cfg.ProjectRoot != projectRoot {
+		t.Fatalf("expected trusted project root %q, got %q", projectRoot, cfg.ProjectRoot)
+	}
+}
+
+func TestLoadReadsMCPAllowedHosts(t *testing.T) {
+	t.Setenv("MCP_ALLOWED_HOSTS", "mcp.example.com:443, 127.0.0.1:18081")
+
+	cfg := Load()
+	if len(cfg.MCPAllowedHosts) != 2 ||
+		cfg.MCPAllowedHosts[0] != "mcp.example.com:443" ||
+		cfg.MCPAllowedHosts[1] != "127.0.0.1:18081" {
+		t.Fatalf("unexpected MCP allowed hosts: %+v", cfg.MCPAllowedHosts)
+	}
+}

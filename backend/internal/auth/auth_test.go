@@ -2,12 +2,22 @@ package auth
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"agenttoolgate/backend/internal/config"
 	"agenttoolgate/backend/internal/model"
 	"agenttoolgate/backend/internal/store"
 )
+
+func TestNewAuthenticatorRejectsUnsupportedAuthMode(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewAuthenticator(context.Background(), config.Config{AuthMode: "odic"})
+	if err == nil || !strings.Contains(err.Error(), "unsupported AUTH_MODE") {
+		t.Fatalf("expected unsupported auth mode error, got %v", err)
+	}
+}
 
 func TestResolvePrincipalUsesOIDCRoleFromIdentity(t *testing.T) {
 	t.Parallel()
@@ -53,6 +63,41 @@ func TestResolvePrincipalDoesNotDefaultOIDCUsersToLocalOwner(t *testing.T) {
 	}
 	if user.Role == "owner" {
 		t.Fatalf("OIDC user without role claim must not inherit LocalRole owner: %+v", user)
+	}
+}
+
+func TestResolvePrincipalRejectsOIDCIdentityWithoutWorkspaceClaim(t *testing.T) {
+	t.Parallel()
+
+	st := newAuthTestStore(t)
+	authenticator := &Authenticator{cfg: config.Config{AuthMode: "oidc"}}
+
+	_, _, err := authenticator.ResolvePrincipal(context.Background(), st, Identity{
+		Mode:    "oidc",
+		Subject: "oidc-user",
+		Email:   "user@example.com",
+		Name:    "OIDC User",
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing the configured workspace organization claim") {
+		t.Fatalf("expected missing OIDC workspace claim error, got %v", err)
+	}
+}
+
+func TestResolvePrincipalRejectsUnknownOIDCWorkspace(t *testing.T) {
+	t.Parallel()
+
+	st := newAuthTestStore(t)
+	authenticator := &Authenticator{cfg: config.Config{AuthMode: "oidc"}}
+
+	_, _, err := authenticator.ResolvePrincipal(context.Background(), st, Identity{
+		Mode:           "oidc",
+		Subject:        "oidc-user",
+		Email:          "user@example.com",
+		Name:           "OIDC User",
+		OrganizationID: "unmapped-org",
+	})
+	if err == nil || !strings.Contains(err.Error(), "is not mapped to a workspace") {
+		t.Fatalf("expected unmapped OIDC workspace error, got %v", err)
 	}
 }
 

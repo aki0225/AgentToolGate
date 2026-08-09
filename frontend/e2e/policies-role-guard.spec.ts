@@ -8,6 +8,11 @@ type PolicyPageMockState = {
   getPolicyWrites: () => string[];
 };
 
+type PolicyPageMockOptions = {
+  role: "member" | "owner";
+  policyOverrides?: Partial<PolicyRule> & Partial<PolicyRuleInput>;
+};
+
 test("策略页：member 角色只读且 simulator 可用", async ({ page }) => {
   const mockState = await installPolicyPageMocks(page, { role: "member" });
 
@@ -46,6 +51,9 @@ test("策略页：owner 角色可见管理入口且可触发策略更新", async
   await expect(page.getByRole("button", { name: "创建规则" })).toBeVisible();
   await expect(page.getByRole("button", { name: "编辑" })).toBeVisible();
   await expect(page.getByRole("button", { name: "删除" })).toBeVisible();
+  await expect(page.getByText("操作: 匹配全部 (*)", { exact: true })).toBeVisible();
+  await expect(page.getByText("风险: 匹配全部 (*)", { exact: true })).toBeVisible();
+  await expect(page.getByText("资源: 匹配全部 (*)", { exact: true })).toBeVisible();
 
   const enabledToggle = page.getByRole("button", { name: "已启用" });
   await expect(enabledToggle).toBeVisible();
@@ -59,7 +67,124 @@ test("策略页：owner 角色可见管理入口且可触发策略更新", async
   expect(mockState.getSimulatorCalled()).toBeTruthy();
 });
 
-async function installPolicyPageMocks(page: Page, options: { role: "member" | "owner" }): Promise<PolicyPageMockState> {
+test("策略页：新规则默认禁用，启用全通配拒绝前必须确认影响", async ({ page }) => {
+  await installPolicyPageMocks(page, { role: "owner" });
+
+  await page.goto("/policies");
+
+  const enabledSelect = page.getByRole("combobox", { name: "启用", exact: true });
+  const createButton = page.getByRole("button", { name: "创建规则" });
+  const formCard = page.getByRole("heading", { name: "新建策略规则" }).locator("..").locator("..");
+  await formCard.getByLabel("连接器类型", { exact: true }).fill("**");
+  await formCard.getByLabel("工具名模式", { exact: true }).fill("***");
+  await formCard.getByLabel("操作类型", { exact: true }).fill("**");
+  await formCard.getByLabel("风险等级", { exact: true }).fill("***");
+  await formCard.getByLabel("资源模式", { exact: true }).fill("**");
+  await expect(enabledSelect).toHaveValue("false");
+  await expect(page.getByText("这条拒绝规则会匹配全部受治理调用")).toBeVisible();
+  await expect(page.getByText("规则目前保持禁用；以后启用时会阻断所有匹配的工具调用。")).toBeVisible();
+  await expect(page.getByText(/当前模拟输入会命中此草稿/)).toBeVisible();
+  await expect(page.getByText(/草稿当前已禁用/)).toBeVisible();
+  await expect(createButton).toBeEnabled();
+
+  await enabledSelect.selectOption("true");
+  const acknowledgement = page.getByRole("checkbox", {
+    name: "我理解影响范围，仍要保存这条已启用的全局拒绝规则。",
+  });
+  await expect(acknowledgement).toBeVisible();
+  await expect(createButton).toBeDisabled();
+
+  await acknowledgement.check();
+  await expect(createButton).toBeEnabled();
+});
+
+test("策略页：从列表启用全通配拒绝也必须确认", async ({ page }) => {
+  const mockState = await installPolicyPageMocks(page, {
+    role: "owner",
+    policyOverrides: {
+      enabled: false,
+      effect: "deny",
+      connectorType: "**",
+      toolNamePattern: "***",
+      operationType: "**",
+      riskLevel: "***",
+      resourcePattern: "**",
+    },
+  });
+
+  await page.goto("/policies");
+
+  await expect(page.getByText("连接器: 匹配全部 (*)", { exact: true })).toBeVisible();
+  await expect(page.getByText("工具: 匹配全部 (*)", { exact: true })).toBeVisible();
+  await expect(page.getByText("操作: 匹配全部 (*)", { exact: true })).toBeVisible();
+  await expect(page.getByText("风险: 匹配全部 (*)", { exact: true })).toBeVisible();
+  await expect(page.getByText("资源: 匹配全部 (*)", { exact: true })).toBeVisible();
+
+  const disabledToggle = page.getByRole("button", { name: "已禁用" });
+  const dismissedDialog = page.waitForEvent("dialog").then(async (dialog) => {
+    expect(dialog.message()).toBe("我理解影响范围，仍要保存这条已启用的全局拒绝规则。");
+    await dialog.dismiss();
+  });
+  await disabledToggle.click();
+  await dismissedDialog;
+  await expect(disabledToggle).toBeVisible();
+  expect(mockState.getPolicyWrites()).toEqual([]);
+
+  const acceptedDialog = page.waitForEvent("dialog").then(async (dialog) => {
+    await dialog.accept();
+  });
+  await disabledToggle.click();
+  await acceptedDialog;
+
+  await expect(page.getByRole("button", { name: "已启用" })).toBeVisible();
+  expect(mockState.getPolicyWrites()).toContain("PUT /api/policies/policy_deny_mock_echo");
+});
+
+test("策略页：工具模式 *.* 也按全局拒绝要求确认", async ({ page }) => {
+  await installPolicyPageMocks(page, { role: "owner" });
+
+  await page.goto("/policies");
+
+  const formCard = page.getByRole("heading", { name: "新建策略规则" }).locator("..").locator("..");
+  await formCard.getByLabel("连接器类型", { exact: true }).fill("*");
+  await formCard.getByLabel("工具名模式", { exact: true }).fill("*.*");
+  await formCard.getByLabel("操作类型", { exact: true }).fill("*");
+  await formCard.getByLabel("风险等级", { exact: true }).fill("*");
+  await formCard.getByLabel("资源模式", { exact: true }).fill("*");
+  await formCard.getByRole("combobox", { name: "启用", exact: true }).selectOption("true");
+
+  await expect(
+    page.getByRole("checkbox", {
+      name: "我理解影响范围，仍要保存这条已启用的全局拒绝规则。",
+    }),
+  ).toBeVisible();
+  await expect(formCard.getByRole("button", { name: "创建规则" })).toBeDisabled();
+});
+
+test("策略页：草稿预览与后端模拟使用相同的输入归一化", async ({ page }) => {
+  await installPolicyPageMocks(page, {
+    role: "owner",
+    policyOverrides: {
+      effect: "require_approval",
+      connectorType: "mcp",
+      toolNamePattern: "mcp_weather.forecast",
+      operationType: "*",
+      riskLevel: "low",
+      resourcePattern: "*",
+    },
+  });
+
+  await page.goto("/policies");
+
+  await page.getByLabel("连接器", { exact: true }).fill("*");
+  await page.getByLabel("工具", { exact: true }).fill("MCP_WEATHER.FORECAST");
+  await page.getByLabel("操作", { exact: true }).fill("");
+  await page.getByLabel("风险", { exact: true }).fill("");
+
+  await expect(page.getByText(/当前模拟输入会命中此草稿/)).toBeVisible();
+});
+
+async function installPolicyPageMocks(page: Page, options: PolicyPageMockOptions): Promise<PolicyPageMockState> {
   await page.addInitScript(() => {
     window.localStorage.setItem("agt.locale", "zh-CN");
   });
@@ -68,7 +193,7 @@ async function installPolicyPageMocks(page: Page, options: { role: "member" | "o
   const user = createUser(workspace, options.role);
   const simulationText =
     options.role === "owner" ? "owner role simulation can inspect policy outcome" : "member role simulation is read-only";
-  let policies = [createPolicyRule(workspace, options.role)];
+  let policies = [createPolicyRule(workspace, options.role, options.policyOverrides)];
   let simulatorCalled = false;
   const policyWrites: string[] = [];
 
@@ -259,9 +384,9 @@ function createPolicyRule(
     effect: overrides.effect ?? "deny",
     connectorType: overrides.connectorType ?? "mock",
     toolNamePattern: overrides.toolNamePattern ?? "mock.echo",
-    operationType: overrides.operationType ?? "*",
-    riskLevel: overrides.riskLevel ?? "*",
-    resourcePattern: overrides.resourcePattern ?? "*",
+    operationType: overrides.operationType ?? "**",
+    riskLevel: overrides.riskLevel ?? "***",
+    resourcePattern: overrides.resourcePattern ?? "**",
     reason: overrides.reason ?? `${role} policy fixture`,
     createdAt: timestamp,
     updatedAt: timestamp,

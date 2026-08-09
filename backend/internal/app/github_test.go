@@ -118,8 +118,17 @@ func TestGitHubGetPullRequestSuccessWritesAudit(t *testing.T) {
 
 	var response toolCallResponse
 	decodeBody(t, resp.Body.Bytes(), &response)
-	if response.Status != "success" {
-		t.Fatalf("expected success, got %+v", response)
+	if response.Status != "approval_required" || response.ApprovalID == "" {
+		t.Fatalf("expected sensitive supplied arguments to require approval, got %+v", response)
+	}
+	approveResp := postJSON(t, srv, "/api/approvals/"+response.ApprovalID+"/approve", "")
+	if approveResp.Code != http.StatusOK {
+		t.Fatalf("approve request: expected 200, got %d body=%s", approveResp.Code, approveResp.Body.String())
+	}
+	var action approvalActionResponse
+	decodeBody(t, approveResp.Body.Bytes(), &action)
+	if action.ToolCall.Status != "success" {
+		t.Fatalf("expected approved request to succeed, got %+v", action.ToolCall)
 	}
 	if atomic.LoadInt32(&requestCount) != 1 {
 		t.Fatalf("expected one GitHub request, got %d", requestCount)
@@ -132,7 +141,7 @@ func TestGitHubGetPullRequestSuccessWritesAudit(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("expected 1 call, got %d", len(calls))
 	}
-	if calls[0].Status != "success" || calls[0].PolicyDecision != "allow" || calls[0].ToolKey != "github.get_pull_request" {
+	if calls[0].Status != "success" || calls[0].PolicyDecision != policyRequireApproval || calls[0].ApprovalStatus != "approved" || calls[0].RiskLevel != "high" || calls[0].ToolKey != "github.get_pull_request" {
 		t.Fatalf("unexpected call audit: %+v", calls[0])
 	}
 	assertNoGitHubSecretInCalls(t, calls, secretToken)
@@ -171,6 +180,56 @@ func TestGitHubGetPullRequestRejectsNonWhitelistedRepoWithAudit(t *testing.T) {
 	}
 	if calls[0].Status != "failed" || calls[0].PolicyDecision != "allow" || !strings.Contains(calls[0].ErrorMessage, "not allowed") {
 		t.Fatalf("unexpected failed audit: %+v", calls[0])
+	}
+}
+
+func TestGitHubRedirectCannotChangeUpstreamOrigin(t *testing.T) {
+	t.Parallel()
+
+	const secretToken = "ghp_redirect_test_secret"
+	var redirectRequests int32
+	var alternateRequests int32
+	alternate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&alternateRequests, 1)
+		if r.Header.Get("Authorization") != "" {
+			t.Fatalf("redirected request must not carry Authorization")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(alternate.Close)
+
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&redirectRequests, 1)
+		http.Redirect(w, r, alternate.URL+"/redirected", http.StatusFound)
+	}))
+	t.Cleanup(redirect.Close)
+
+	srv, _, _ := newGitHubTestApp(t, githubTestConfig{
+		token:        secretToken,
+		apiBaseURL:   redirect.URL,
+		allowedRepos: []string{"acme/demo"},
+	})
+	resp := postJSON(t, srv, "/api/tool-calls", `{"tool":"github.get_pull_request","arguments":{"owner":"acme","repo":"demo","pullNumber":1,"token":"synthetic"}}`)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected approval response, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	var pending toolCallResponse
+	decodeBody(t, resp.Body.Bytes(), &pending)
+	if pending.Status != "approval_required" || pending.ApprovalID == "" {
+		t.Fatalf("expected approval before redirected request, got %+v", pending)
+	}
+
+	approveResp := postJSON(t, srv, "/api/approvals/"+pending.ApprovalID+"/approve", "")
+	if approveResp.Code != http.StatusOK {
+		t.Fatalf("approve request: expected 200, got %d body=%s", approveResp.Code, approveResp.Body.String())
+	}
+	var action approvalActionResponse
+	decodeBody(t, approveResp.Body.Bytes(), &action)
+	if action.ToolCall.Status != "failed" {
+		t.Fatalf("cross-origin redirect must fail closed, got %+v", action.ToolCall)
+	}
+	if atomic.LoadInt32(&redirectRequests) != 1 || atomic.LoadInt32(&alternateRequests) != 0 {
+		t.Fatalf("unexpected redirect counts: redirect=%d alternate=%d", redirectRequests, alternateRequests)
 	}
 }
 

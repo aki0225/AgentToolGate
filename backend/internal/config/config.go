@@ -13,6 +13,7 @@ type Config struct {
 	StoreDriver                string
 	DatabaseURL                string
 	AGTDataDir                 string
+	ProjectRoot                string
 	SQLitePath                 string
 	DatabaseQueryURL           string
 	DatabaseQueryDatasource    string
@@ -25,6 +26,7 @@ type Config struct {
 	GitHubTimeoutMs            int
 	HTTPAllowedHosts           []string
 	HTTPAllowedMethods         []string
+	MCPAllowedHosts            []string
 	HTTPTimeoutMs              int
 	HTTPMaxResponseBytes       int
 	RateLimitPerMinute         int
@@ -59,6 +61,7 @@ func Load() Config {
 		StoreDriver:                strings.ToLower(getEnv("STORE_DRIVER", "")),
 		DatabaseURL:                getEnv("DATABASE_URL", ""),
 		AGTDataDir:                 getEnv("AGT_DATA_DIR", ""),
+		ProjectRoot:                getEnv("AGT_PROJECT_ROOT", ""),
 		SQLitePath:                 firstNonEmpty(getEnv("AGT_SQLITE_PATH", ""), getEnv("SQLITE_PATH", "")),
 		DatabaseQueryURL:           getEnv("DATABASE_QUERY_URL", ""),
 		DatabaseQueryDatasource:    getEnv("DATABASE_QUERY_DATASOURCE", "local_postgres"),
@@ -71,6 +74,7 @@ func Load() Config {
 		GitHubTimeoutMs:            parsePositiveInt(getEnv("GITHUB_TIMEOUT_MS", "3000"), 3000),
 		HTTPAllowedHosts:           splitAndTrim(getEnv("HTTP_ALLOWED_HOSTS", "")),
 		HTTPAllowedMethods:         splitAndTrim(getEnv("HTTP_ALLOWED_METHODS", "GET,HEAD,OPTIONS,POST,PUT,PATCH,DELETE")),
+		MCPAllowedHosts:            splitAndTrim(getEnv("MCP_ALLOWED_HOSTS", "")),
 		HTTPTimeoutMs:              parsePositiveInt(getEnv("HTTP_TIMEOUT_MS", "3000"), 3000),
 		HTTPMaxResponseBytes:       parsePositiveInt(getEnv("HTTP_MAX_RESPONSE_BYTES", "65536"), 65536),
 		RateLimitPerMinute:         parsePositiveInt(getEnv("RATE_LIMIT_PER_MINUTE", "60"), 60),

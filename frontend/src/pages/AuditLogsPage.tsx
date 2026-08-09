@@ -15,6 +15,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { useI18n, type TranslationKey } from "../i18n";
+import { governanceEffectLabel, governanceRiskLabel, governanceStatusLabel } from "../lib/governanceLabels";
 import { toast } from "sonner";
 import type { Tool, ToolCall, ToolCallExplanation, ToolCallPage } from "../types";
 
@@ -322,14 +323,18 @@ export function AuditLogsPage() {
                               <div className="mt-1 text-sm text-muted-foreground">{call.durationMs}ms</div>
                             </TableCell>
                             <TableCell>
-                              <Badge variant={statusBadgeVariant(call.status)}>{call.status}</Badge>
+                              <Badge variant={statusBadgeVariant(call.status)} title={call.status}>
+                                {governanceStatusLabel(t, call.status)}
+                              </Badge>
                             </TableCell>
                             <TableCell>
-                              <Badge variant={policyBadgeVariant(call.policyDecision)}>{call.policyDecision}</Badge>
+                              <Badge variant={policyBadgeVariant(call.policyDecision)} title={call.policyDecision}>
+                                {governanceEffectLabel(t, call.policyDecision)}
+                              </Badge>
                             </TableCell>
                             <TableCell>
                               <Badge variant={approvalBadgeVariant(call.approvalStatus || (call.approvalId ? "pending" : "none"))}>
-                                {call.approvalStatus || (call.approvalId ? "pending" : "none")}
+                                {governanceStatusLabel(t, call.approvalStatus || (call.approvalId ? "pending" : "none"))}
                               </Badge>
                             </TableCell>
                             <TableCell className="max-w-[16rem] truncate text-muted-foreground">
@@ -402,7 +407,10 @@ export function AuditLogsPage() {
                                             label={t("audit.risk.level")}
                                             value={
                                               <Badge variant={riskLevelBadgeVariant(call.explanation.riskLevel)}>
-                                                {displayExplanationRiskLevel(call.explanation, t("audit.risk.unknown"))}
+                                                {governanceRiskLabel(
+                                                  t,
+                                                  displayExplanationRiskLevel(call.explanation, t("audit.risk.unknown")),
+                                                )}
                                               </Badge>
                                             }
                                           />

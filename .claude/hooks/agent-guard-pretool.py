@@ -10,18 +10,25 @@ isAgentGuardSensitiveTarget 保持一致，避免把只读命令或普通文档�
 from __future__ import annotations
 
 import json
+import hashlib
 import http.client
 import os
 import re
+import subprocess
 import sys
+import time
 import urllib.parse
 import ssl
 from pathlib import Path
 from typing import Any
 
 DEFAULT_HOOK_TIMEOUT_SECONDS = 0.2
+DEFAULT_GO_CLI_TIMEOUT_SECONDS = 1.0
 MIN_HOOK_TIMEOUT_MS = 50
 MAX_HOOK_TIMEOUT_MS = 2000
+MIN_GO_CLI_TIMEOUT_MS = 100
+MAX_GO_CLI_TIMEOUT_MS = 5000
+HOOK_TICKET_TTL_SECONDS = 10 * 60
 HOOK_CONTROL_MODES = {"off", "dry-run", "live"}
 SENSITIVE_TARGET_KEYS = {
     "access_token",
@@ -56,12 +63,13 @@ if sys.platform.startswith("win"):
 
 
 def find_repo_root(start_path: str) -> str | None:
-    current = Path(start_path).resolve()
-    while current != current.parent:
-        if (current / ".git").exists():
+    current = Path(get_text(start_path) or os.getcwd()).resolve()
+    while True:
+        if (current / ".git").exists() or (current / ".agenttoolgate").exists():
             return str(current)
+        if current == current.parent:
+            return None
         current = current.parent
-    return None
 
 
 def detect_adapter() -> str:
@@ -100,6 +108,10 @@ def get_tool_input(input_data: dict[str, Any]) -> dict[str, Any]:
         return input_data["toolInput"]  # type: ignore[index]
     if isinstance(input_data.get("toolArgs"), dict):
         return input_data["toolArgs"]  # type: ignore[index]
+    for key in ("args", "arguments", "params", "input"):
+        value = input_data.get(key)
+        if isinstance(value, dict):
+            return value
     if isinstance(raw, str) and raw.strip():
         return {"content": raw.strip()}
     return {}
@@ -116,6 +128,9 @@ def is_guarded_tool(tool_name: str) -> bool:
         return True
     return normalized in {
         "bash",
+        "glob",
+        "grep",
+        "read",
         "write",
         "edit",
         "multiedit",
@@ -138,6 +153,86 @@ def first_non_empty(*values: Any) -> str:
     return ""
 
 
+def build_glob_read_target(tool_input: dict[str, Any]) -> str:
+    base = first_non_empty(
+        tool_input.get("path"),
+        tool_input.get("file_path"),
+        tool_input.get("filePath"),
+        tool_input.get("root"),
+        tool_input.get("target"),
+    )
+    pattern = first_non_empty(tool_input.get("pattern"), tool_input.get("glob"))
+    if not pattern:
+        return base or "."
+    if Path(pattern).is_absolute() or not base or base == ".":
+        return pattern
+    return str(Path(base) / pattern)
+
+
+def shell_tokens(command: str) -> list[str]:
+    tokens: list[str] = []
+    pattern = re.compile(r'''"([^"]*)"|'([^']*)'|([^\s;&|]+)|([;&|])''')
+    for match in pattern.finditer(command):
+        token = first_non_empty(match.group(1), match.group(2), match.group(3), match.group(4))
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def extract_powershell_positional_targets(command: str) -> list[str]:
+    command_names = {
+        "set-content": 0,
+        "add-content": 0,
+        "out-file": 0,
+        "new-item": 0,
+        "copy-item": 1,
+        "move-item": 1,
+        "rename-item": 1,
+    }
+    target_parameters = {"-path", "-literalpath", "-filepath", "-destination"}
+    value_parameters = {
+        "-credential",
+        "-encoding",
+        "-filter",
+        "-include",
+        "-exclude",
+        "-itemtype",
+        "-name",
+        "-newname",
+        "-stream",
+        "-type",
+        "-value",
+    }
+    tokens = shell_tokens(command)
+    candidates: list[str] = []
+    for index, token in enumerate(tokens):
+        target_index = command_names.get(token.lower())
+        if target_index is None:
+            continue
+        positionals: list[str] = []
+        cursor = index + 1
+        while cursor < len(tokens):
+            current = tokens[cursor]
+            lowered = current.lower()
+            if current in {";", "&", "|"}:
+                break
+            if lowered in target_parameters and cursor + 1 < len(tokens):
+                candidates.append(tokens[cursor + 1])
+                cursor += 2
+                continue
+            if current.startswith("-"):
+                if lowered in value_parameters and cursor + 1 < len(tokens):
+                    cursor += 2
+                else:
+                    cursor += 1
+                continue
+            positionals.append(current)
+            cursor += 1
+        if len(positionals) > target_index:
+            candidates.append(positionals[target_index])
+    return candidates
+
+
 def extract_exec_target_candidates(command: str) -> list[str]:
     command = command.strip()
     if not command:
@@ -156,6 +251,7 @@ def extract_exec_target_candidates(command: str) -> list[str]:
                 if text and not text.startswith("&"):
                     candidates.append(text.rstrip(",;)"))
                     break
+    candidates.extend(extract_powershell_positional_targets(command))
     return candidates
 
 
@@ -167,6 +263,7 @@ try:
     from _guard_core import (
         contains_hidden_script_features,
         is_high_risk_offline_target,
+        is_project_metadata_read_target,
         is_probably_high_risk_target,
         is_probably_script_target,
     )
@@ -174,6 +271,7 @@ except ImportError:  # pragma: no cover - 兼容直接复制单文件调试的�
     from ._guard_core import (  # type: ignore[no-redef]
         contains_hidden_script_features,
         is_high_risk_offline_target,
+        is_project_metadata_read_target,
         is_probably_high_risk_target,
         is_probably_script_target,
     )
@@ -220,7 +318,13 @@ def extract_patch_targets(patch_text: str) -> str:
     return ";".join(targets)
 
 
-def build_agent_guard_request(adapter: str, input_data: dict[str, Any], tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+def build_agent_guard_request(
+    adapter: str,
+    input_data: dict[str, Any],
+    tool_name: str,
+    tool_input: dict[str, Any],
+    workspace_root: str = "",
+) -> dict[str, Any]:
     normalized_name = tool_name.lower().strip()
     action_type = "read"
     target = ""
@@ -243,6 +347,26 @@ def build_agent_guard_request(adapter: str, input_data: dict[str, Any], tool_nam
             script_content = read_script_file_content(target, cwd)
             if script_content:
                 content = script_content
+    elif normalized_name in {"grep", "glob"}:
+        action_type = "read"
+        pattern = first_non_empty(
+            tool_input.get("pattern"),
+            tool_input.get("glob"),
+            tool_input.get("query"),
+            tool_input.get("regex"),
+        )
+        if normalized_name == "glob":
+            target = build_glob_read_target(tool_input)
+        else:
+            target = first_non_empty(
+                tool_input.get("path"),
+                tool_input.get("file_path"),
+                tool_input.get("filePath"),
+                tool_input.get("root"),
+                tool_input.get("target"),
+                ".",
+            )
+        content = pattern
     elif normalized_name in {"write", "edit", "multiedit", "notebookedit", "apply_patch"}:
         action_type = "write"
         target = first_non_empty(
@@ -292,6 +416,15 @@ def build_agent_guard_request(adapter: str, input_data: dict[str, Any], tool_nam
         "tool": tool_name,
         "actionType": action_type,
         "target": target,
+        "workspaceRoot": first_non_empty(
+            workspace_root,
+            input_data.get("project_root"),
+            input_data.get("projectRoot"),
+            input_data.get("workspace_root"),
+            input_data.get("workspaceRoot"),
+            input_data.get("cwd"),
+        ),
+        "workingDirectory": cwd,
         "isScript": is_probably_script_target(target) or is_probably_script_target(content),
         "contentEncoding": "plain",
         "content": content,
@@ -309,6 +442,10 @@ def repo_local_hook_control_path(repo_root: str) -> Path:
 
 def repo_local_hook_dry_run_path(repo_root: str) -> Path:
     return Path(repo_root) / ".tmp" / "agenttoolgate" / "hook-dry-run.jsonl"
+
+
+def repo_local_hook_ticket_dir(repo_root: str) -> Path:
+    return Path(repo_root) / ".tmp" / "agenttoolgate" / "hook-tickets"
 
 
 def read_hook_control_mode(repo_root: str) -> str:
@@ -394,6 +531,110 @@ def redact_preview_target(value: Any) -> str:
     return redact_non_url_target(target)
 
 
+def hook_request_digest(payload: dict[str, Any]) -> str:
+    fields = [
+        get_text(payload.get("adapter")),
+        get_text(payload.get("tool")),
+        get_text(payload.get("actionType")),
+        get_text(payload.get("target")),
+        get_text(payload.get("workspaceRoot")),
+        get_text(payload.get("workingDirectory")),
+        get_text(payload.get("guardDecision")),
+        get_text(payload.get("guardRiskLevel")),
+        bool(payload.get("isScript")),
+        get_text(payload.get("contentEncoding")),
+        get_text(payload.get("content")),
+    ]
+    raw = json.dumps(fields, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def hook_ticket_path(repo_root: str, payload: dict[str, Any]) -> Path:
+    return repo_local_hook_ticket_dir(repo_root) / f"{hook_request_digest(payload)}.json"
+
+
+def clear_hook_ticket(repo_root: str, payload: dict[str, Any]) -> bool:
+    try:
+        hook_ticket_path(repo_root, payload).unlink()
+    except FileNotFoundError:
+        return True
+    except Exception:
+        return False
+    return True
+
+
+def load_hook_ticket(repo_root: str, payload: dict[str, Any]) -> tuple[str, bool]:
+    path = hook_ticket_path(repo_root, payload)
+    digest = hook_request_digest(payload)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        ticket_id = get_text(data.get("ticketId"))
+        fingerprint = get_text(data.get("fingerprint"))
+        request_digest = get_text(data.get("requestDigest"))
+        expires_at = float(data.get("expiresAtUnix") or 0)
+    except FileNotFoundError:
+        return "", True
+    except Exception:
+        return "", clear_hook_ticket(repo_root, payload)
+    if not ticket_id or not fingerprint or request_digest != digest or expires_at <= time.time():
+        return "", clear_hook_ticket(repo_root, payload)
+    return ticket_id, True
+
+
+def store_hook_ticket(repo_root: str, payload: dict[str, Any], decision: dict[str, Any]) -> bool:
+    ticket_id = get_text(decision.get("approvalId"))
+    fingerprint = get_text(decision.get("fingerprint"))
+    if not ticket_id or not fingerprint:
+        return False
+    path = hook_ticket_path(repo_root, payload)
+    document = {
+        "ticketId": ticket_id,
+        "fingerprint": fingerprint,
+        "requestDigest": hook_request_digest(payload),
+        "expiresAtUnix": time.time() + HOOK_TICKET_TTL_SECONDS,
+    }
+    temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path.write_text(json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+        try:
+            temp_path.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(temp_path, path)
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
+
+def attach_hook_ticket(repo_root: str, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    request = dict(payload)
+    ticket_id, ok = load_hook_ticket(repo_root, payload)
+    if not ok:
+        return request, False
+    if ticket_id:
+        request["ticketId"] = ticket_id
+    return request, True
+
+
+def update_hook_ticket(repo_root: str, payload: dict[str, Any], decision: dict[str, Any]) -> str:
+    result = get_text(decision.get("decision"))
+    if result == "deny_with_ticket":
+        if not store_hook_ticket(repo_root, payload, decision):
+            return "hook ticket persistence failed"
+    elif result in {"allow", "deny"}:
+        if not clear_hook_ticket(repo_root, payload):
+            return "hook ticket cleanup failed"
+    return ""
+
+
 def record_local_hook_dry_run(repo_root: str, payload: dict[str, Any]) -> None:
     try:
         preview_path = repo_local_hook_dry_run_path(repo_root)
@@ -421,7 +662,7 @@ def record_local_hook_dry_run(repo_root: str, payload: dict[str, Any]) -> None:
         return
 
 
-def record_local_pending_audit(repo_root: str, payload: dict[str, Any], reason: str, offline: bool) -> None:
+def record_local_pending_audit(repo_root: str, payload: dict[str, Any], reason: str, offline: bool) -> bool:
     try:
         audit_path = repo_local_pending_audit_path(repo_root)
         audit_path.parent.mkdir(parents=True, exist_ok=True)
@@ -433,7 +674,7 @@ def record_local_pending_audit(repo_root: str, payload: dict[str, Any], reason: 
             "actor": get_text(os.environ.get("AGENTTOOLGATE_ACTOR") or os.environ.get("USER") or os.environ.get("USERNAME")),
             "tool": get_text(payload.get("tool")),
             "action": get_text(payload.get("actionType")),
-            "target": get_text(payload.get("target")),
+            "target": redact_preview_target(payload.get("target")),
             "time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
             "reason": reason,
             "offline": offline,
@@ -441,7 +682,8 @@ def record_local_pending_audit(repo_root: str, payload: dict[str, Any], reason: 
         with audit_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
-        return
+        return False
+    return True
 
 
 def build_headers() -> dict[str, str]:
@@ -471,6 +713,67 @@ def hook_timeout_seconds() -> float:
     return timeout_ms / 1000.0
 
 
+def agenttoolgate_executable() -> str:
+    configured = os.environ.get("AGENTTOOLGATE_EXE", "").strip()
+    if configured:
+        return configured
+    return "agenttoolgate.exe" if os.name == "nt" else "agenttoolgate"
+
+
+def go_cli_timeout_seconds() -> float:
+    raw = os.environ.get("AGENTTOOLGATE_CLI_TIMEOUT_MS", "").strip()
+    if not raw:
+        return DEFAULT_GO_CLI_TIMEOUT_SECONDS
+    try:
+        timeout_ms = float(raw)
+    except ValueError:
+        return DEFAULT_GO_CLI_TIMEOUT_SECONDS
+    if timeout_ms < MIN_GO_CLI_TIMEOUT_MS or timeout_ms > MAX_GO_CLI_TIMEOUT_MS:
+        return DEFAULT_GO_CLI_TIMEOUT_SECONDS
+    return timeout_ms / 1000.0
+
+
+def is_valid_claude_hook_output(output: Any) -> bool:
+    if not isinstance(output, dict):
+        return False
+    specific = output.get("hookSpecificOutput")
+    if not isinstance(specific, dict):
+        return False
+    if get_text(specific.get("hookEventName")) != "PreToolUse":
+        return False
+    if get_text(specific.get("permissionDecision")) not in {"allow", "ask", "deny"}:
+        return False
+    return "updatedInput" not in specific
+
+
+def call_agenttoolgate_guard_hook_claude(input_data: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        completed = subprocess.run(
+            [agenttoolgate_executable(), "guard", "hook", "claude", "--input", "-"],
+            input=json.dumps(input_data, ensure_ascii=False),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=go_cli_timeout_seconds(),
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    stdout = completed.stdout.strip()
+    if not stdout:
+        return {}
+    try:
+        output = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    if not is_valid_claude_hook_output(output):
+        return None
+    return output
+
+
 def post_json(url: str, payload: dict[str, Any], timeout: float | None = None) -> tuple[int, dict[str, Any], str]:
     if timeout is None:
         timeout = hook_timeout_seconds()
@@ -498,6 +801,479 @@ def post_json(url: str, payload: dict[str, Any], timeout: float | None = None) -
             conn.close()
     except Exception as exc:
         return 0, {}, str(exc)
+
+
+def normalized_backend_decision(status: int, decision: dict[str, Any]) -> dict[str, Any]:
+    if status < 200 or status >= 300:
+        return {"decision": "deny", "reason": f"agenttoolgate request failed (HTTP {status})"}
+    result = get_text(decision.get("decision"))
+    if result not in {"allow", "deny", "deny_with_ticket"}:
+        return {"decision": "deny", "reason": "agenttoolgate returned an invalid decision"}
+    if result == "deny_with_ticket" and (
+        not get_text(decision.get("approvalId")) or not get_text(decision.get("fingerprint"))
+    ):
+        return {"decision": "deny", "reason": "agenttoolgate returned an invalid ticket response"}
+    return decision
+
+
+def is_path_within_repo(repo_root: str, target: str, working_directory: str = "") -> bool:
+    if not target or target.lower().startswith(("http://", "https://")):
+        return False
+    try:
+        root = Path(repo_root).resolve()
+        candidate = Path(target)
+        if not candidate.is_absolute():
+            base = Path(working_directory).resolve() if working_directory else root
+            candidate = base / candidate
+        candidate.resolve(strict=False).relative_to(root)
+        return True
+    except Exception:
+        return False
+
+
+def has_unquoted_shell_control(command: str) -> bool:
+    quote = ""
+    for char in command:
+        if char in {"'", '"'}:
+            if not quote:
+                quote = char
+                continue
+            if quote == char:
+                quote = ""
+                continue
+        if quote == "'":
+            continue
+        if char in {"`", "$"}:
+            return True
+        if not quote and char in "(){};&|><\r\n":
+            return True
+    return bool(quote)
+
+
+def has_command_name(command: str, name: str) -> bool:
+    return command == name or command.startswith(name + " ")
+
+
+def is_explicit_read_only_command(command: str) -> bool:
+    normalized = command.strip().lower()
+    if not normalized or has_unquoted_shell_control(command):
+        return False
+    if has_command_name(normalized, "rg"):
+        return is_explicit_read_only_search_command(command, "rg")
+    if has_command_name(normalized, "grep"):
+        return is_explicit_read_only_search_command(command, "grep")
+    if has_command_name(normalized, "select-string"):
+        return is_explicit_read_only_select_string_command(command)
+    if has_command_name(normalized, "git status"):
+        return is_explicit_read_only_git_command(command, "status")
+    if (
+        has_command_name(normalized, "git diff")
+        or has_command_name(normalized, "git log")
+        or has_command_name(normalized, "git show")
+    ):
+        return is_explicit_read_only_git_command(command, normalized.split()[1])
+    if has_command_name(normalized, "git rev-parse"):
+        return is_explicit_read_only_git_command(command, "rev-parse")
+    if normalized in {"pwd", "get-location"}:
+        return True
+    if has_command_name(normalized, "sed"):
+        return is_explicit_read_only_sed_command(command)
+    if any(has_command_name(normalized, name) for name in ("ls", "dir", "get-childitem")):
+        return is_explicit_read_only_path_command(command, allow_no_target=True, allow_glob=True)
+    if any(has_command_name(normalized, name) for name in ("cat", "type", "get-content", "gc")):
+        return is_explicit_read_only_path_command(command, allow_no_target=False, allow_glob=False)
+    return False
+
+
+def is_explicit_read_only_search_command(command: str, name: str) -> bool:
+    tokens = split_read_only_command_tokens(command)
+    if not tokens or len(tokens) < 2 or tokens[0].lower() != name:
+        return False
+    pattern_provided = False
+    files_mode = False
+    paths_only = False
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if paths_only:
+            if not is_safe_relative_read_command_token(token, True):
+                return False
+            index += 1
+            continue
+        if token == "--":
+            paths_only = True
+            index += 1
+            continue
+        if token.startswith("-") and token != "-":
+            if is_forbidden_search_option(token):
+                return False
+            option, inline_value, has_inline_value = split_read_only_option(token)
+            if option == "--files":
+                files_mode = True
+                index += 1
+                continue
+            if option in {"-e", "--regexp"}:
+                if not has_inline_value:
+                    index += 1
+                    if index >= len(tokens):
+                        return False
+                elif not inline_value:
+                    return False
+                pattern_provided = True
+                index += 1
+                continue
+            if token.startswith("-e") and not token.startswith("--") and len(token) > 2:
+                pattern_provided = True
+                index += 1
+                continue
+            if search_option_consumes_value(option) and not has_inline_value:
+                index += 1
+                if index >= len(tokens):
+                    return False
+            index += 1
+            continue
+        if not pattern_provided and not files_mode:
+            pattern_provided = True
+            index += 1
+            continue
+        if not is_safe_relative_read_command_token(token, True):
+            return False
+        index += 1
+    return pattern_provided or files_mode
+
+
+def is_forbidden_search_option(token: str) -> bool:
+    lowered = token.lower()
+    if token == "-f" or (token.startswith("-f") and not token.startswith("--")):
+        return True
+    return any(
+        lowered == prefix or lowered.startswith(prefix + "=")
+        for prefix in (
+            "--pre",
+            "--file",
+            "--ignore-file",
+            "--hostname-bin",
+            "--exclude-from",
+            "--include-from",
+        )
+    )
+
+
+def split_read_only_option(token: str) -> tuple[str, str, bool]:
+    if "=" in token and token.index("=") > 0:
+        name, value = token.split("=", 1)
+        return (name.lower() if name.startswith("--") else name, value, True)
+    return (token.lower() if token.startswith("--") else token, "", False)
+
+
+def search_option_consumes_value(option: str) -> bool:
+    return option in {
+        "-A",
+        "-B",
+        "-C",
+        "-E",
+        "-M",
+        "-T",
+        "-d",
+        "-e",
+        "-g",
+        "-j",
+        "-m",
+        "-r",
+        "-t",
+        "--regexp",
+        "--glob",
+        "--type",
+        "--type-not",
+        "--encoding",
+        "--engine",
+        "--sort",
+        "--sortr",
+        "--color",
+        "--colors",
+        "--max-count",
+        "--max-depth",
+        "--context",
+        "--before-context",
+        "--after-context",
+        "--replace",
+    }
+
+
+def is_explicit_read_only_select_string_command(command: str) -> bool:
+    tokens = split_read_only_command_tokens(command)
+    if not tokens or len(tokens) < 2 or tokens[0].lower() != "select-string":
+        return False
+    pattern_provided = False
+    target_count = 0
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("-"):
+            option, inline_value, has_inline_value = split_powershell_parameter(token)
+            if option == "-inputobject":
+                return False
+            if option in {"-path", "-literalpath"}:
+                value = inline_value
+                if not has_inline_value:
+                    index += 1
+                    if index >= len(tokens):
+                        return False
+                    value = tokens[index]
+                if not is_safe_powershell_read_path_token(value, True):
+                    return False
+                target_count += 1
+            elif option == "-pattern":
+                if not has_inline_value:
+                    index += 1
+                    if index >= len(tokens):
+                        return False
+                elif not inline_value:
+                    return False
+                pattern_provided = True
+            elif option in {"-context", "-encoding", "-include", "-exclude", "-culture"}:
+                if not has_inline_value:
+                    index += 1
+                    if index >= len(tokens):
+                        return False
+            elif has_inline_value:
+                return False
+            index += 1
+            continue
+        if not pattern_provided:
+            pattern_provided = True
+            index += 1
+            continue
+        if not is_safe_powershell_read_path_token(token, True):
+            return False
+        target_count += 1
+        index += 1
+    return pattern_provided and target_count > 0
+
+
+def split_powershell_parameter(token: str) -> tuple[str, str, bool]:
+    if ":" in token and token.index(":") > 0:
+        name, value = token.split(":", 1)
+        return name.lower(), value, True
+    return token.lower(), "", False
+
+
+def is_explicit_read_only_git_command(command: str, subcommand: str) -> bool:
+    tokens = split_read_only_command_tokens(command)
+    if (
+        not tokens
+        or len(tokens) < 2
+        or tokens[0].lower() != "git"
+        or tokens[1].lower() != subcommand
+    ):
+        return False
+    paths_only = False
+    for token in tokens[2:]:
+        if token == "--":
+            paths_only = True
+            continue
+        if is_forbidden_git_read_option(token):
+            return False
+        if not paths_only and token.startswith("-"):
+            continue
+        if not is_safe_git_read_argument(token):
+            return False
+    return True
+
+
+def is_forbidden_git_read_option(token: str) -> bool:
+    lowered = token.lower()
+    return any(
+        lowered == prefix or lowered.startswith(prefix)
+        for prefix in (
+            "--output",
+            "--ext-diff",
+            "--textconv",
+            "--no-index",
+            "--pathspec-from-file",
+            "--git-dir=",
+            "--work-tree=",
+            "--config-env",
+        )
+    )
+
+
+def is_safe_git_read_argument(token: str) -> bool:
+    value = token.strip()
+    if not value:
+        return False
+    normalized = value.replace("\\", "/")
+    if normalized.startswith(("/", "~")):
+        return False
+    if len(normalized) >= 2 and normalized[1] == ":" and normalized[0].isalpha():
+        return False
+    if ":" in normalized and normalized.index(":") > 0:
+        provider = normalized.split(":", 1)[0].lower()
+        if provider in {"alias", "cert", "env", "function", "hkcu", "hklm", "registry", "variable", "wsman"}:
+            return False
+    parts: list[str] = []
+    for part in normalized.split("/"):
+        if not part or part == ".":
+            continue
+        if part == "..":
+            if not parts:
+                return False
+            parts.pop()
+            continue
+        parts.append(part)
+    return True
+
+
+def is_explicit_read_only_sed_command(command: str) -> bool:
+    tokens = split_read_only_command_tokens(command)
+    if tokens is None:
+        return False
+    if len(tokens) < 4 or tokens[0].lower() != "sed" or tokens[1].lower() not in {"-n", "--quiet", "--silent"}:
+        return False
+    if re.fullmatch(r"\d+(?:,\d+)?p", tokens[2].lower()) is None:
+        return False
+    return all(
+        token and not token.startswith("-") and is_safe_relative_read_command_token(token, False)
+        for token in tokens[3:]
+    )
+
+
+def is_explicit_read_only_path_command(command: str, allow_no_target: bool, allow_glob: bool) -> bool:
+    tokens = split_read_only_command_tokens(command)
+    if not tokens:
+        return False
+    target_count = 0
+    for token in tokens[1:]:
+        if token.startswith("-"):
+            if token.lower() == "-wait":
+                return False
+            option, inline_value, has_inline_value = split_powershell_parameter(token)
+            if has_inline_value:
+                if option not in {"-path", "-literalpath"}:
+                    return False
+                if not is_safe_powershell_read_path_token(inline_value, allow_glob):
+                    return False
+                target_count += 1
+            continue
+        if not is_safe_powershell_read_path_token(token, allow_glob):
+            return False
+        target_count += 1
+    return allow_no_target or target_count > 0
+
+
+def is_safe_powershell_read_path_token(token: str, allow_glob: bool) -> bool:
+    return "," not in token and is_safe_relative_read_command_token(token, allow_glob)
+
+
+def is_safe_relative_read_command_token(token: str, allow_glob: bool) -> bool:
+    value = token.strip()
+    if not value:
+        return False
+    normalized = value.replace("\\", "/")
+    if (
+        normalized.startswith(("/", "~"))
+        or ":" in normalized
+        or any(char in normalized for char in "$%@{}()`")
+        or (not allow_glob and any(char in normalized for char in "*?[]"))
+    ):
+        return False
+    parts: list[str] = []
+    for part in normalized.split("/"):
+        if not part or part == ".":
+            continue
+        if part == "..":
+            if not parts:
+                return False
+            parts.pop()
+            continue
+        parts.append(part)
+    return True
+
+
+def split_read_only_command_tokens(command: str) -> list[str] | None:
+    tokens: list[str] = []
+    current: list[str] = []
+    quote = ""
+
+    def flush() -> None:
+        if current:
+            tokens.append("".join(current))
+            current.clear()
+
+    for char in command:
+        if quote:
+            if char == quote:
+                quote = ""
+            else:
+                current.append(char)
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char in {" ", "\t"}:
+            flush()
+        else:
+            current.append(char)
+    if quote:
+        return None
+    flush()
+    return tokens
+
+
+def is_explicitly_low_risk_offline_action(repo_root: str, payload: dict[str, Any]) -> bool:
+    action = get_text(payload.get("actionType")).lower()
+    tool = get_text(payload.get("tool")).lower()
+    target = get_text(payload.get("target"))
+    content = get_text(payload.get("content"))
+    working_directory = get_text(payload.get("workingDirectory"))
+    if action == "read" and tool in {"read", "grep", "glob"} and is_path_within_repo(
+        repo_root,
+        target,
+        working_directory,
+    ):
+        return is_project_metadata_read_target(target) or not is_high_risk_offline_target(payload)
+    if action != "exec":
+        return False
+    # Go CLI 不可用时不维护第二套 shell 解析器，只放行无法携带路径或附加参数的精确命令。
+    return " ".join(content.strip().lower().split()) in {"git status", "pwd", "get-location"}
+
+
+def is_fast_path_repo_read(repo_root: str, payload: dict[str, Any]) -> bool:
+    return (
+        get_text(payload.get("actionType")).lower() == "read"
+        and get_text(payload.get("tool")).lower() == "read"
+        and is_path_within_repo(
+            repo_root,
+            get_text(payload.get("target")),
+            get_text(payload.get("workingDirectory")),
+        )
+        and (
+            is_project_metadata_read_target(get_text(payload.get("target")))
+            or not is_high_risk_offline_target(payload)
+        )
+    )
+
+
+def attach_python_guard_floor(repo_root: str, payload: dict[str, Any]) -> dict[str, Any]:
+    request = dict(payload)
+    if is_explicitly_low_risk_offline_action(repo_root, payload):
+        request["guardDecision"] = "allow"
+        request["guardRiskLevel"] = "low"
+    elif is_high_risk_offline_target(payload):
+        request["guardDecision"] = "deny"
+        request["guardRiskLevel"] = "high"
+    else:
+        request["guardDecision"] = "ask"
+        request["guardRiskLevel"] = "medium"
+    return request
+
+
+def enforce_python_guard_floor(request: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
+    guard_decision = get_text(request.get("guardDecision"))
+    if guard_decision == "deny":
+        return {"decision": "deny", "reason": "local guard denied this action"}
+    if guard_decision == "ask" and get_text(decision.get("decision")) == "allow" and not get_text(request.get("ticketId")):
+        return {"decision": "deny", "reason": "local guard requires confirmation"}
+    return decision
 
 
 def build_output(adapter: str, decision: dict[str, Any], original_input: dict[str, Any]) -> dict[str, Any]:
@@ -575,20 +1351,44 @@ def main() -> int:
 
     tool_input = get_tool_input(input_data)
     adapter = detect_adapter()
-    payload = build_agent_guard_request(adapter, input_data, tool_name, tool_input)
+    payload = build_agent_guard_request(adapter, input_data, tool_name, tool_input, repo_root)
     if hook_mode == "dry-run":
+        if is_fast_path_repo_read(repo_root, payload):
+            return 0
         record_local_hook_dry_run(repo_root, payload)
         return 0
 
-    status, decision, raw = post_json(build_url(), payload)
+    go_output = call_agenttoolgate_guard_hook_claude(input_data)
+    if go_output == {}:
+        return 0
+    if go_output is not None:
+        print(json.dumps(go_output, ensure_ascii=False), flush=True)
+        return 0
+
+    guarded_payload = attach_python_guard_floor(repo_root, payload)
+    request_payload, ticket_ok = attach_hook_ticket(repo_root, guarded_payload)
+    if not ticket_ok:
+        decision = {"decision": "deny", "reason": "hook ticket cleanup failed"}
+        output = build_output(adapter, decision, tool_input)
+        print(json.dumps(output, ensure_ascii=False), flush=True)
+        return 0
+    status, decision, raw = post_json(build_url(), request_payload)
     if status == 0:
-        if is_high_risk_offline_target(payload):
+        if is_explicitly_low_risk_offline_action(repo_root, payload):
+            reason = "ATG offline, local pending audit"
+            if record_local_pending_audit(repo_root, payload, reason, True):
+                decision = {"decision": "allow", "reason": reason}
+            else:
+                decision = {"decision": "deny", "reason": "ATG offline, pending audit unavailable"}
+        elif is_high_risk_offline_target(payload):
             decision = {"decision": "deny", "reason": "ATG offline, sensitive target denied"}
         else:
-            decision = {"decision": "allow", "reason": "ATG offline, local pending audit"}
-            record_local_pending_audit(repo_root, payload, get_text(decision.get("reason")), True)
-    elif not decision:
-        decision = {"decision": "deny", "reason": f"agenttoolgate returned empty response (HTTP {status})"}
+            decision = {"decision": "deny", "reason": "ATG offline, action not explicitly low risk"}
+    else:
+        decision = enforce_python_guard_floor(request_payload, normalized_backend_decision(status, decision))
+        ticket_error = update_hook_ticket(repo_root, guarded_payload, decision)
+        if ticket_error:
+            decision = {"decision": "deny", "reason": ticket_error}
 
     output = build_output(adapter, decision, tool_input)
     print(json.dumps(output, ensure_ascii=False), flush=True)

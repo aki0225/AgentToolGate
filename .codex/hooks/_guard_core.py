@@ -26,6 +26,7 @@ has_sequence = _MODULE.has_sequence
 path_matches_exact_file = _MODULE.path_matches_exact_file
 path_matches_dir_or_descendant = _MODULE.path_matches_dir_or_descendant
 is_probably_high_risk_target = _MODULE.is_probably_high_risk_target
+is_project_metadata_read_target = _MODULE.is_project_metadata_read_target
 contains_hidden_script_features = _MODULE.contains_hidden_script_features
 decoded_base64_payloads = _MODULE.decoded_base64_payloads
 contains_hidden_script_features_in_decoded_base64 = _MODULE.contains_hidden_script_features_in_decoded_base64
@@ -38,6 +39,7 @@ __all__ = [
     "has_sequence",
     "has_suffix",
     "is_high_risk_offline_target",
+    "is_project_metadata_read_target",
     "is_probably_high_risk_target",
     "is_probably_script_target",
     "path_matches_dir_or_descendant",

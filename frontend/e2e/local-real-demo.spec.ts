@@ -8,7 +8,7 @@ const mockHTTPListenHost = process.env.E2E_HTTP_MOCK_LISTEN_HOST?.trim() || "127
 const mockHTTPConnectHost = process.env.E2E_HTTP_MOCK_CONNECT_HOST?.trim() || "127.0.0.1";
 const secretName = "e2e_http_api_key";
 const secretValueRef = "AGT_DEMO_HTTP_API_KEY";
-const connectorName = "e2e_http";
+const connectorName = "default";
 
 test("本地真实演示：真实前后端、HTTP 上游、审批、审计与 Secret 删除保护", async ({ page }) => {
   const mockHTTP = await startMockHTTPServer();
@@ -222,7 +222,7 @@ async function assertSecretUsageDeleteGuardAndFailClosed(api: APIRequestContext,
       expect.objectContaining({
         connectorName,
         field: "headerSecretRefs.X-Api-Key",
-        target: "http.e2e_http",
+        target: `http.${connectorName}`,
       }),
     ]),
   );

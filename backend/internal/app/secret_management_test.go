@@ -532,7 +532,7 @@ func TestSecretStoreBackedGitHubTokenInjectionAndFailClosed(t *testing.T) {
 	}
 }
 
-func TestGitHubSecretConnectorAllowedReposDriveRuntimeValidation(t *testing.T) {
+func TestGitHubSecretConnectorAllowedReposNarrowRuntimeValidation(t *testing.T) {
 	const secretRef = "github_connector_token"
 	const secretEnv = "GITHUB_CONNECTOR_TOKEN_ENV"
 	const secretValue = "ghp_connector_repo_token"
@@ -559,12 +559,12 @@ func TestGitHubSecretConnectorAllowedReposDriveRuntimeValidation(t *testing.T) {
 	}))
 	t.Cleanup(mockGitHub.Close)
 
-	// 全局 allowlist 故意不包含 octo/tools；本测试钉住 connector config 的
-	// allowedRepos 必须同时驱动 list_repos 和实际 PR/Issue 调用校验。
+	// 部署级 allowlist 包含两个仓库，connector 只保留 octo/tools。
+	// 运行时必须使用两者交集，不能重新放开 acme/demo。
 	srv, _, _ := newGitHubTestApp(t, githubTestConfig{
 		noToken:      true,
-		apiBaseURL:   "https://api.github.invalid",
-		allowedRepos: []string{"acme/demo"},
+		apiBaseURL:   mockGitHub.URL,
+		allowedRepos: []string{"acme/demo", "octo/tools"},
 	})
 
 	createSecretResp := postJSON(t, srv, "/api/secrets", fmt.Sprintf(`{
@@ -767,7 +767,9 @@ func TestSecretStoreBackedMCPHeaderRefInjectionAndFailClosed(t *testing.T) {
 	t.Setenv(secretEnv, secretValue)
 
 	mockServer := newMockOutboundMCPServer(t)
-	srv, st, workspace := newMCPAppTestServer(t, config.Config{})
+	srv, st, workspace := newMCPAppTestServer(t, config.Config{
+		MCPAllowedHosts: []string{mustURLHost(t, mockServer.URL)},
+	})
 
 	createSecretResp := postJSON(t, srv, "/api/secrets", fmt.Sprintf(`{
 		"name":%q,

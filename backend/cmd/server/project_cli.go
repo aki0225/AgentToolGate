@@ -101,6 +101,7 @@ func prepareProjectUp(opts commandOptions) (config.Config, bool, string, string,
 	if err != nil {
 		return config.Config{}, false, "", "", "", err
 	}
+	projectCfg.ProjectRoot = root
 
 	cfg := config.Load()
 	applyProjectRunConfig(&cfg, projectCfg)
@@ -205,6 +206,9 @@ func normalizeProjectHookMode(raw string) string {
 func applyProjectRunConfig(cfg *config.Config, project projectRunConfig) {
 	if cfg == nil {
 		return
+	}
+	if projectRoot := strings.TrimSpace(project.ProjectRoot); projectRoot != "" {
+		cfg.ProjectRoot = filepath.Clean(projectRoot)
 	}
 	if strings.TrimSpace(project.Host) != "" {
 		cfg.Host = strings.TrimSpace(project.Host)
@@ -591,7 +595,7 @@ func renderClaudeSettingsSnippet(cfg projectRunConfig) string {
 	return mustJSONLine(doc)
 }
 
-const localActionHookMatcher = "^(Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|command|powershell|pwsh|apply_patch)$"
+const localActionHookMatcher = "^(Bash|Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|command|powershell|pwsh|apply_patch|mcp__.*)$"
 
 func mustJSONLine(v any) string {
 	var buf bytes.Buffer

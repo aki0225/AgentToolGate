@@ -86,7 +86,7 @@ func (a *App) createToolCall(ctx context.Context, reqCtx RequestContext, toolKey
 		attribute.String("tool.name", tool.Name),
 		attribute.String("tool.operation_type", tool.OperationType),
 	)
-	defaultDecision := a.decidePolicyDetailed(tool, reqCtx.User.Role)
+	defaultDecision := a.decidePolicyDetailedWithRisk(tool, reqCtx.User.Role, effectiveRisk)
 	policyDecision := string(defaultDecision.Effect)
 	policyReason := defaultDecision.Reason
 	policyRuleName := defaultDecision.RuleName
@@ -190,12 +190,19 @@ func (a *App) createToolCall(ctx context.Context, reqCtx RequestContext, toolKey
 
 	case policyRequireApproval:
 		_, approvalSpan := telemetry.StartSpan(ctx, "agenttoolgate.approval.check", attribute.String("policy.decision", policyDecision))
+		decisionPayloadJSON, approvalErr := freezeApprovalRequesterRole(json.RawMessage(`{}`), reqCtx.User.Role)
+		if approvalErr != nil {
+			telemetry.RecordError(approvalSpan, approvalErr)
+			approvalSpan.End()
+			return toolCallResponse{}, approvalErr
+		}
 		approval, approvalErr := a.store.CreateApprovalRequest(ctx, model.CreateApprovalRequestInput{
-			WorkspaceID:     reqCtx.Workspace.ID,
-			ToolKey:         tool.Key(),
-			ToolDisplayName: tool.DisplayName,
-			RequestedBy:     approvalRequestedBy(reqCtx.User.Name, reqCtx.Identity.Subject),
-			Reason:          policyReason,
+			WorkspaceID:         reqCtx.Workspace.ID,
+			ToolKey:             tool.Key(),
+			ToolDisplayName:     tool.DisplayName,
+			RequestedBy:         approvalRequestedBy(reqCtx.User.Name, reqCtx.Identity.Subject),
+			Reason:              policyReason,
+			DecisionPayloadJSON: decisionPayloadJSON,
 		})
 		if approvalErr != nil {
 			telemetry.RecordError(approvalSpan, approvalErr)

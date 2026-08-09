@@ -330,6 +330,31 @@ func (s *SQLiteStore) UpdateToolCall(ctx context.Context, workspaceID, callID st
 	return s.GetToolCallByID(ctx, workspaceID, callID)
 }
 
+func (s *SQLiteStore) TransitionToolCall(ctx context.Context, workspaceID, callID, fromStatus string, input model.UpdateToolCallInput) (model.ToolCall, error) {
+	inputExecutionJSON := strings.TrimSpace(string(input.InputExecutionJSON))
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE tool_calls
+		SET status = ?,
+		    duration_ms = ?,
+		    output_redacted_json = ?,
+		    error_message = ?,
+		    trace_id = CASE WHEN ? = '' THEN trace_id ELSE ? END,
+		    input_execution_json = CASE WHEN ? = '' THEN input_execution_json ELSE ? END
+		WHERE workspace_id = ? AND id = ? AND status = ?
+	`, input.Status, input.DurationMs, string(defaultJSON(input.OutputRedactedJSON)), input.ErrorMessage, input.TraceID, input.TraceID,
+		inputExecutionJSON, inputExecutionJSON, workspaceID, callID, strings.TrimSpace(fromStatus))
+	if err != nil {
+		return model.ToolCall{}, mapSQLiteErr(err)
+	}
+	if affected, _ := result.RowsAffected(); affected > 0 {
+		return s.GetToolCallByID(ctx, workspaceID, callID)
+	}
+	if _, getErr := s.GetToolCallByID(ctx, workspaceID, callID); getErr != nil {
+		return model.ToolCall{}, getErr
+	}
+	return model.ToolCall{}, ErrConflict
+}
+
 func (s *SQLiteStore) ListConnectors(ctx context.Context, workspaceID string) ([]model.Connector, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, workspace_id, type, name, display_name, config_json, enabled, created_at, updated_at

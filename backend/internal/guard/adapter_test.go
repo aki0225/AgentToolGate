@@ -41,6 +41,72 @@ func TestAdaptCodexPayloadMapsShellCommand(t *testing.T) {
 	}
 }
 
+func TestAdaptPayloadOnlyTrustsEnvelopeWorkingContext(t *testing.T) {
+	payload := []byte(`{
+		"cwd":"E:\\repo-a\\nested",
+		"tool_name":"shell",
+		"tool_input":{
+			"command":"git status",
+			"cwd":"E:\\repo-b",
+			"workspaceRoot":"E:\\repo-b"
+		}
+	}`)
+	action, err := AdaptCodexPayload(payload)
+	if err != nil {
+		t.Fatalf("adapt codex payload: %v", err)
+	}
+	if action.CWD != `E:\repo-a\nested` || action.ProjectRoot != "" {
+		t.Fatalf("working context must come from the hook envelope, got %+v", action)
+	}
+}
+
+func TestAdaptPayloadMapsSearchToolsAsReads(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		client     string
+		payload    string
+		wantTool   string
+		wantTarget string
+	}{
+		{
+			name:       "codex grep path",
+			client:     "codex",
+			payload:    `{"tool_name":"Grep","tool_input":{"pattern":"TODO","path":"backend"}}`,
+			wantTool:   "Grep",
+			wantTarget: "backend",
+		},
+		{
+			name:       "claude glob pattern",
+			client:     "claude",
+			payload:    `{"tool_name":"Glob","args":{"pattern":".github/workflows/**"}}`,
+			wantTool:   "Glob",
+			wantTarget: ".github/workflows/**",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var (
+				action ActionInput
+				err    error
+			)
+			if tc.client == "claude" {
+				action, err = AdaptClaudePayload([]byte(tc.payload))
+			} else {
+				action, err = AdaptCodexPayload([]byte(tc.payload))
+			}
+			if err != nil {
+				t.Fatalf("adapt %s payload: %v", tc.client, err)
+			}
+			if action.ToolName != tc.wantTool || action.ActionType != "read" || action.Target != tc.wantTarget {
+				t.Fatalf("unexpected adapted action: %+v", action)
+			}
+		})
+	}
+}
+
 func TestEvaluateAdaptedPayloadFixtures(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

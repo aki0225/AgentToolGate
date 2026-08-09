@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -247,43 +248,109 @@ func TestApprovalDecisionRequiresReviewerRole(t *testing.T) {
 	}
 }
 
-func TestToolCallDynamicRiskReflectsArguments(t *testing.T) {
+func TestApprovalRevalidationFailsClosedWithoutValidFrozenRequesterRole(t *testing.T) {
+	t.Parallel()
+
 	srv, st, workspace := newGovernanceTestApp(t)
-	srv.cfg.DatabaseQueryAllowedTables = []string{"public.orders"}
+	tool := createMockTool(t, st, workspace.ID, "mock", "invalidfrozenrole", "Invalid Frozen Role", "write", "low", false)
+	call := model.ToolCall{
+		ToolKey:            tool.Key(),
+		InputExecutionJSON: json.RawMessage(`{"message":"must not execute"}`),
+	}
 
-	t.Run("sensitive key raises mock risk", func(t *testing.T) {
-		createMockTool(t, st, workspace.ID, "mock", "riskcheck", "Mock Risk Check", "mock", "low", false)
+	for _, tc := range []struct {
+		name    string
+		payload json.RawMessage
+	}{
+		{name: "missing", payload: json.RawMessage(`{}`)},
+		{name: "empty", payload: json.RawMessage(`{"requesterRole":""}`)},
+		{name: "unknown", payload: json.RawMessage(`{"requesterRole":"superuser"}`)},
+		{name: "wrong type", payload: json.RawMessage(`{"requesterRole":123}`)},
+		{name: "malformed", payload: json.RawMessage(`{"requesterRole":"agent"`)},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := srv.revalidateApprovalExecution(
+				context.Background(),
+				workspace.ID,
+				model.ApprovalRequest{DecisionPayloadJSON: tc.payload},
+				call,
+			)
+			if !errors.Is(err, store.ErrConflict) {
+				t.Fatalf("expected frozen requester role conflict, got %v", err)
+			}
+		})
+	}
+}
 
-		resp := postJSON(t, srv, "/api/tool-calls", `{"tool":"mock.riskcheck","arguments":{"message":"hello","password":"super-secret"}}`)
+func TestToolCallDynamicRiskReflectsArguments(t *testing.T) {
+	for _, key := range []string{"password", "githubToken", "personalAccessToken", "secretValue"} {
+		t.Run(key+" raises mock risk", func(t *testing.T) {
+			srv, st, workspace := newGovernanceTestApp(t)
+			createMockTool(t, st, workspace.ID, "mock", "riskcheck", "Mock Risk Check", "mock", "low", false)
+
+			requestBody, err := json.Marshal(map[string]any{
+				"tool": "mock.riskcheck",
+				"arguments": map[string]any{
+					"message": "hello",
+					key:       "credential-value",
+				},
+			})
+			if err != nil {
+				t.Fatalf("marshal tool call request: %v", err)
+			}
+			resp := postJSON(t, srv, "/api/tool-calls", string(requestBody))
+			if resp.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+			}
+
+			call := latestGovernanceCall(t, st, workspace.ID)
+			if call.Status != "approval_required" || call.PolicyDecision != policyRequireApproval {
+				t.Fatalf("expected effective high risk to require approval, got %+v", call)
+			}
+			if call.RiskLevel != "high" {
+				t.Fatalf("expected sensitive key to raise risk to high, got %+v", call)
+			}
+		})
+	}
+
+	t.Run("ordinary identifier-like keys stay low risk", func(t *testing.T) {
+		srv, st, workspace := newGovernanceTestApp(t)
+		createMockTool(t, st, workspace.ID, "mock", "identifiercheck", "Identifier Check", "mock", "low", false)
+
+		resp := postJSON(t, srv, "/api/tool-calls", `{"tool":"mock.identifiercheck","arguments":{"tokenCount":42,"secretName":"demo","authorizationHeader":"string"}}`)
 		if resp.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
 		}
 
 		call := latestGovernanceCall(t, st, workspace.ID)
-		if call.Status != "success" {
-			t.Fatalf("expected success, got %+v", call)
-		}
-		if call.RiskLevel != "high" {
-			t.Fatalf("expected sensitive key to raise risk to high, got %+v", call)
+		if call.Status != "success" || call.PolicyDecision != policyAllow || call.RiskLevel != "low" {
+			t.Fatalf("ordinary identifier-like keys must remain low-risk allow, got %+v", call)
 		}
 	})
 
 	t.Run("database update raises risk", func(t *testing.T) {
+		srv, st, workspace := newGovernanceTestApp(t)
+		srv.cfg.DatabaseQueryAllowedTables = []string{"public.orders"}
+
 		resp := postJSON(t, srv, "/api/tool-calls", `{"tool":"database.query","arguments":{"datasource":"local_postgres","sql":"UPDATE public.orders SET name = 'x'"}}`)
-		if resp.Code != http.StatusBadRequest && resp.Code != http.StatusInternalServerError {
-			t.Fatalf("expected guarded database update to fail, got %d body=%s", resp.Code, resp.Body.String())
+		if resp.Code != http.StatusBadRequest {
+			t.Fatalf("unsupported database write must fail before approval, got %d body=%s", resp.Code, resp.Body.String())
 		}
 
 		call := latestGovernanceCall(t, st, workspace.ID)
 		if call.ToolKey != "database.query" {
 			t.Fatalf("expected database call, got %+v", call)
 		}
-		if call.RiskLevel != "high" {
-			t.Fatalf("expected database update to raise risk to high, got %+v", call)
+		if call.RiskLevel != "high" || call.Status != "failed" {
+			t.Fatalf("expected database update high-risk failed audit, got %+v", call)
 		}
 	})
 
 	t.Run("database select keeps static risk", func(t *testing.T) {
+		srv, st, workspace := newGovernanceTestApp(t)
+		srv.cfg.DatabaseQueryAllowedTables = []string{"public.orders"}
+
 		resp := postJSON(t, srv, "/api/tool-calls", `{"tool":"database.query","arguments":{"datasource":"local_postgres","sql":"SELECT id FROM public.orders"}}`)
 		if resp.Code != http.StatusBadRequest && resp.Code != http.StatusInternalServerError {
 			t.Fatalf("expected database select to fail without datasource, got %d body=%s", resp.Code, resp.Body.String())
@@ -437,7 +504,7 @@ func newGovernanceTestAppWithRole(t *testing.T, role string) (*App, store.Store,
 		t.Fatalf("new authenticator: %v", err)
 	}
 
-	appStore := approvalReviewableTestStore(st)
+	appStore := approvalReviewableTestStore(st, role)
 	srv := New(cfg, appStore, authenticator, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
 	return srv, appStore, workspaces[0]
 }

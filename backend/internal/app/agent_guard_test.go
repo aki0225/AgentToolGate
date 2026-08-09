@@ -18,12 +18,69 @@ import (
 	"testing"
 	"time"
 
+	"agenttoolgate/backend/internal/config"
 	"agenttoolgate/backend/internal/model"
+	"agenttoolgate/backend/internal/policy"
 	"agenttoolgate/backend/internal/store"
 	"agenttoolgate/backend/internal/telemetry"
 )
 
 var agentGuardHookControlMu sync.Mutex
+
+func TestAgentGuardGuardCoreDecisionIsPolicyFloor(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	srv, _, _ := newGovernanceTestAppWithConfig(t, config.Config{ProjectRoot: workspaceRoot})
+	target := filepath.Join(workspaceRoot, "README.md")
+	if err := os.WriteFile(target, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+
+	t.Run("deny cannot become allow", func(t *testing.T) {
+		resp := postJSON(t, srv, "/api/agent-guard/evaluate", mustAgentGuardRequestBody(t, agentGuardEvaluateRequest{
+			Adapter:          "codex",
+			Tool:             "Read",
+			ActionType:       "read",
+			Target:           "README.md",
+			WorkspaceRoot:    workspaceRoot,
+			WorkingDirectory: workspaceRoot,
+			GuardDecision:    "deny",
+			GuardRiskLevel:   "high",
+			ContentEncoding:  "plain",
+		}))
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+		}
+		var decision agentGuardEvaluateResponse
+		decodeBody(t, resp.Body.Bytes(), &decision)
+		if decision.Decision != "deny" || decision.Explanation == nil || decision.Explanation.RiskLevel != "high" {
+			t.Fatalf("Guard Core deny must be preserved, got %+v", decision)
+		}
+	})
+
+	t.Run("ask cannot become allow", func(t *testing.T) {
+		resp := postJSON(t, srv, "/api/agent-guard/evaluate", mustAgentGuardRequestBody(t, agentGuardEvaluateRequest{
+			Adapter:          "claude",
+			Tool:             "Read",
+			ActionType:       "read",
+			Target:           "README.md",
+			WorkspaceRoot:    workspaceRoot,
+			WorkingDirectory: workspaceRoot,
+			GuardDecision:    "ask",
+			GuardRiskLevel:   "medium",
+			ContentEncoding:  "plain",
+		}))
+		if resp.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d body=%s", resp.Code, resp.Body.String())
+		}
+		var decision agentGuardEvaluateResponse
+		decodeBody(t, resp.Body.Bytes(), &decision)
+		if decision.Decision != "deny_with_ticket" || decision.ApprovalID == "" {
+			t.Fatalf("Guard Core ask must require approval, got %+v", decision)
+		}
+	})
+}
 
 func TestAgentGuardEvaluateUsesTicketLifecycle(t *testing.T) {
 	t.Parallel()
@@ -143,6 +200,236 @@ func TestAgentGuardEvaluateUsesTicketLifecycle(t *testing.T) {
 	decodeBody(t, third.Body.Bytes(), &denied)
 	if denied.Decision != "deny" {
 		t.Fatalf("expected consumed ticket to deny repeat retry, got %+v", denied)
+	}
+}
+
+func TestAgentGuardConcurrentApprovalAndTicketConsumptionKeepsSuccess(t *testing.T) {
+	t.Parallel()
+
+	srv, st, workspace := newGovernanceTestApp(t)
+	req := agentGuardEvaluateRequest{
+		Adapter:         "codex",
+		Tool:            "Write",
+		ActionType:      "write",
+		Target:          filepath.Join(t.TempDir(), "drop.ps1"),
+		IsScript:        true,
+		ContentEncoding: "plain",
+		Content:         "Write-Host 'hello'",
+	}
+
+	initial := postJSON(t, srv, "/api/agent-guard/evaluate", mustAgentGuardRequestBody(t, req))
+	if initial.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", initial.Code, initial.Body.String())
+	}
+	var pending agentGuardEvaluateResponse
+	decodeBody(t, initial.Body.Bytes(), &pending)
+	if pending.Decision != "deny_with_ticket" || pending.ApprovalID == "" {
+		t.Fatalf("expected deny_with_ticket, got %+v", pending)
+	}
+
+	gated := newPostCASTransitionStore(st)
+	srv.store = gated
+	approveResponse := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		approveResponse <- postJSON(t, srv, "/api/approvals/"+pending.ApprovalID+"/approve", "")
+	}()
+
+	gated.waitForTransition(t)
+	t.Cleanup(gated.releaseTransition)
+	req.TicketID = pending.ApprovalID
+	consume := postJSON(t, srv, "/api/agent-guard/evaluate", mustAgentGuardRequestBody(t, req))
+	if consume.Code != http.StatusOK {
+		t.Fatalf("expected consume 200, got %d body=%s", consume.Code, consume.Body.String())
+	}
+	var allowed agentGuardEvaluateResponse
+	decodeBody(t, consume.Body.Bytes(), &allowed)
+	if allowed.Decision != "allow" || allowed.ApprovalStatus != "consumed" {
+		t.Fatalf("expected consumed allow, got %+v", allowed)
+	}
+	gated.releaseTransition()
+
+	select {
+	case approveResp := <-approveResponse:
+		if approveResp.Code != http.StatusOK {
+			t.Fatalf("expected approve 200, got %d body=%s", approveResp.Code, approveResp.Body.String())
+		}
+		var action approvalActionResponse
+		decodeBody(t, approveResp.Body.Bytes(), &action)
+		if action.Approval.Status != "consumed" || action.ToolCall.Status != "success" {
+			t.Fatalf("approval handler must preserve consumed success, got %+v", action)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for approval response")
+	}
+
+	approval, err := st.GetApprovalRequestByID(context.Background(), workspace.ID, pending.ApprovalID)
+	if err != nil {
+		t.Fatalf("get approval: %v", err)
+	}
+	call, err := st.GetToolCallByApprovalID(context.Background(), workspace.ID, pending.ApprovalID)
+	if err != nil {
+		t.Fatalf("get tool call: %v", err)
+	}
+	if approval.Status != "consumed" || call.Status != "success" || call.ApprovalStatus != "consumed" {
+		t.Fatalf("concurrent consumption must keep final success: approval=%+v call=%+v", approval, call)
+	}
+}
+
+func TestAgentGuardApprovedTicketCannotBypassCurrentDeny(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		mutate func(t *testing.T, srv *App, st store.Store, workspace model.Workspace)
+	}{
+		{
+			name: "tool disabled",
+			mutate: func(t *testing.T, _ *App, st store.Store, workspace model.Workspace) {
+				tool, err := st.GetToolByKey(context.Background(), workspace.ID, agentGuardEvaluateToolKey)
+				if err != nil {
+					t.Fatalf("get agent guard tool: %v", err)
+				}
+				disabled := false
+				if _, err := st.UpdateTool(context.Background(), workspace.ID, tool.ID, model.UpdateToolInput{Enabled: &disabled}); err != nil {
+					t.Fatalf("disable agent guard tool: %v", err)
+				}
+			},
+		},
+		{
+			name: "current policy deny",
+			mutate: func(t *testing.T, srv *App, _ store.Store, _ model.Workspace) {
+				engine, err := policy.NewEngine([]policy.Rule{{
+					Name:     "deny-agent-guard-now",
+					Priority: 1000,
+					Match: policy.Match{
+						ToolNamespace: "agent_guard",
+						ToolName:      "evaluate",
+					},
+					Effect: policy.EffectDeny,
+					Reason: "current policy denies action",
+				}})
+				if err != nil {
+					t.Fatalf("create deny policy: %v", err)
+				}
+				srv.policies = engine
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			srv, st, workspace := newGovernanceTestApp(t)
+			req := agentGuardEvaluateRequest{
+				Adapter:         "codex",
+				Tool:            "Write",
+				ActionType:      "write",
+				Target:          filepath.Join(t.TempDir(), "run.ps1"),
+				IsScript:        true,
+				ContentEncoding: "plain",
+				Content:         "Write-Host 'hello'",
+			}
+
+			first := postJSON(t, srv, "/api/agent-guard/evaluate", mustAgentGuardRequestBody(t, req))
+			var pending agentGuardEvaluateResponse
+			decodeBody(t, first.Body.Bytes(), &pending)
+			if first.Code != http.StatusOK || pending.Decision != "deny_with_ticket" || pending.ApprovalID == "" {
+				t.Fatalf("expected pending approval, code=%d response=%+v", first.Code, pending)
+			}
+			approve := postJSON(t, srv, "/api/approvals/"+pending.ApprovalID+"/approve", "")
+			if approve.Code != http.StatusOK {
+				t.Fatalf("approve ticket: %d body=%s", approve.Code, approve.Body.String())
+			}
+
+			tc.mutate(t, srv, st, workspace)
+			req.TicketID = pending.ApprovalID
+			retry := postJSON(t, srv, "/api/agent-guard/evaluate", mustAgentGuardRequestBody(t, req))
+			if retry.Code != http.StatusOK {
+				t.Fatalf("expected deny response, got %d body=%s", retry.Code, retry.Body.String())
+			}
+			var denied agentGuardEvaluateResponse
+			decodeBody(t, retry.Body.Bytes(), &denied)
+			if denied.Decision != "deny" {
+				t.Fatalf("current deny must block approved ticket, got %+v", denied)
+			}
+			approval, err := st.GetApprovalRequestByID(context.Background(), workspace.ID, pending.ApprovalID)
+			if err != nil {
+				t.Fatalf("get approval: %v", err)
+			}
+			if approval.Status != "approved" {
+				t.Fatalf("denied retry must not consume ticket, got %+v", approval)
+			}
+		})
+	}
+}
+
+func TestAgentGuardApprovalRevalidationUsesFrozenRequesterRole(t *testing.T) {
+	t.Parallel()
+
+	for _, requesterRole := range []string{roleAgent, "member"} {
+		requesterRole := requesterRole
+		t.Run(requesterRole, func(t *testing.T) {
+			t.Parallel()
+
+			srv, st, workspace := newGovernanceTestApp(t)
+			requesterCtx := agentGuardRequestContext(t, srv, st, workspace)
+			requesterSubject := "agent-guard-requester-" + requesterRole
+			requesterCtx.Identity.Subject = requesterSubject
+			requesterCtx.Identity.Role = requesterRole
+			requesterCtx.User.ID = requesterSubject
+			requesterCtx.User.ZitadelUserID = requesterSubject
+			requesterCtx.User.Role = requesterRole
+
+			response, err := srv.evaluateAgentGuard(context.Background(), requesterCtx, agentGuardEvaluateRequest{
+				Adapter:         "codex",
+				Tool:            "Write",
+				ActionType:      "write",
+				Target:          filepath.Join(t.TempDir(), "run.ps1"),
+				IsScript:        true,
+				ContentEncoding: "plain",
+				Content:         "Write-Host 'must not execute'",
+			})
+			if err != nil {
+				t.Fatalf("create requester agent guard approval: %v", err)
+			}
+			if response.Decision != "deny_with_ticket" || response.ApprovalID == "" {
+				t.Fatalf("expected pending approval, got %+v", response)
+			}
+
+			approval, err := st.GetApprovalRequestByID(context.Background(), workspace.ID, response.ApprovalID)
+			if err != nil {
+				t.Fatalf("get approval: %v", err)
+			}
+			frozenRole, err := frozenApprovalRequesterRole(approval)
+			if err != nil {
+				t.Fatalf("read frozen requester role: %v", err)
+			}
+			if frozenRole != requesterRole {
+				t.Fatalf("expected frozen requester role %q, got %q payload=%s", requesterRole, frozenRole, approval.DecisionPayloadJSON)
+			}
+
+			engine, err := policy.NewEngine(append([]policy.Rule{{
+				Name:     "deny-agent-guard-original-" + requesterRole,
+				Priority: 2000,
+				Match: policy.Match{
+					ToolNamespace: "agent_guard",
+					ToolName:      "evaluate",
+					UserRole:      requesterRole,
+				},
+				Effect: policy.EffectDeny,
+				Reason: "original requester role is now denied",
+			}}, policy.DefaultRules()...))
+			if err != nil {
+				t.Fatalf("create tightened policy: %v", err)
+			}
+			srv.policies = engine
+
+			approveResp := postJSON(t, srv, "/api/approvals/"+response.ApprovalID+"/approve", "")
+			if approveResp.Code != http.StatusConflict {
+				t.Fatalf("owner approval must conflict after requester role deny, got %d body=%s", approveResp.Code, approveResp.Body.String())
+			}
+			assertApprovalStillPending(t, st, workspace.ID, response.ApprovalID)
+		})
 	}
 }
 
@@ -517,6 +804,142 @@ func TestAgentGuardSafeWorkspaceEditAllowsWithoutApproval(t *testing.T) {
 	}
 	if string(calls[0].InputExecutionJSON) != "{}" {
 		t.Fatalf("safe edit must not persist raw execution input, got %s", calls[0].InputExecutionJSON)
+	}
+}
+
+func TestAgentGuardExistingRelativeTargetUsesExplicitWorkspaceRoot(t *testing.T) {
+	t.Parallel()
+
+	workspaceRoot := t.TempDir()
+	targetDir := filepath.Join(workspaceRoot, "src")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("create target dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "existing.go"), []byte("package demo\n"), 0o600); err != nil {
+		t.Fatalf("write existing target: %v", err)
+	}
+
+	srv, _, _ := newGovernanceTestAppWithConfig(t, config.Config{ProjectRoot: workspaceRoot})
+	body := fmt.Sprintf(`{
+		"adapter":"claude",
+		"tool":"Write",
+		"actionType":"write",
+		"target":"src/existing.go",
+		"workspaceRoot":%q,
+		"isScript":false,
+		"contentEncoding":"plain",
+		"content":"package demo"
+	}`, workspaceRoot)
+	rec := postJSON(t, srv, "/api/agent-guard/evaluate", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var response agentGuardEvaluateResponse
+	decodeBody(t, rec.Body.Bytes(), &response)
+	if response.Decision != "allow" || response.Explanation == nil || response.Explanation.TargetCategory != "workspace" {
+		t.Fatalf("existing relative target within explicit workspace root must remain workspace allow, got %+v", response)
+	}
+}
+
+func TestAgentGuardWorkspacePathComparisonUsesPathFlavorCaseRules(t *testing.T) {
+	t.Parallel()
+
+	if !agentGuardPathsEqual(`C:\Workspace\Project`, `c:\workspace\project`) {
+		t.Fatal("Windows workspace paths must remain case-insensitive")
+	}
+	if !agentGuardPathWithinRoot(`C:\Workspace\Project\src\main.go`, `c:\workspace\project`) {
+		t.Fatal("Windows descendants must remain case-insensitive")
+	}
+	if agentGuardPathsEqual("/workspace/project", "/workspace/Project") {
+		t.Fatal("POSIX workspace paths must remain case-sensitive")
+	}
+	if agentGuardPathWithinRoot("/workspace/Project/src/main.go", "/workspace/project") {
+		t.Fatal("POSIX path with different segment case must be external")
+	}
+	if agentGuardPathsEqual(`/workspace/project\name`, `/workspace/Project\name`) {
+		t.Fatal("POSIX paths must remain case-sensitive when a segment contains a backslash")
+	}
+
+	resolution := agentGuardTargetResolution{ResolvedPath: "/workspace/Project/src/main.go"}
+	if got := classifyAgentGuardTargetCategoryWithWorkspace(
+		"/workspace/Project/src/main.go",
+		"/workspace/project",
+		resolution,
+	); got != "external" {
+		t.Fatalf("POSIX case mismatch must classify as external on every host, got %q", got)
+	}
+}
+
+func TestAgentGuardContentSensitivityUsesCredentialSyntaxNotIdentifierSubstrings(t *testing.T) {
+	t.Parallel()
+
+	for _, content := range []string{
+		`export const tokenCount = 42`,
+		`const secretName = "demo"`,
+		`type authorizationHeader struct { Value string }`,
+		`func cookieParser() {}`,
+	} {
+		if containsSensitiveAgentGuardContent(content) {
+			t.Fatalf("ordinary identifier content must not be sensitive: %q", content)
+		}
+	}
+
+	for _, content := range []string{
+		`token = "synthetic-value"`,
+		`GITHUB_TOKEN=synthetic-value`,
+		`OPENAI_API_KEY=synthetic-value`,
+		`Authorization: Bearer synthetic-bearer-value`,
+		`{"api_key":"synthetic-value"}`,
+		"-----BEGIN PRIVATE KEY-----\nsynthetic\n-----END PRIVATE KEY-----",
+	} {
+		if !containsSensitiveAgentGuardContent(content) {
+			t.Fatalf("credential-shaped content must remain sensitive: %q", content)
+		}
+	}
+}
+
+func TestAgentGuardProjectCodeExecutionRequiresApproval(t *testing.T) {
+	t.Parallel()
+
+	for _, command := range []string{"go test ./...", "go vet ./...", "npm test", "npm run build"} {
+		srv, _, _ := newGovernanceTestApp(t)
+		body := mustAgentGuardRequestBody(t, agentGuardEvaluateRequest{
+			Adapter:         "codex",
+			Tool:            "Bash",
+			ActionType:      "exec",
+			Target:          command,
+			ContentEncoding: "plain",
+			Content:         command,
+		})
+		rec := postJSON(t, srv, "/api/agent-guard/evaluate", body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for %q, got %d body=%s", command, rec.Code, rec.Body.String())
+		}
+
+		var initial agentGuardEvaluateResponse
+		decodeBody(t, rec.Body.Bytes(), &initial)
+		if initial.Decision != "deny_with_ticket" || initial.ApprovalID == "" {
+			t.Fatalf("project code execution %q must require approval, got %+v", command, initial)
+		}
+		if initial.Explanation == nil || initial.Explanation.RiskLevel != "medium" {
+			t.Fatalf("project code execution %q must be medium risk, got %+v", command, initial.Explanation)
+		}
+
+		approve := postJSON(t, srv, "/api/approvals/"+initial.ApprovalID+"/approve", "")
+		if approve.Code != http.StatusOK {
+			t.Fatalf("approve %q: expected 200, got %d body=%s", command, approve.Code, approve.Body.String())
+		}
+
+		retry := postJSON(t, srv, "/api/agent-guard/evaluate", body)
+		if retry.Code != http.StatusOK {
+			t.Fatalf("retry %q: expected 200, got %d body=%s", command, retry.Code, retry.Body.String())
+		}
+		var remembered agentGuardEvaluateResponse
+		decodeBody(t, retry.Body.Bytes(), &remembered)
+		if remembered.Decision != "allow" || remembered.ApprovalID != initial.ApprovalID {
+			t.Fatalf("approved medium-risk execution %q must use remembered allow, got %+v", command, remembered)
+		}
 	}
 }
 
@@ -1183,7 +1606,9 @@ func TestAgentGuardHookAdaptersTranslateDecisions(t *testing.T) {
 	}
 
 	repoRoot := agentGuardRepoRoot(t)
-	inputJSON := mustAgentGuardHookInput(t, repoRoot, "Write", `{"path":"C:\\Users\\demo\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\run.ps1","content":"Write-Host 'secret-token'"}`)
+	askInputJSON := mustAgentGuardHookInput(t, repoRoot, "Bash", `{"command":"go test ./..."}`)
+	allowInputJSON := mustAgentGuardHookInput(t, repoRoot, "Bash", `{"command":"git status"}`)
+	hardDenyInputJSON := mustAgentGuardHookInput(t, repoRoot, "Write", `{"path":"C:\\Users\\demo\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\run.ps1","content":"Write-Host 'secret-token'"}`)
 
 	t.Run("codex denies deny_with_ticket and never asks", func(t *testing.T) {
 		t.Parallel()
@@ -1191,7 +1616,7 @@ func TestAgentGuardHookAdaptersTranslateDecisions(t *testing.T) {
 		server := newAgentGuardDecisionServer(t, `{"decision":"deny_with_ticket","reason":"approval required","approvalId":"approval-1","approvalStatus":"pending","callId":"call-1","fingerprint":"fp-1"}`)
 		defer server.Close()
 
-		output := runAgentGuardHook(t, python, filepath.Join(repoRoot, ".codex", "hooks", "agent-guard-pretool.py"), server.URL, inputJSON)
+		output := runAgentGuardHook(t, python, filepath.Join(repoRoot, ".codex", "hooks", "agent-guard-pretool.py"), server.URL, askInputJSON)
 		got := output.HookSpecificOutput.PermissionDecision
 		if got != "deny" {
 			t.Fatalf("expected codex to deny deny_with_ticket, got %q output=%+v", got, output)
@@ -1207,9 +1632,21 @@ func TestAgentGuardHookAdaptersTranslateDecisions(t *testing.T) {
 		server := newAgentGuardDecisionServer(t, `{"decision":"deny_with_ticket","reason":"approval required","approvalId":"approval-1","approvalStatus":"pending","callId":"call-1","fingerprint":"fp-1"}`)
 		defer server.Close()
 
-		output := runAgentGuardHook(t, python, filepath.Join(repoRoot, ".claude", "hooks", "agent-guard-pretool.py"), server.URL, inputJSON)
+		output := runAgentGuardHook(t, python, filepath.Join(repoRoot, ".claude", "hooks", "agent-guard-pretool.py"), server.URL, askInputJSON)
 		if got := output.HookSpecificOutput.PermissionDecision; got != "ask" {
 			t.Fatalf("expected claude to ask on deny_with_ticket, got %q output=%+v", got, output)
+		}
+	})
+
+	t.Run("local deny cannot be downgraded to allow", func(t *testing.T) {
+		t.Parallel()
+
+		server := newAgentGuardDecisionServer(t, `{"decision":"allow","reason":"stale allow"}`)
+		defer server.Close()
+
+		output := runAgentGuardHook(t, python, filepath.Join(repoRoot, ".codex", "hooks", "agent-guard-pretool.py"), server.URL, hardDenyInputJSON)
+		if got := output.HookSpecificOutput.PermissionDecision; got != "deny" {
+			t.Fatalf("expected local deny floor, got %q output=%+v", got, output)
 		}
 	})
 
@@ -1232,6 +1669,10 @@ func TestAgentGuardHookAdaptersTranslateDecisions(t *testing.T) {
 			server := newAgentGuardDecisionServer(t, tc.body)
 			defer server.Close()
 
+			inputJSON := allowInputJSON
+			if tc.name == "deny_with_ticket" {
+				inputJSON = askInputJSON
+			}
 			raw := runAgentGuardHookRaw(t, python, filepath.Join(repoRoot, ".codex", "hooks", "agent-guard-pretool.py"), server.URL, inputJSON)
 			if tc.expectNoop {
 				if strings.TrimSpace(raw) != "" {
@@ -1250,7 +1691,7 @@ func TestAgentGuardHookAdaptersTranslateDecisions(t *testing.T) {
 	}
 }
 
-func TestAgentGuardHookOfflineHighRiskDeniesAndWorkspaceAllows(t *testing.T) {
+func TestAgentGuardHookOfflineOnlyAllowsExplicitReadOnlyActions(t *testing.T) {
 	t.Parallel()
 
 	python, err := exec.LookPath("python")
@@ -1298,16 +1739,16 @@ func TestAgentGuardHookOfflineHighRiskDeniesAndWorkspaceAllows(t *testing.T) {
 			reason:   "ATG offline, sensitive target denied",
 		},
 		{
-			name:     "workspace target allows offline",
+			name:     "workspace target denies offline",
 			toolJSON: `{"path":"workspace\\notes.md","content":"hello world"}`,
-			want:     "allow",
-			reason:   "ATG offline, local pending audit",
+			want:     "deny",
+			reason:   "ATG offline, action not explicitly low risk",
 		},
 		{
-			name:     "workspace script allows offline",
+			name:     "workspace script denies offline",
 			toolJSON: `{"path":"workspace\\script.ps1","content":"Write-Host 'hello'"}`,
-			want:     "allow",
-			reason:   "ATG offline, local pending audit",
+			want:     "deny",
+			reason:   "ATG offline, action not explicitly low risk",
 		},
 	}
 
@@ -1457,8 +1898,9 @@ func TestAgentGuardHookReadsScriptFileContentsWhenExecutingScriptFile(t *testing
 	}
 	inputJSON := mustAgentGuardHookInput(t, repoRoot, "Bash", string(commandPayload))
 	raw := runAgentGuardHookRaw(t, python, filepath.Join(repoRoot, ".codex", "hooks", "agent-guard-pretool.py"), server.URL, inputJSON)
-	if strings.TrimSpace(raw) != "" {
-		t.Fatalf("expected codex allow to be no-op, got %s", raw)
+	output := decodeAgentGuardHookOutput(t, filepath.Join(repoRoot, ".codex", "hooks", "agent-guard-pretool.py"), raw, "")
+	if output.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Fatalf("hidden script must remain denied even if backend says allow, got %+v", output)
 	}
 
 	select {
@@ -1810,13 +2252,12 @@ func TestAgentGuardClassifiesSelfTamperTargetsAsSensitive(t *testing.T) {
 		{target: `C:\workspace\.claude\settings.json`, want: "self_tamper"},
 		{target: `C:\workspace\.codex\hooks.json`, want: "self_tamper"},
 		{target: `C:\workspace\configs\policies.yaml`, want: "self_tamper"},
-		{target: `C:\workspace\backend\cmd\server\main.go`, want: "self_tamper"},
 		{target: `.claude/hooks/agent-guard-pretool.py`, want: "self_tamper"},
 		{target: `.codex/hooks/agent-guard-pretool.py`, want: "self_tamper"},
 		{target: `.claude/settings.json`, want: "self_tamper"},
 		{target: `.codex/hooks.json`, want: "self_tamper"},
 		{target: `configs/policies.yaml`, want: "self_tamper"},
-		{target: `backend/cmd/server/main.go`, want: "self_tamper"},
+		{target: `.tmp/agenttoolgate/hook-control.json`, want: "self_tamper"},
 		{target: `.ssh/id_rsa`, want: "sensitive"},
 		{target: `.git/hooks/pre-commit`, want: "sensitive"},
 	}
@@ -1824,6 +2265,13 @@ func TestAgentGuardClassifiesSelfTamperTargetsAsSensitive(t *testing.T) {
 		if got := classifyAgentGuardTargetCategory(tc.target); got != tc.want {
 			t.Fatalf("expected category %q for %q, got %q", tc.want, tc.target, got)
 		}
+	}
+	if got := classifyAgentGuardTargetCategoryWithWorkspace(
+		`backend/cmd/server/main.go`,
+		`C:\workspace\ordinary-project`,
+		agentGuardTargetResolution{ResolvedPath: `C:\workspace\ordinary-project\backend\cmd\server\main.go`},
+	); got != "workspace" {
+		t.Fatalf("generic backend/cmd/server path must remain workspace-scoped, got %q", got)
 	}
 }
 
@@ -1851,7 +2299,6 @@ func TestAgentGuardRelativeSensitiveTargetsRequireApprovalAndDoNotRemember(t *te
 		`.claude/settings.json`,
 		`.codex/hooks.json`,
 		`configs/policies.yaml`,
-		`backend/cmd/server/main.go`,
 		`.ssh/id_rsa`,
 		`.git/hooks/pre-commit`,
 	}
@@ -1903,7 +2350,7 @@ func TestAgentGuardRelativeSensitiveTargetsRequireApprovalAndDoNotRemember(t *te
 	}
 }
 
-func TestAgentGuardOfflineAllowWritesLocalPendingAudit(t *testing.T) {
+func TestAgentGuardOfflineReadOnlyCommandWritesLocalPendingAudit(t *testing.T) {
 	t.Parallel()
 
 	python, err := exec.LookPath("python")
@@ -1911,12 +2358,12 @@ func TestAgentGuardOfflineAllowWritesLocalPendingAudit(t *testing.T) {
 		t.Skipf("python not available: %v", err)
 	}
 
-	repoRoot := agentGuardRepoRoot(t)
+	repoRoot := newAgentGuardHookTestRepo(t)
 	auditPath := filepath.Join(repoRoot, ".tmp", "local-action-firewall", "pending-audit.jsonl")
-	_ = os.Remove(auditPath)
 
-	inputJSON := mustAgentGuardHookInput(t, repoRoot, "Write", `{"path":"workspace\\notes.md","content":"hello world"}`)
-	raw := runAgentGuardHookRaw(t, python, filepath.Join(repoRoot, ".codex", "hooks", "agent-guard-pretool.py"), "http://127.0.0.1:1", inputJSON)
+	inputJSON := mustAgentGuardHookInput(t, repoRoot, "Bash", `{"command":"git status"}`)
+	scriptPath := filepath.Join(agentGuardRepoRoot(t), ".codex", "hooks", "agent-guard-pretool.py")
+	raw := runAgentGuardHookRawInRepo(t, python, scriptPath, repoRoot, "http://127.0.0.1:1", inputJSON)
 	if strings.TrimSpace(raw) != "" {
 		t.Fatalf("expected offline workspace action to be codex no-op, got %s", raw)
 	}
@@ -1936,7 +2383,7 @@ func TestAgentGuardOfflineAllowWritesLocalPendingAudit(t *testing.T) {
 			t.Fatalf("decode pending audit record: %v content=%s", err, line)
 		}
 		target, _ := record["target"].(string)
-		if target != "workspace\\notes.md" {
+		if target != "git status" {
 			continue
 		}
 		found = true
@@ -1946,13 +2393,13 @@ func TestAgentGuardOfflineAllowWritesLocalPendingAudit(t *testing.T) {
 		if workspace, ok := record["workspace"].(string); !ok || strings.TrimSpace(workspace) == "" {
 			t.Fatalf("expected workspace in pending audit, got %+v", record)
 		}
-		if tool, ok := record["tool"].(string); !ok || tool != "Write" {
+		if tool, ok := record["tool"].(string); !ok || tool != "Bash" {
 			t.Fatalf("expected tool in pending audit, got %+v", record)
 		}
 		break
 	}
 	if !found {
-		t.Fatalf("expected pending audit record for workspace\\notes.md, got %s", string(content))
+		t.Fatalf("expected pending audit record for git status, got %s", string(content))
 	}
 }
 
@@ -1997,6 +2444,45 @@ func runAgentGuardHookRaw(t *testing.T, python, scriptPath, serverURL, inputJSON
 		t.Fatalf("run hook script %s: %v stderr=%s", scriptPath, err, stderr.String())
 	}
 	return stdout.String()
+}
+
+func runAgentGuardHookRawInRepo(t *testing.T, python, scriptPath, repoRoot, serverURL, inputJSON string) string {
+	t.Helper()
+
+	cmd := exec.Command(python, scriptPath)
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(),
+		"AGENTTOOLGATE_URL="+serverURL,
+		"TRELLIS_HOOKS=1",
+		"TRELLIS_DISABLE_HOOKS=0",
+	)
+	cmd.Stdin = strings.NewReader(inputJSON)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("run hook script %s: %v stderr=%s", scriptPath, err, stderr.String())
+	}
+	return stdout.String()
+}
+
+func newAgentGuardHookTestRepo(t *testing.T) string {
+	t.Helper()
+
+	repoRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o700); err != nil {
+		t.Fatalf("create temporary git marker: %v", err)
+	}
+	controlPath := filepath.Join(repoRoot, ".tmp", "agenttoolgate", "hook-control.json")
+	if err := os.MkdirAll(filepath.Dir(controlPath), 0o700); err != nil {
+		t.Fatalf("create temporary hook control dir: %v", err)
+	}
+	if err := os.WriteFile(controlPath, []byte(`{"mode":"live","reason":"test"}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write temporary hook control: %v", err)
+	}
+	return repoRoot
 }
 
 func writeAgentGuardHookControlLive(t *testing.T) func() {
@@ -2164,7 +2650,9 @@ func agentGuardFingerprintForRequest(t *testing.T, reqCtx RequestContext, req ag
 	if req.IsScript {
 		scriptHash = contentHash
 	}
-	resolution := resolveAgentGuardTarget(normalizedTarget)
+	workspaceRoot := normalizeAgentGuardTarget(req.WorkspaceRoot)
+	workingDirectory := normalizeAgentGuardTarget(req.WorkingDirectory)
+	resolution := (&App{}).resolveAgentGuardTargetWithinContext(normalizedTarget, workspaceRoot, workingDirectory)
 	return hashAgentGuardPayload(strings.Join([]string{
 		strings.ToLower(strings.TrimSpace(req.Adapter)),
 		reqCtx.Workspace.ID,
@@ -2175,6 +2663,10 @@ func agentGuardFingerprintForRequest(t *testing.T, reqCtx RequestContext, req ag
 		resolution.CanonicalTarget,
 		resolution.ResolvedFileIdentity,
 		resolution.ParentIdentity,
+		workspaceRoot,
+		workingDirectory,
+		strings.ToLower(strings.TrimSpace(req.GuardDecision)),
+		strings.ToLower(strings.TrimSpace(req.GuardRiskLevel)),
 		contentHash,
 		scriptHash,
 	}, "\x00"))

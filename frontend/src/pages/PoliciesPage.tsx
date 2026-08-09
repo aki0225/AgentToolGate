@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { CheckCircle2, Edit, Lock, PlayCircle, ShieldCheck, Trash2 } from "lucide-react";
+import { CheckCircle2, Edit, Lock, PlayCircle, ShieldCheck, TriangleAlert, Trash2 } from "lucide-react";
 import { createPolicy, deletePolicy, getApiErrorMessage, listPolicies, simulatePolicy, updatePolicy } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { canManagePolicies as canManagePoliciesForRole } from "../auth/permissions";
@@ -10,13 +10,21 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Input } from "../components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { useI18n } from "../i18n";
+import {
+  governanceActionLabel,
+  governanceEffectLabel,
+  governanceMatchLabel,
+  governanceRiskLabel,
+  isGovernanceToolWildcardPattern,
+  isGovernanceWildcardPattern,
+} from "../lib/governanceLabels";
 import { toast } from "sonner";
 import type { PolicyRule, PolicyRuleInput, PolicySimulationRequest, PolicySimulationResponse } from "../types";
 
 const emptyPolicyForm: PolicyRuleInput = {
   name: "",
   description: "",
-  enabled: true,
+  enabled: false,
   priority: 100,
   effect: "deny",
   connectorType: "*",
@@ -49,11 +57,27 @@ export function PoliciesPage() {
   const [form, setForm] = useState<PolicyRuleInput>(emptyPolicyForm);
   const [simulationForm, setSimulationForm] = useState<PolicySimulationRequest>(emptySimulationForm);
   const [simulation, setSimulation] = useState<PolicySimulationResponse | null>(null);
+  const [broadDenyAcknowledged, setBroadDenyAcknowledged] = useState(false);
   const effectLabels = {
-    allow: t("policies.effect.allow"),
-    require_approval: t("policies.effect.require_approval"),
-    deny: t("policies.effect.deny"),
+    allow: governanceEffectLabel(t, "allow"),
+    require_approval: governanceEffectLabel(t, "require_approval"),
+    deny: governanceEffectLabel(t, "deny"),
   } satisfies Record<PolicyRule["effect"], string>;
+  const broadDeny = isWildcardDenyPolicy(form);
+  const requiresBroadDenyAcknowledgement = broadDeny && form.enabled;
+  const draftMatches = draftPolicyMatches(form, simulationForm);
+
+  useEffect(() => {
+    setBroadDenyAcknowledged(false);
+  }, [
+    form.enabled,
+    form.effect,
+    form.connectorType,
+    form.toolNamePattern,
+    form.operationType,
+    form.riskLevel,
+    form.resourcePattern,
+  ]);
 
   async function loadPolicies() {
     setLoading(true);
@@ -107,6 +131,7 @@ export function PoliciesPage() {
   function resetForm() {
     setEditingId(null);
     setForm(emptyPolicyForm);
+    setBroadDenyAcknowledged(false);
   }
 
   function editRule(rule: PolicyRule) {
@@ -116,11 +141,15 @@ export function PoliciesPage() {
     }
     setEditingId(rule.id);
     setForm(policyRuleToInput(rule));
+    setBroadDenyAcknowledged(false);
   }
 
   async function saveRule() {
     if (!canManagePolicies) {
       toast.error(t("policies.guardToast"));
+      return;
+    }
+    if (requiresBroadDenyAcknowledgement && !broadDenyAcknowledged) {
       return;
     }
     setSaving(true);
@@ -164,6 +193,9 @@ export function PoliciesPage() {
   async function toggleRule(rule: PolicyRule) {
     if (!canManagePolicies) {
       toast.error(t("policies.guardToast"));
+      return;
+    }
+    if (!rule.enabled && isWildcardDenyPolicy(policyRuleToInput(rule)) && !window.confirm(t("policies.form.broadDeny.confirm"))) {
       return;
     }
     try {
@@ -264,11 +296,21 @@ export function PoliciesPage() {
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-wrap gap-2">
-                          <Badge variant="secondary">{t("policies.table.connector")}: {policyRule.connectorType}</Badge>
-                          <Badge variant="secondary">{t("policies.table.tool")}: {policyRule.toolNamePattern}</Badge>
-                          <Badge variant="secondary">{t("policies.table.operation")}: {policyRule.operationType}</Badge>
-                          <Badge variant="secondary">{t("policies.table.risk")}: {policyRule.riskLevel}</Badge>
-                          <Badge variant="secondary">{t("policies.table.resource")}: {policyRule.resourcePattern}</Badge>
+                          <Badge variant="secondary" title={policyRule.connectorType}>
+                            {t("policies.table.connector")}: {governanceMatchLabel(t, policyRule.connectorType)}
+                          </Badge>
+                          <Badge variant="secondary" title={policyRule.toolNamePattern}>
+                            {t("policies.table.tool")}: {governanceMatchLabel(t, policyRule.toolNamePattern)}
+                          </Badge>
+                          <Badge variant="secondary" title={policyRule.operationType}>
+                            {t("policies.table.operation")}: {isGovernanceWildcardPattern(policyRule.operationType) ? governanceMatchLabel(t, policyRule.operationType) : governanceActionLabel(t, policyRule.operationType)}
+                          </Badge>
+                          <Badge variant="secondary" title={policyRule.riskLevel}>
+                            {t("policies.table.risk")}: {isGovernanceWildcardPattern(policyRule.riskLevel) ? governanceMatchLabel(t, policyRule.riskLevel) : governanceRiskLabel(t, policyRule.riskLevel)}
+                          </Badge>
+                          <Badge variant="secondary" title={policyRule.resourcePattern}>
+                            {t("policies.table.resource")}: {governanceMatchLabel(t, policyRule.resourcePattern)}
+                          </Badge>
                         </div>
                       </TableCell>
                       <TableCell className="max-w-[20rem] text-sm text-muted-foreground">{policyRule.reason || "-"}</TableCell>
@@ -314,8 +356,8 @@ export function PoliciesPage() {
                     value={String(form.enabled)}
                     onChange={(event) => setForm({ ...form, enabled: event.target.value === "true" })}
                   >
-                    <option value="true">true</option>
-                    <option value="false">false</option>
+                    <option value="true">{t("policies.form.enabledOption")}</option>
+                    <option value="false">{t("policies.form.disabledOption")}</option>
                   </select>
                 </FormField>
                 <FormField label={t("policies.form.priority")}>
@@ -329,9 +371,9 @@ export function PoliciesPage() {
                     value={form.effect}
                     onChange={(event) => setForm({ ...form, effect: event.target.value as PolicyRule["effect"] })}
                   >
-                    <option value="allow">allow</option>
-                    <option value="require_approval">require_approval</option>
-                    <option value="deny">deny</option>
+                    <option value="allow">{effectLabels.allow}</option>
+                    <option value="require_approval">{effectLabels.require_approval}</option>
+                    <option value="deny">{effectLabels.deny}</option>
                   </select>
                 </FormField>
                 <FormField label={t("policies.form.connector")}>
@@ -359,8 +401,34 @@ export function PoliciesPage() {
                   onChange={(event) => setForm({ ...form, reason: event.target.value })}
                 />
               </FormField>
+              {broadDeny ? (
+                <div className="grid gap-3 border-l-2 border-destructive px-4 py-3 text-sm">
+                  <div className="flex items-center gap-2 font-bold text-foreground">
+                    <TriangleAlert className="h-4 w-4 text-destructive" />
+                    {t("policies.form.broadDeny.title")}
+                  </div>
+                  <p className="m-0 text-muted-foreground">
+                    {form.enabled ? t("policies.form.broadDeny.enabled") : t("policies.form.broadDeny.disabled")}
+                  </p>
+                  {form.enabled ? (
+                    <label className="flex items-start gap-3 text-foreground">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 h-4 w-4 accent-[hsl(var(--destructive))]"
+                        checked={broadDenyAcknowledged}
+                        onChange={(event) => setBroadDenyAcknowledged(event.target.checked)}
+                      />
+                      <span>{t("policies.form.broadDeny.confirm")}</span>
+                    </label>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="flex flex-wrap gap-2">
-                <Button type="button" disabled={saving} onClick={() => void saveRule()}>
+                <Button
+                  type="button"
+                  disabled={saving || (requiresBroadDenyAcknowledgement && !broadDenyAcknowledged)}
+                  onClick={() => void saveRule()}
+                >
                   {editingId ? t("policies.form.update") : t("policies.form.create")}
                 </Button>
                 <Button type="button" variant="outline" onClick={resetForm}>
@@ -378,6 +446,23 @@ export function PoliciesPage() {
           <CardDescription>{t("policies.simulator.description")}</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-4">
+          {canManagePolicies ? (
+            <div className="grid gap-2 border-l-2 border-accent px-4 py-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-bold text-foreground">{t("policies.simulator.draft.title")}</span>
+                <Badge variant={draftMatches ? "pending" : "secondary"}>
+                  {draftMatches ? t("policies.simulator.hit") : t("policies.simulator.skip")}
+                </Badge>
+              </div>
+              <p className="m-0 text-sm text-muted-foreground">{t("policies.simulator.draft.description")}</p>
+              <p className="m-0 text-sm text-foreground">
+                {draftMatches
+                  ? t("policies.simulator.draft.matches", { effect: effectLabels[form.effect] })
+                  : t("policies.simulator.draft.skips")}
+                {!form.enabled ? ` ${t("policies.simulator.draft.disabled")}` : ""}
+              </p>
+            </div>
+          ) : null}
           <div className="grid gap-4 md:grid-cols-5">
             <FormField label={t("policies.simulator.connector")}>
               <Input value={simulationForm.connectorType} onChange={(event) => setSimulationForm({ ...simulationForm, connectorType: event.target.value })} />
@@ -447,10 +532,14 @@ export function PoliciesPage() {
                             <Badge variant={item.matched ? "success" : "secondary"}>
                               {item.matched ? t("policies.simulator.hit") : t("policies.simulator.skip")}
                             </Badge>
-                            {item.decision ? <Badge variant={decisionBadgeVariant(item.decision)}>{item.decision}</Badge> : null}
+                            {item.decision ? (
+                              <Badge variant={decisionBadgeVariant(item.decision)} title={item.decision}>
+                                {governanceEffectLabel(t, item.decision)}
+                              </Badge>
+                            ) : null}
                           </div>
                           <div className="mt-2 text-muted-foreground">
-                            {item.decision ? `${item.decision} · ` : ""}
+                            {item.decision ? `${governanceEffectLabel(t, item.decision)} · ` : ""}
                             {item.reason}
                           </div>
                         </div>
@@ -518,4 +607,92 @@ function decisionBadgeVariant(decision: string): "success" | "pending" | "destru
     default:
       return "secondary";
   }
+}
+
+function isWildcardDenyPolicy(policy: PolicyRuleInput): boolean {
+  return (
+    policy.effect === "deny" &&
+    isGovernanceWildcardPattern(policy.connectorType) &&
+    isGovernanceToolWildcardPattern(policy.toolNamePattern) &&
+    isGovernanceWildcardPattern(policy.operationType) &&
+    isGovernanceWildcardPattern(policy.riskLevel) &&
+    isGovernanceWildcardPattern(policy.resourcePattern)
+  );
+}
+
+function draftPolicyMatches(policy: PolicyRuleInput, simulation: PolicySimulationRequest): boolean {
+  const normalizedSimulation = normalizeDraftSimulation(simulation);
+  if (!normalizedSimulation) {
+    return false;
+  }
+  return (
+    globMatch(policy.connectorType, normalizedSimulation.connectorType) &&
+    globMatch(policy.toolNamePattern, normalizedSimulation.toolName) &&
+    globMatch(policy.operationType, normalizedSimulation.operationType) &&
+    globMatch(policy.riskLevel, normalizedSimulation.riskLevel) &&
+    globMatch(policy.resourcePattern, normalizedSimulation.resource)
+  );
+}
+
+function normalizeDraftSimulation(simulation: PolicySimulationRequest): PolicySimulationRequest | null {
+  const toolName = simulation.toolName.trim().toLowerCase();
+  const separator = toolName.indexOf(".");
+  if (separator <= 0 || separator === toolName.length - 1) {
+    return null;
+  }
+
+  const namespace = toolName.slice(0, separator);
+  const connectorInput = simulation.connectorType.trim().toLowerCase();
+  return {
+    connectorType: connectorInput === "" || connectorInput === "*" ? policyConnectorTypeForNamespace(namespace) : connectorInput,
+    toolName,
+    operationType: simulation.operationType.trim().toLowerCase() || "*",
+    riskLevel: normalizeDraftRiskLevel(simulation.riskLevel),
+    resource: simulation.resource.trim(),
+  };
+}
+
+function policyConnectorTypeForNamespace(namespace: string): string {
+  const normalized = namespace.trim().toLowerCase();
+  return normalized.startsWith("mcp_") ? "mcp" : normalized;
+}
+
+function normalizeDraftRiskLevel(value: string): string {
+  switch (value.trim().toLowerCase()) {
+    case "critical":
+      return "critical";
+    case "high":
+      return "high";
+    case "medium":
+      return "medium";
+    default:
+      return "low";
+  }
+}
+
+function globMatch(patternValue: string, candidateValue: string): boolean {
+  const pattern = patternValue.trim().toLowerCase();
+  const candidate = candidateValue.trim().toLowerCase();
+  if (isGovernanceWildcardPattern(pattern)) {
+    return true;
+  }
+  if (!pattern.includes("*")) {
+    return pattern === candidate;
+  }
+
+  const parts = pattern.split("*");
+  let position = 0;
+  for (const [index, part] of parts.entries()) {
+    if (!part) {
+      continue;
+    }
+    const found = candidate.indexOf(part, position);
+    if (found < 0 || (index === 0 && !pattern.startsWith("*") && found !== 0)) {
+      return false;
+    }
+    position = found + part.length;
+  }
+
+  const last = parts.at(-1) ?? "";
+  return last === "" || pattern.endsWith("*") || candidate.endsWith(last);
 }

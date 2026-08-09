@@ -86,7 +86,6 @@ func (a *App) executeDatabaseQuery(ctx context.Context, tool model.Tool, workspa
 	}()
 
 	_ = tool
-	_ = workspaceID
 
 	args, err := parseDatabaseQueryArgs(decodedArgs)
 	if err != nil {
@@ -99,6 +98,9 @@ func (a *App) executeDatabaseQuery(ctx context.Context, tool model.Tool, workspa
 	}
 	if strings.TrimSpace(args.Datasource) == "" {
 		args.Datasource = datasource
+	}
+	if err := a.ensureConnectorEnabledIfPresent(ctx, workspaceID, "database", args.Datasource); err != nil {
+		return nil, nil, err
 	}
 	span.SetAttributes(attribute.String("db.datasource", args.Datasource))
 	if args.Datasource != datasource {
@@ -179,6 +181,10 @@ func (a *App) handleDatabaseSchema(w http.ResponseWriter, r *http.Request) {
 	}
 	if requestedDatasource != datasource {
 		a.respondError(w, badRequest(fmt.Sprintf("unsupported datasource %q", requestedDatasource)))
+		return
+	}
+	if err := a.ensureConnectorEnabledIfPresent(r.Context(), reqCtx.Workspace.ID, "database", requestedDatasource); err != nil {
+		a.respondError(w, err)
 		return
 	}
 

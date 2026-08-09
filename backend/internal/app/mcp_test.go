@@ -386,6 +386,9 @@ func newMCPAppTestServer(t *testing.T, overrides config.Config) (*App, store.Sto
 	if len(overrides.HTTPAllowedMethods) > 0 {
 		cfg.HTTPAllowedMethods = overrides.HTTPAllowedMethods
 	}
+	if len(overrides.MCPAllowedHosts) > 0 {
+		cfg.MCPAllowedHosts = overrides.MCPAllowedHosts
+	}
 	if overrides.HTTPTimeoutMs > 0 {
 		cfg.HTTPTimeoutMs = overrides.HTTPTimeoutMs
 	}

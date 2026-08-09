@@ -1,9 +1,18 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { CheckCircle2, Clock, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
-import { approveApproval, connectApprovalStream, getApiErrorMessage, listApprovals, rejectApproval } from "../api/client";
+import { CheckCircle2, CircleAlert, Clock, ExternalLink, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
+import {
+  ApiError,
+  approveApproval,
+  connectApprovalStream,
+  getApiErrorMessage,
+  listApprovals,
+  listToolCalls,
+  rejectApproval,
+} from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { canReviewApprovals } from "../auth/permissions";
+import { JsonBlock } from "../components/JsonBlock";
 import { PageHeader } from "../components/PageHeader";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -16,14 +25,17 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { useI18n, type TranslationKey } from "../i18n";
+import { governanceActionLabel, governanceRiskLabel, governanceStatusLabel } from "../lib/governanceLabels";
 import type { ApprovalRequest } from "../types";
 
 type Feedback = {
-  kind: "success" | "error";
+  kind: "success" | "error" | "warning";
   text: string;
+  callId?: string;
 } | null;
 
 const approvalTabs = [
@@ -56,6 +68,8 @@ export function ApprovalsPage() {
   const [refreshTick, setRefreshTick] = useState(0);
   const [reviewDialog, setReviewDialog] = useState<ReviewDialogState>(null);
   const [reviewReason, setReviewReason] = useState("");
+  const [localReviewerToken, setLocalReviewerToken] = useState("");
+  const [approvalCallIds, setApprovalCallIds] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -66,15 +80,26 @@ export function ApprovalsPage() {
       }
       if (!canReview) {
         setApprovals([]);
+        setApprovalCallIds({});
         setFeedback({ kind: "error", text: t("common.permissionDenied") });
         setLoading(false);
         return;
       }
       setLoading(true);
       try {
-        const result = await listApprovals(token, workspaceOrgId);
+        const [result, callsPage] = await Promise.all([
+          listApprovals(token, workspaceOrgId),
+          listToolCalls(token, workspaceOrgId, { page: 1, pageSize: 200 }).catch(() => null),
+        ]);
         if (!cancelled) {
           setApprovals(result.items);
+          setApprovalCallIds(
+            Object.fromEntries(
+              (callsPage?.items ?? [])
+                .filter((call) => call.approvalId)
+                .map((call) => [call.approvalId as string, call.id]),
+            ),
+          );
         }
       } catch (error) {
         if (!cancelled) {
@@ -157,6 +182,7 @@ export function ApprovalsPage() {
   function openReviewDialog(approval: ApprovalRequest, decision: "approve" | "reject") {
     setReviewDialog({ approval, decision });
     setReviewReason("");
+    setLocalReviewerToken("");
   }
 
   async function handleReviewSubmit(event: FormEvent<HTMLFormElement>) {
@@ -175,27 +201,66 @@ export function ApprovalsPage() {
     setSavingId(approvalId);
     setFeedback(null);
     try {
+      const reviewerToken =
+        auth.authMode === "local" && localReviewerToken.trim() ? localReviewerToken.trim() : token;
       const response =
         decision === "approve"
-          ? await approveApproval(approvalId, { reason }, token, workspaceOrgId)
-          : await rejectApproval(approvalId, { reason }, token, workspaceOrgId);
+          ? await approveApproval(approvalId, { reason }, reviewerToken, workspaceOrgId)
+          : await rejectApproval(approvalId, { reason }, reviewerToken, workspaceOrgId);
 
       setApprovals((current) =>
         current.map((approval) => (approval.id === response.approval.id ? response.approval : approval))
       );
-      setFeedback({
-        kind: "success",
-        text:
-          decision === "approve"
-            ? t("approvals.approvedFeedback", { tool: response.approval.toolDisplayName, callId: response.toolCall.id })
-            : t("approvals.rejectedFeedback", { tool: response.approval.toolDisplayName }),
-      });
+      setApprovalCallIds((current) => ({ ...current, [response.approval.id]: response.toolCall.id }));
+      if (decision === "reject") {
+        setFeedback({
+          kind: "success",
+          text: t("approvals.rejectedFeedback", { tool: response.approval.toolDisplayName }),
+          callId: response.toolCall.id,
+        });
+      } else {
+        const executionStatus = response.toolCall.status.trim().toLowerCase();
+        if (executionStatus === "success") {
+          setFeedback({
+            kind: "success",
+            text: t("approvals.approvedFeedback", { tool: response.approval.toolDisplayName }),
+            callId: response.toolCall.id,
+          });
+        } else if (executionStatus === "failed") {
+          setFeedback({
+            kind: "error",
+            text: t("approvals.approvedExecutionFailed", {
+              tool: response.approval.toolDisplayName,
+              error: "",
+            }).replace(/[:：]\s*$/, ""),
+            callId: response.toolCall.id,
+          });
+        } else if (executionStatus === "approval_required") {
+          setFeedback({
+            kind: "warning",
+            text: t("approvals.approvedPendingRetry", { tool: response.approval.toolDisplayName }),
+            callId: response.toolCall.id,
+          });
+        } else {
+          setFeedback({
+            kind: "warning",
+            text: t("approvals.approvedUnknownStatus", {
+              tool: response.approval.toolDisplayName,
+              status: governanceStatusLabel(t, executionStatus),
+            }),
+            callId: response.toolCall.id,
+          });
+        }
+      }
       setReviewDialog(null);
       setReviewReason("");
+      setLocalReviewerToken("");
     } catch (error) {
       setFeedback({
         kind: "error",
-        text: getApiErrorMessage(error, t("approvals.actionError"), t("common.permissionDenied")),
+        text: error instanceof ApiError && error.status === 403
+          ? t("common.permissionDenied")
+          : t("approvals.actionError"),
       });
     } finally {
       setSavingId(null);
@@ -229,7 +294,7 @@ export function ApprovalsPage() {
               <TableCell>
                 <Badge variant={statusBadgeVariant(approval.status)} className="gap-1">
                   {approval.status === "pending" && <Clock className="h-3.5 w-3.5" />}
-                  {approval.status}
+                  {governanceStatusLabel(t, approval.status)}
                 </Badge>
               </TableCell>
               <TableCell>
@@ -248,8 +313,17 @@ export function ApprovalsPage() {
                 <span className="line-clamp-2">{approval.reason || t("approvals.noReason")}</span>
               </TableCell>
               <TableCell>
-                {approval.status === "pending" && canReview ? (
-                  <div className="flex justify-end gap-2">
+                <div className="flex justify-end gap-2">
+                  {approvalCallIds[approval.id] ? (
+                    <Button asChild type="button" size="sm" variant="outline">
+                      <Link to={`/audit?call=${encodeURIComponent(approvalCallIds[approval.id])}`}>
+                        <ExternalLink className="h-4 w-4" />
+                        {t("approvals.reviewDialog.openAudit")}
+                      </Link>
+                    </Button>
+                  ) : null}
+                  {approval.status === "pending" && canReview ? (
+                    <>
                     <Button
                       type="button"
                       size="sm"
@@ -267,10 +341,11 @@ export function ApprovalsPage() {
                     >
                       {t("approvals.reject")}
                     </Button>
-                  </div>
-                ) : (
-                  <span className="block text-right text-sm text-muted-foreground">{t("approvals.reviewComplete")}</span>
-                )}
+                    </>
+                  ) : (
+                    <span className="self-center text-sm text-muted-foreground">{t("approvals.reviewComplete")}</span>
+                  )}
+                </div>
               </TableCell>
             </TableRow>
           ))}
@@ -278,6 +353,11 @@ export function ApprovalsPage() {
       </Table>
     );
   }
+
+  const selectedApproval = reviewDialog?.approval ?? null;
+  const selectedCallId = selectedApproval ? approvalCallIds[selectedApproval.id] : undefined;
+  const selectedDecisionSummary = selectedApproval ? buildDecisionSummary(selectedApproval) : null;
+  const selectedRiskLevel = selectedApproval ? approvalRiskLevel(selectedApproval) : "";
 
   return (
     <div className="grid gap-6">
@@ -300,14 +380,28 @@ export function ApprovalsPage() {
             <DialogTitle className="flex items-center gap-2">
               {feedback?.kind === "success" ? (
                 <CheckCircle2 className="h-5 w-5 text-primary" />
+              ) : feedback?.kind === "warning" ? (
+                <CircleAlert className="h-5 w-5 text-accent" />
               ) : (
                 <XCircle className="h-5 w-5 text-destructive" />
               )}
-              {feedback?.kind === "success" ? t("approvals.dialog.success") : t("approvals.dialog.error")}
+              {feedback?.kind === "success"
+                ? t("approvals.dialog.success")
+                : feedback?.kind === "warning"
+                  ? t("approvals.dialog.warning")
+                  : t("approvals.dialog.error")}
             </DialogTitle>
             <DialogDescription>{feedback?.text}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
+            {feedback?.callId ? (
+              <Button asChild type="button">
+                <Link to={`/audit?call=${encodeURIComponent(feedback.callId)}`} onClick={() => setFeedback(null)}>
+                  <ExternalLink className="h-4 w-4" />
+                  {t("approvals.dialog.openAudit")}
+                </Link>
+              </Button>
+            ) : null}
             <Button type="button" variant="outline" onClick={() => setFeedback(null)}>
               {t("approvals.dialog.close")}
             </Button>
@@ -319,9 +413,10 @@ export function ApprovalsPage() {
         if (!open) {
           setReviewDialog(null);
           setReviewReason("");
+          setLocalReviewerToken("");
         }
       }}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
           <form className="grid gap-4" onSubmit={(event) => void handleReviewSubmit(event)}>
             <DialogHeader>
               <DialogTitle>
@@ -334,6 +429,103 @@ export function ApprovalsPage() {
                 })}
               </DialogDescription>
             </DialogHeader>
+            {selectedApproval ? (
+              <section className="grid gap-3 border-y border-border py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h3 className="m-0 text-sm font-bold text-foreground">{t("approvals.reviewDialog.detailsTitle")}</h3>
+                  {selectedCallId ? (
+                    <Button asChild type="button" size="sm" variant="outline">
+                      <Link to={`/audit?call=${encodeURIComponent(selectedCallId)}`}>
+                        <ExternalLink className="h-4 w-4" />
+                        {t("approvals.reviewDialog.openAudit")}
+                      </Link>
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">{t("approvals.reviewDialog.auditPending")}</span>
+                  )}
+                </div>
+
+                <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+                  <ApprovalMeta
+                    label={t("approvals.reviewDialog.risk")}
+                    value={
+                      selectedRiskLevel ? (
+                        <MachineValue
+                          label={governanceRiskLabel(t, selectedRiskLevel)}
+                          raw={selectedRiskLevel}
+                        />
+                      ) : (
+                        t("approvals.reviewDialog.noValue")
+                      )
+                    }
+                  />
+                  <ApprovalMeta
+                    label={t("approvals.reviewDialog.actionType")}
+                    value={
+                      selectedApproval.actionType ? (
+                        <MachineValue
+                          label={governanceActionLabel(t, selectedApproval.actionType)}
+                          raw={selectedApproval.actionType}
+                        />
+                      ) : (
+                        t("approvals.reviewDialog.noValue")
+                      )
+                    }
+                  />
+                  <ApprovalMeta
+                    label={t("approvals.reviewDialog.adapter")}
+                    value={selectedApproval.adapter || t("approvals.reviewDialog.noValue")}
+                  />
+                  <ApprovalMeta
+                    label={t("approvals.reviewDialog.expires")}
+                    value={formatDateTime(selectedApproval.expiresAt, t("approvals.reviewDialog.noValue"))}
+                  />
+                </div>
+
+                <ApprovalMeta
+                  label={t("approvals.reviewDialog.target")}
+                  value={redactApprovalTarget(selectedApproval.target) || t("approvals.reviewDialog.noValue")}
+                  code
+                />
+                <ApprovalMeta
+                  label={t("approvals.reviewDialog.canonicalTarget")}
+                  value={redactApprovalTarget(selectedApproval.canonicalTarget) || t("approvals.reviewDialog.noValue")}
+                  code
+                />
+
+                <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+                  <ApprovalMeta
+                    label={t("approvals.reviewDialog.fingerprint")}
+                    value={selectedApproval.fingerprint || t("approvals.reviewDialog.noValue")}
+                    code
+                  />
+                  <ApprovalMeta
+                    label={t("approvals.reviewDialog.approvalId")}
+                    value={selectedApproval.id}
+                    code
+                  />
+                  <ApprovalMeta
+                    label={t("approvals.reviewDialog.contentHash")}
+                    value={selectedApproval.contentHash || t("approvals.reviewDialog.noValue")}
+                    code
+                  />
+                  <ApprovalMeta
+                    label={t("approvals.reviewDialog.scriptHash")}
+                    value={selectedApproval.scriptHash || t("approvals.reviewDialog.noValue")}
+                    code
+                  />
+                </div>
+
+                {selectedDecisionSummary ? (
+                  <div className="grid gap-2">
+                    <span className="text-xs font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                      {t("approvals.reviewDialog.decisionSummary")}
+                    </span>
+                    <JsonBlock value={selectedDecisionSummary} className="max-h-52" />
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
             <label className="grid gap-2 text-sm font-medium text-foreground">
               {t("approvals.reviewDialog.reasonLabel")}
               <textarea
@@ -344,6 +536,24 @@ export function ApprovalsPage() {
                 onChange={(event) => setReviewReason(event.target.value)}
               />
             </label>
+            {auth.authMode === "local" ? (
+              <label className="grid gap-2 text-sm font-medium text-foreground">
+                {t("approvals.reviewDialog.localReviewerTokenLabel")}
+                <Input
+                  type="password"
+                  name="agenttoolgate-reviewer-token"
+                  autoComplete="off"
+                  data-1p-ignore
+                  data-lpignore="true"
+                  value={localReviewerToken}
+                  placeholder={t("approvals.reviewDialog.localReviewerTokenPlaceholder")}
+                  onChange={(event) => setLocalReviewerToken(event.target.value)}
+                />
+                <span className="text-xs font-normal text-muted-foreground">
+                  {t("approvals.reviewDialog.localReviewerTokenHint")}
+                </span>
+              </label>
+            ) : null}
             <DialogFooter>
               <Button
                 type="button"
@@ -351,12 +561,19 @@ export function ApprovalsPage() {
                 onClick={() => {
                   setReviewDialog(null);
                   setReviewReason("");
+                  setLocalReviewerToken("");
                 }}
               >
                 {t("approvals.reviewDialog.cancel")}
               </Button>
               <Button type="submit" variant={reviewDialog?.decision === "reject" ? "destructive" : "default"} disabled={savingId === reviewDialog?.approval.id}>
-                {reviewDialog?.decision === "approve" ? t("approvals.reviewDialog.confirmApprove") : t("approvals.reviewDialog.confirmReject")}
+                {reviewDialog?.decision === "approve"
+                  ? t(
+                      approvalRequiresClientRetry(reviewDialog.approval)
+                        ? "approvals.reviewDialog.confirmApproveRetry"
+                        : "approvals.reviewDialog.confirmApprove",
+                    )
+                  : t("approvals.reviewDialog.confirmReject")}
               </Button>
             </DialogFooter>
           </form>
@@ -431,4 +648,109 @@ function statusBadgeVariant(status: string): "success" | "pending" | "destructiv
     default:
       return "secondary";
   }
+}
+
+function ApprovalMeta({
+  label,
+  value,
+  code = false,
+}: {
+  label: string;
+  value: ReactNode;
+  code?: boolean;
+}) {
+  return (
+    <div className="grid gap-1">
+      <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground">{label}</span>
+      <div className={code ? "break-all font-mono text-xs text-foreground" : "text-sm text-foreground"}>{value}</div>
+    </div>
+  );
+}
+
+function MachineValue({ label, raw }: { label: string; raw: string }) {
+  return (
+    <span className="inline-flex flex-wrap items-baseline gap-2">
+      <span className="font-medium text-foreground">{label}</span>
+      {label.toLowerCase() !== raw.trim().toLowerCase() ? (
+        <span className="font-mono text-[11px] text-muted-foreground">{raw}</span>
+      ) : null}
+    </span>
+  );
+}
+
+function approvalRiskLevel(approval: ApprovalRequest): string {
+  const payload = decisionPayloadRecord(approval.decisionPayloadJson);
+  return typeof payload?.riskLevel === "string" ? payload.riskLevel.trim() : "";
+}
+
+function buildDecisionSummary(approval: ApprovalRequest): Record<string, unknown> | null {
+  const payload = decisionPayloadRecord(approval.decisionPayloadJson);
+  if (!payload) {
+    return null;
+  }
+
+  const summary: Record<string, unknown> = {};
+  for (const key of [
+    "tool",
+    "adapter",
+    "actionType",
+    "targetCategory",
+    "riskLevel",
+    "isScript",
+    "contentEncoding",
+    "contentSensitive",
+  ]) {
+    const value = payload[key];
+    if (value !== undefined && value !== null && value !== "") {
+      summary[key] = value;
+    }
+  }
+  return Object.keys(summary).length > 0 ? summary : null;
+}
+
+function decisionPayloadRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function formatDateTime(value: string, fallback: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? fallback : date.toLocaleString();
+}
+
+function redactApprovalTarget(value: string | undefined): string {
+  const target = value?.trim();
+  if (!target) {
+    return "";
+  }
+
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(target)) {
+    try {
+      const parsed = new URL(target);
+      parsed.username = "";
+      parsed.password = "";
+      parsed.hash = "";
+      for (const key of parsed.searchParams.keys()) {
+        if (/token|api[_-]?key|secret|password|passwd|auth|signature|credential|cookie|session|(?:^|[-_])code$/i.test(key)) {
+          parsed.searchParams.set(key, "[REDACTED]");
+        }
+      }
+      return parsed.toString();
+    } catch {
+      // 非标准 URL 继续使用文本级脱敏。
+    }
+  }
+
+  return target
+    .replace(/(bearer\s+)[^\s"'`]+/gi, "$1[REDACTED]")
+    .replace(
+      /((?:access[_-]?token|api[_-]?key|token|secret|password|authorization|signature|cookie)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,&]+)/gi,
+      "$1[REDACTED]",
+    );
+}
+
+function approvalRequiresClientRetry(approval: ApprovalRequest): boolean {
+  return Boolean(approval.adapter?.trim());
 }

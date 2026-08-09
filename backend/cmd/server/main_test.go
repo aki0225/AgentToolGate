@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -340,7 +342,19 @@ func TestRunGuardAdaptRejectsInvalidJSON(t *testing.T) {
 }
 
 func TestRunGuardHookClaudePrintsOfficialHookOutput(t *testing.T) {
-	inputPath := filepath.Join("..", "..", "..", "examples", "guard-hooks", "claude", "bash-git-status.json")
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	inputPath := writeHookPayloadForRepo(t, repo, "Bash", map[string]any{"command": "git status"})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeHookDecisionResponse(t, w, map[string]any{"decision": "allow", "reason": "safe"})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AGENTTOOLGATE_URL", server.URL)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -364,11 +378,531 @@ func TestRunGuardHookClaudePrintsOfficialHookOutput(t *testing.T) {
 	}
 }
 
-func TestRunGuardHookClaudeSupportsStdin(t *testing.T) {
-	payload, err := os.ReadFile(filepath.Join("..", "..", "..", "examples", "guard-hooks", "claude", "bash-read-ssh.json"))
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
+func TestRunGuardHookHonorsRepoControlAndCallsBackendInLiveMode(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write ordinary read target: %v", err)
+	}
+	inputPath := writeHookPayloadForRepo(t, repo, "Read", map[string]any{"file_path": "README.md"})
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		writeHookDecisionResponse(t, w, map[string]any{"decision": "allow", "reason": "safe"})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AGENTTOOLGATE_URL", server.URL)
+	t.Setenv("TRELLIS_HOOKS", "1")
+	t.Setenv("TRELLIS_DISABLE_HOOKS", "0")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"guard", "hook", "codex", "--input", inputPath}, &stdout, &stderr)
+	if code != 0 || stdout.Len() != 0 || requests != 0 {
+		t.Fatalf("missing control must no-op, code=%d requests=%d stdout=%s stderr=%s", code, requests, stdout.String(), stderr.String())
+	}
+
+	if err := writeProjectHookControl(repo, projectHookModeDryRun); err != nil {
+		t.Fatalf("write dry-run control: %v", err)
+	}
+	code = run([]string{"guard", "hook", "codex", "--input", inputPath}, &stdout, &stderr)
+	if code != 0 || stdout.Len() != 0 || requests != 0 {
+		t.Fatalf("dry-run must not call backend, code=%d requests=%d stdout=%s stderr=%s", code, requests, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".tmp", "agenttoolgate", "hook-dry-run.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("ordinary repo read should not add dry-run noise, got err=%v", err)
+	}
+
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	code = run([]string{"guard", "hook", "codex", "--input", inputPath}, &stdout, &stderr)
+	if code != 0 || stdout.Len() != 0 || requests != 0 {
+		t.Fatalf("ordinary repo read must use the local fast path, code=%d requests=%d stdout=%s stderr=%s", code, requests, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunGuardHookSendsWorkspaceRootAndGuardsSensitiveReads(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+	workingDirectory := filepath.Join(repo, "nested")
+	if err := os.MkdirAll(workingDirectory, 0o700); err != nil {
+		t.Fatalf("create working directory: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	inputPath := writeHookPayloadForRepo(t, workingDirectory, "Read", map[string]any{"file_path": "../.env"})
+
+	var captured hookAgentGuardRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeHookDecisionResponse(t, w, map[string]any{"decision": "deny", "reason": "sensitive read"})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AGENTTOOLGATE_URL", server.URL)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"guard", "hook", "codex", "--input", inputPath}, &stdout, &stderr)
+	if code != 0 || !strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+		t.Fatalf("sensitive read must reach backend and deny, code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if captured.WorkspaceRoot != repo {
+		t.Fatalf("hook request must include repository workspace root, got %q want %q", captured.WorkspaceRoot, repo)
+	}
+	if captured.WorkingDirectory != workingDirectory {
+		t.Fatalf("hook request must include actual working directory, got %q want %q", captured.WorkingDirectory, workingDirectory)
+	}
+	if captured.GuardDecision != "deny" || captured.GuardRiskLevel != "high" {
+		t.Fatalf("hook request must include Guard Core floor, got %+v", captured)
+	}
+}
+
+func TestRunGuardHookLocalDenyCannotBeDowngradedByBackend(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	inputPath := writeHookPayloadForRepo(t, repo, "shell", map[string]any{"command": "Remove-Item -Recurse ."})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeHookDecisionResponse(t, w, map[string]any{"decision": "allow", "reason": "stale backend allow"})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AGENTTOOLGATE_URL", server.URL)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"guard", "hook", "codex", "--input", inputPath}, &stdout, &stderr)
+	if code != 0 || !strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+		t.Fatalf("Guard Core deny must remain deny, code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunGuardHookIgnoresNestedWorkspaceRootOverride(t *testing.T) {
+	liveRepo := t.TempDir()
+	offRepo := t.TempDir()
+	for _, repo := range []string{liveRepo, offRepo} {
+		if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+			t.Fatalf("create git marker: %v", err)
+		}
+	}
+	if err := writeProjectHookControl(liveRepo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	if err := writeProjectHookControl(offRepo, projectHookModeOff); err != nil {
+		t.Fatalf("write off control: %v", err)
+	}
+
+	inputPath := writeHookPayloadForRepo(t, liveRepo, "shell", map[string]any{
+		"command":       "Remove-Item -Recurse .",
+		"cwd":           offRepo,
+		"workspaceRoot": offRepo,
+	})
+	requests := 0
+	var captured hookAgentGuardRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		writeHookDecisionResponse(t, w, map[string]any{"decision": "allow", "reason": "stale backend allow"})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AGENTTOOLGATE_URL", server.URL)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"guard", "hook", "codex", "--input", inputPath}, &stdout, &stderr)
+	if code != 0 || requests != 1 || !strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+		t.Fatalf("nested workspace override must not disable live governance, code=%d requests=%d stdout=%s stderr=%s", code, requests, stdout.String(), stderr.String())
+	}
+	if captured.WorkspaceRoot != liveRepo || captured.WorkingDirectory != liveRepo {
+		t.Fatalf("hook request must remain bound to the live repository, got %+v", captured)
+	}
+}
+
+func TestExplicitLowRiskOfflineHookRejectsWritesAndUnsafeReadOptions(t *testing.T) {
+	t.Parallel()
+
+	eligible := func(action guard.ActionInput) bool {
+		if action.CWD == "" {
+			action.CWD = `X:\demo\project`
+		}
+		if action.ProjectRoot == "" {
+			action.ProjectRoot = `X:\demo\project`
+		}
+		return isExplicitLowRiskOfflineHook(action, guard.Evaluate(action))
+	}
+
+	for _, action := range []guard.ActionInput{
+		{ToolName: "Write", ActionType: "write", Target: "notes.md"},
+		{ToolName: "shell", ActionType: "command", Command: "git diff --output=.ssh/id_rsa"},
+		{ToolName: "shell", ActionType: "command", Command: `rg --pre "powershell -Command Get-Content" .`},
+		{ToolName: "shell", ActionType: "command", Command: "git status\nSet-Content report.md changed"},
+		{ToolName: "shell", ActionType: "command", Command: "git status\r\nSet-Content report.md changed"},
+		{ToolName: "PowerShell", ActionType: "command", Command: `git status \; Set-Content report.md changed`},
+		{ToolName: "shell", ActionType: "command", Command: `sed -i 's/a/b/' README.md`},
+		{ToolName: "shell", ActionType: "command", Command: `sed -n '1w report.txt' README.md`},
+		{ToolName: "shell", ActionType: "command", Command: `sed -n '1e touch owned' README.md`},
+		{ToolName: "shell", ActionType: "command", Command: `sed -n 1\,40p README.md`},
+	} {
+		if eligible(action) {
+			t.Fatalf("offline fallback must reject %+v", action)
+		}
+	}
+
+	for _, command := range []string{
+		"git diff --stat",
+		`rg "foo|bar" .`,
+		`rg "powershell|curl" docs`,
+		`sed -n '1,40p' README.md`,
+		`sed -n '1,40P' README.md`,
+		"ls",
+		"ls scripts/powershell",
+		"dir .",
+		"Get-ChildItem",
+	} {
+		action := guard.ActionInput{ToolName: "shell", ActionType: "command", Command: command}
+		if !eligible(action) {
+			t.Fatalf("read-only command must remain eligible after Guard Core evaluation: %s", command)
+		}
+	}
+}
+
+func TestFindCLIRepoRootSupportsInitializedNonGitProject(t *testing.T) {
+	repo := t.TempDir()
+	nested := filepath.Join(repo, "src", "feature")
+	if err := os.MkdirAll(filepath.Join(repo, ".agenttoolgate"), 0o700); err != nil {
+		t.Fatalf("create project marker: %v", err)
+	}
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatalf("create nested directory: %v", err)
+	}
+
+	root, err := findCLIRepoRoot(nested)
+	if err != nil {
+		t.Fatalf("find initialized project root: %v", err)
+	}
+	if root != repo {
+		t.Fatalf("unexpected project root %q want %q", root, repo)
+	}
+}
+
+func TestHookFastPathReadRejectsWorkspaceEscape(t *testing.T) {
+	repo := t.TempDir()
+	outside := filepath.Join(filepath.Dir(repo), "outside.txt")
+	if err := os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(outside) })
+
+	action := guard.ActionInput{
+		ToolName:    "Read",
+		ActionType:  "read",
+		Target:      outside,
+		CWD:         repo,
+		ProjectRoot: repo,
+	}
+	if isHookFastPathRepoRead(action, repo) {
+		t.Fatal("workspace-external read must not use the local fast path")
+	}
+}
+
+func TestHookFastPathRequiresExplicitLocalReadTool(t *testing.T) {
+	repo := t.TempDir()
+	for _, name := range []string{"README.md", "WebSearch", "mcp__github__merge_pull_request"} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte("fixture"), 0o600); err != nil {
+			t.Fatalf("write fast-path fixture %s: %v", name, err)
+		}
+	}
+
+	localRead := guard.ActionInput{
+		ToolName:    "Read",
+		ActionType:  "read",
+		Target:      "README.md",
+		CWD:         repo,
+		ProjectRoot: repo,
+	}
+	if !isHookFastPathRepoRead(localRead, repo) {
+		t.Fatal("explicit local Read must use the repository fast path")
+	}
+
+	for _, action := range []guard.ActionInput{
+		{ToolName: "WebSearch", ActionType: "read", Target: "WebSearch", CWD: repo, ProjectRoot: repo},
+		{ToolName: "mcp__github__merge_pull_request", ActionType: "read", Target: "mcp__github__merge_pull_request", CWD: repo, ProjectRoot: repo},
+		{ToolName: "Read", ActionType: "write", Target: "README.md", CWD: repo, ProjectRoot: repo},
+	} {
+		if isHookFastPathRepoRead(action, repo) {
+			t.Fatalf("non-local-read action must not use repository fast path: %+v", action)
+		}
+	}
+}
+
+func TestRunGuardHookSkipsAgentToolGateMCPAndGuardsExternalMCP(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		writeHookDecisionResponse(t, w, map[string]any{"decision": "deny", "reason": "external MCP requires governance"})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AGENTTOOLGATE_URL", server.URL)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	internalInput := writeHookPayloadForRepo(t, repo, "mcp__agenttoolgate__mock_echo", map[string]any{"message": "hello"})
+	code := run([]string{"guard", "hook", "codex", "--input", internalInput}, &stdout, &stderr)
+	if code != 0 || stdout.Len() != 0 || requests != 0 {
+		t.Fatalf("AgentToolGate MCP must bypass duplicate hook governance, code=%d requests=%d stdout=%s stderr=%s", code, requests, stdout.String(), stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	externalInput := writeHookPayloadForRepo(t, repo, "mcp__github__merge_pull_request", map[string]any{
+		"repository_full_name": "example/repo",
+		"pr_number":            1,
+	})
+	code = run([]string{"guard", "hook", "codex", "--input", externalInput}, &stdout, &stderr)
+	if code != 0 || requests != 1 || !strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+		t.Fatalf("external MCP must reach hook governance, code=%d requests=%d stdout=%s stderr=%s", code, requests, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunGuardHookTrellisHardDisableSkipsBackend(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	inputPath := writeHookPayloadForRepo(t, repo, "Write", map[string]any{"file_path": ".env", "content": "TOKEN=synthetic"})
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		writeHookDecisionResponse(t, w, map[string]any{"decision": "deny"})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AGENTTOOLGATE_URL", server.URL)
+	t.Setenv("TRELLIS_DISABLE_HOOKS", "1")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"guard", "hook", "claude", "--input", inputPath}, &stdout, &stderr)
+	if code != 0 || stdout.Len() != 0 || requests != 0 {
+		t.Fatalf("hard disable must no-op, code=%d requests=%d stdout=%s stderr=%s", code, requests, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunGuardHookRejectsBackendErrorsAndReusesTicket(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	inputPath := writeHookPayloadForRepo(t, repo, "shell", map[string]any{"command": "go test ./..."})
+	t.Setenv("TRELLIS_HOOKS", "1")
+	t.Setenv("TRELLIS_DISABLE_HOOKS", "0")
+
+	t.Run("non-2xx fails closed", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+		}))
+		t.Cleanup(server.Close)
+		t.Setenv("AGENTTOOLGATE_URL", server.URL)
+
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		code := run([]string{"guard", "hook", "claude", "--input", inputPath}, &stdout, &stderr)
+		if code != 0 || !strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+			t.Fatalf("backend error must deny, code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+		}
+	})
+
+	t.Run("matching retry carries ticket", func(t *testing.T) {
+		var captured []map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			captured = append(captured, payload)
+			if len(captured) == 1 {
+				writeHookDecisionResponse(t, w, map[string]any{
+					"decision":       "deny_with_ticket",
+					"reason":         "approval required",
+					"approvalId":     "approval-test-1",
+					"approvalStatus": "pending",
+					"fingerprint":    "fingerprint-test-1",
+				})
+				return
+			}
+			writeHookDecisionResponse(t, w, map[string]any{"decision": "allow", "reason": "ticket consumed"})
+		}))
+		t.Cleanup(server.Close)
+		t.Setenv("AGENTTOOLGATE_URL", server.URL)
+
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		code := run([]string{"guard", "hook", "codex", "--input", inputPath}, &stdout, &stderr)
+		if code != 0 || !strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+			t.Fatalf("first request should deny with ticket, code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+		}
+		stdout.Reset()
+		stderr.Reset()
+		code = run([]string{"guard", "hook", "codex", "--input", inputPath}, &stdout, &stderr)
+		if code != 0 || stdout.Len() != 0 {
+			t.Fatalf("approved retry allow must be Codex no-op, code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+		}
+		if len(captured) != 2 {
+			t.Fatalf("expected two backend calls, got %d", len(captured))
+		}
+		if _, ok := captured[0]["ticketId"]; ok {
+			t.Fatalf("first request must not contain ticket: %+v", captured[0])
+		}
+		if captured[1]["ticketId"] != "approval-test-1" {
+			t.Fatalf("retry must contain matching ticket: %+v", captured[1])
+		}
+	})
+}
+
+func TestRunGuardHookOfflineAllowRequiresPendingAudit(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	blocker := filepath.Join(repo, ".tmp", "local-action-firewall")
+	if err := os.MkdirAll(filepath.Dir(blocker), 0o700); err != nil {
+		t.Fatalf("create pending audit parent: %v", err)
+	}
+	if err := os.WriteFile(blocker, []byte("not-a-directory"), 0o600); err != nil {
+		t.Fatalf("write pending audit blocker: %v", err)
+	}
+
+	inputPath := writeHookPayloadForRepo(t, repo, "shell", map[string]any{"command": "git status"})
+	t.Setenv("AGENTTOOLGATE_URL", "http://127.0.0.1:1")
+	t.Setenv("AGENTTOOLGATE_HOOK_TIMEOUT_MS", "50")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"guard", "hook", "claude", "--input", inputPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("guard hook returned %d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"permissionDecision":"deny"`) ||
+		!strings.Contains(stdout.String(), "pending audit unavailable") {
+		t.Fatalf("pending audit failure must deny, stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+}
+
+func TestRunGuardHookDeniesWhenTicketPersistenceFails(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	inputPath := writeHookPayloadForRepo(t, repo, "shell", map[string]any{"command": "go test ./..."})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		blocker := filepath.Join(repo, ".tmp", "agenttoolgate", "hook-tickets")
+		if err := os.MkdirAll(filepath.Dir(blocker), 0o700); err != nil {
+			t.Fatalf("create ticket parent: %v", err)
+		}
+		if err := os.WriteFile(blocker, []byte("not-a-directory"), 0o600); err != nil {
+			t.Fatalf("write ticket blocker: %v", err)
+		}
+		writeHookDecisionResponse(t, w, map[string]any{
+			"decision":       "deny_with_ticket",
+			"reason":         "approval required",
+			"approvalId":     "approval-persist-failure",
+			"approvalStatus": "pending",
+			"fingerprint":    "fingerprint-persist-failure",
+		})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AGENTTOOLGATE_URL", server.URL)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"guard", "hook", "claude", "--input", inputPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("guard hook returned %d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"permissionDecision":"deny"`) ||
+		!strings.Contains(stdout.String(), "hook ticket persistence failed") {
+		t.Fatalf("ticket persistence failure must deny, stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+}
+
+func TestRemoveHookTicketOnlyIgnoresMissingFile(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if err := removeHookTicket(missing); err != nil {
+		t.Fatalf("missing ticket cleanup should succeed: %v", err)
+	}
+
+	nonEmptyDir := filepath.Join(t.TempDir(), "ticket.json")
+	if err := os.Mkdir(nonEmptyDir, 0o700); err != nil {
+		t.Fatalf("create ticket directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nonEmptyDir, "child"), []byte("blocked"), 0o600); err != nil {
+		t.Fatalf("write ticket child: %v", err)
+	}
+	if err := removeHookTicket(nonEmptyDir); err == nil {
+		t.Fatal("non-missing cleanup failure must be returned")
+	}
+}
+
+func TestRunGuardHookClaudeSupportsStdin(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"cwd":       repo,
+		"tool_name": "Read",
+		"tool_input": map[string]any{
+			"file_path": ".ssh/id_rsa",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeHookDecisionResponse(t, w, map[string]any{"decision": "deny", "reason": "sensitive read"})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AGENTTOOLGATE_URL", server.URL)
+
 	oldStdin := os.Stdin
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -427,7 +961,19 @@ func TestRunGuardHookClaudeRejectsInvalidJSONAndUnknowns(t *testing.T) {
 }
 
 func TestRunGuardHookCodexPrintsDenyForRootDelete(t *testing.T) {
-	inputPath := filepath.Join("..", "..", "..", "examples", "guard-hooks", "codex", "bash-rm-root.json")
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	inputPath := writeHookPayloadForRepo(t, repo, "shell", map[string]any{"command": "Remove-Item -Recurse ."})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeHookDecisionResponse(t, w, map[string]any{"decision": "deny", "reason": "命中根目录删除"})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AGENTTOOLGATE_URL", server.URL)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -440,7 +986,7 @@ func TestRunGuardHookCodexPrintsDenyForRootDelete(t *testing.T) {
 		t.Fatalf("decode codex hook output: %v output=%s", err, stdout.String())
 	}
 	specific := result.HookSpecificOutput
-	if specific.HookEventName != "PreToolUse" || specific.PermissionDecision != "deny" || !strings.Contains(specific.PermissionDecisionReason, "已阻止") {
+	if specific.HookEventName != "PreToolUse" || specific.PermissionDecision != "deny" || !strings.Contains(specific.PermissionDecisionReason, "根目录删除") {
 		t.Fatalf("unexpected codex hook output: %+v", result)
 	}
 	if strings.Contains(stdout.String(), "Remove-Item") {
@@ -479,10 +1025,36 @@ func TestRunGuardHookCodexAllowBecomesNoop(t *testing.T) {
 }
 
 func TestRunGuardHookCodexAsksBecomeDenyAndSupportsStdin(t *testing.T) {
-	payload, err := os.ReadFile(filepath.Join("..", "..", "..", "examples", "guard-hooks", "codex", "network-post-env.json"))
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
 	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"cwd":       repo,
+		"tool_name": "network.request",
+		"tool_input": map[string]any{
+			"method": "POST",
+			"url":    "https://example.test/upload",
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeHookDecisionResponse(t, w, map[string]any{
+			"decision":       "deny_with_ticket",
+			"reason":         "approval required",
+			"approvalId":     "approval-test-ask",
+			"approvalStatus": "pending",
+			"fingerprint":    "fingerprint-test-ask",
+		})
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AGENTTOOLGATE_URL", server.URL)
+
 	oldStdin := os.Stdin
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -510,7 +1082,7 @@ func TestRunGuardHookCodexAsksBecomeDenyAndSupportsStdin(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatalf("decode codex hook output: %v output=%s", err, stdout.String())
 	}
-	if result.HookSpecificOutput.PermissionDecision != "deny" || !strings.Contains(result.HookSpecificOutput.PermissionDecisionReason, "需要人工确认") {
+	if result.HookSpecificOutput.PermissionDecision != "deny" || !strings.Contains(result.HookSpecificOutput.PermissionDecisionReason, "approval required") {
 		t.Fatalf("expected ask-to-deny codex output, got %+v", result)
 	}
 }
@@ -682,8 +1254,19 @@ func TestProjectClientSnippetsAreCopyReady(t *testing.T) {
 			t.Fatalf("copy-ready snippet %s must not contain root note field:\n%s", path, string(raw))
 		}
 		if !strings.Contains(string(raw), `"matcher": "`+localActionHookMatcher+`"`) {
-			t.Fatalf("hook snippet %s must only match local action tools:\n%s", path, string(raw))
+			t.Fatalf("hook snippet %s must use the shared action matcher:\n%s", path, string(raw))
 		}
+	}
+	if !strings.Contains(localActionHookMatcher, "Read") {
+		t.Fatalf("hook matcher must include sensitive file reads: %s", localActionHookMatcher)
+	}
+	for _, tool := range []string{"Grep", "Glob"} {
+		if !strings.Contains(localActionHookMatcher, tool) {
+			t.Fatalf("hook matcher must include %s reads: %s", tool, localActionHookMatcher)
+		}
+	}
+	if !strings.Contains(localActionHookMatcher, "mcp__.*") {
+		t.Fatalf("hook matcher must route external MCP tools through governance: %s", localActionHookMatcher)
 	}
 }
 
@@ -822,6 +1405,13 @@ func TestPrepareProjectUpDoesNotWriteHookControlBeforeStart(t *testing.T) {
 	if cfg.Port != "18082" || cfg.DefaultWorkspaceOrgID != "demo-org" || cfg.DefaultWorkspaceSlug != "demo" {
 		t.Fatalf("project config not applied: %+v", cfg)
 	}
+	expectedRoot, err := filepath.Abs(project)
+	if err != nil {
+		t.Fatalf("resolve expected project root: %v", err)
+	}
+	if cfg.ProjectRoot != expectedRoot {
+		t.Fatalf("prepare up must preserve the trusted project root, got %q want %q", cfg.ProjectRoot, expectedRoot)
+	}
 	if !openBrowser {
 		t.Fatalf("openBrowser should follow project config")
 	}
@@ -847,6 +1437,18 @@ func TestPrepareProjectUpDoesNotWriteHookControlBeforeStart(t *testing.T) {
 	}
 	if doc.Mode != projectHookModeDryRun || doc.Reason != "项目级 up" {
 		t.Fatalf("unexpected hook control doc: %+v", doc)
+	}
+}
+
+func TestApplyProjectRunConfigNormalizesTrustedProjectRoot(t *testing.T) {
+	rawRoot := "  " + filepath.Join(t.TempDir(), "nested", "..") + "  "
+	cfg := config.Config{}
+
+	applyProjectRunConfig(&cfg, projectRunConfig{ProjectRoot: rawRoot})
+
+	expectedRoot := filepath.Clean(strings.TrimSpace(rawRoot))
+	if cfg.ProjectRoot != expectedRoot {
+		t.Fatalf("project root must be trimmed and cleaned, got %q want %q", cfg.ProjectRoot, expectedRoot)
 	}
 }
 
@@ -947,5 +1549,43 @@ func TestInitRejectsUnknownTargetWithChineseHint(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "init 仅支持 all、codex 或 claude") {
 		t.Fatalf("expected stable Chinese init error, got %s", stderr.String())
+	}
+}
+
+func TestRedactHookTargetRemovesURLUserinfoAndSensitiveQuery(t *testing.T) {
+	const target = "https://user:password@example.test/path?token=secret-value&page=1#fragment"
+	redacted := redactHookTarget(target)
+	for _, leaked := range []string{"user", "password", "secret-value", "fragment"} {
+		if strings.Contains(redacted, leaked) {
+			t.Fatalf("redacted hook target leaked %q: %s", leaked, redacted)
+		}
+	}
+	if !strings.Contains(redacted, "page=1") || !strings.Contains(redacted, "%5BREDACTED%5D") {
+		t.Fatalf("redacted hook target lost safe URL structure: %s", redacted)
+	}
+}
+
+func writeHookPayloadForRepo(t *testing.T, repo, toolName string, toolInput map[string]any) string {
+	t.Helper()
+	payload, err := json.Marshal(map[string]any{
+		"cwd":        repo,
+		"tool_name":  toolName,
+		"tool_input": toolInput,
+	})
+	if err != nil {
+		t.Fatalf("marshal hook payload: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "hook-payload.json")
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatalf("write hook payload: %v", err)
+	}
+	return path
+}
+
+func writeHookDecisionResponse(t *testing.T, w http.ResponseWriter, payload map[string]any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		t.Fatalf("encode hook response: %v", err)
 	}
 }

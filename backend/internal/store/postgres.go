@@ -430,6 +430,47 @@ func (s *PostgresStore) UpdateToolCall(ctx context.Context, workspaceID, callID 
 	return call, nil
 }
 
+func (s *PostgresStore) TransitionToolCall(ctx context.Context, workspaceID, callID, fromStatus string, input model.UpdateToolCallInput) (model.ToolCall, error) {
+	call := model.ToolCall{}
+	var explanationJSON []byte
+	inputExecutionJSON := strings.TrimSpace(string(input.InputExecutionJSON))
+	err := s.pool.QueryRow(ctx, `
+		UPDATE tool_calls
+		SET status = $4,
+		    duration_ms = $5,
+		    output_redacted_json = $6::jsonb,
+		    error_message = $7,
+		    trace_id = CASE WHEN $8 = '' THEN trace_id ELSE $8 END,
+		    input_execution_json = CASE WHEN $9 = '' THEN input_execution_json ELSE $9::jsonb END
+		WHERE workspace_id = $1 AND id = $2 AND status = $3
+		RETURNING id, request_id, workspace_id, actor_id, actor_subject, actor_email, actor_name, tool_id, tool_key,
+		          status, risk_level, policy_decision, approval_id, duration_ms, input_redacted_json, input_execution_json, output_redacted_json,
+		          explanation_json, error_message, trace_id, created_at,
+		          COALESCE((SELECT status FROM approval_requests ar WHERE ar.id = approval_id AND ar.workspace_id = workspace_id), '')
+	`, workspaceID, callID, strings.TrimSpace(fromStatus), input.Status, input.DurationMs, mustJSON(defaultJSON(input.OutputRedactedJSON)),
+		input.ErrorMessage, input.TraceID, inputExecutionJSON).Scan(
+		&call.ID, &call.RequestID, &call.WorkspaceID, &call.ActorID, &call.ActorSubject, &call.ActorEmail, &call.ActorName,
+		&call.ToolID, &call.ToolKey, &call.Status, &call.RiskLevel, &call.PolicyDecision, &call.ApprovalID, &call.DurationMs,
+		&call.InputRedactedJSON, &call.InputExecutionJSON, &call.OutputRedactedJSON, &explanationJSON, &call.ErrorMessage, &call.TraceID, &call.CreatedAt, &call.ApprovalStatus,
+	)
+	if err == nil {
+		explanation, decodeErr := decodeToolCallExplanationJSON(explanationJSON)
+		if decodeErr != nil {
+			return model.ToolCall{}, decodeErr
+		}
+		call.Explanation = explanation
+		return call, nil
+	}
+	mappedErr := mapPgErr(err)
+	if !errors.Is(mappedErr, ErrNotFound) {
+		return model.ToolCall{}, mappedErr
+	}
+	if _, getErr := s.GetToolCallByID(ctx, workspaceID, callID); getErr != nil {
+		return model.ToolCall{}, getErr
+	}
+	return model.ToolCall{}, ErrConflict
+}
+
 func (s *PostgresStore) ListConnectors(ctx context.Context, workspaceID string) ([]model.Connector, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, workspace_id, type, name, display_name, config_json, enabled, created_at, updated_at

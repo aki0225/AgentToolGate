@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,12 +36,53 @@ func NewOutboundClient(baseURL string, headers map[string]string, timeout time.D
 		timeout = outboundDefaultTimeout
 	}
 	return &OutboundClient{
-		baseURL: baseURL,
-		headers: cloneStringMap(headers),
-		timeout: timeout,
-		httpClient: &http.Client{
-			Timeout: timeout,
+		baseURL:    baseURL,
+		headers:    cloneStringMap(headers),
+		timeout:    timeout,
+		httpClient: newMCPHTTPClient(timeout),
+	}
+}
+
+func newMCPHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("mcp redirect limit exceeded")
+			}
+			if len(via) == 0 || !sameMCPOrigin(via[0].URL, req.URL) {
+				return errors.New("mcp redirect must stay on the original origin")
+			}
+			return nil
 		},
+	}
+}
+
+func sameMCPOrigin(base, candidate *url.URL) bool {
+	if base == nil || candidate == nil || base.User != nil || candidate.User != nil {
+		return false
+	}
+	if !strings.EqualFold(base.Scheme, candidate.Scheme) ||
+		!strings.EqualFold(base.Hostname(), candidate.Hostname()) {
+		return false
+	}
+	return effectiveMCPPort(base) == effectiveMCPPort(candidate)
+}
+
+func effectiveMCPPort(value *url.URL) string {
+	if value == nil {
+		return ""
+	}
+	if port := value.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(value.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
 	}
 }
 
@@ -163,7 +205,8 @@ func (c *OutboundClient) newSession(ctx context.Context) (*outboundSession, erro
 		return nil, fmt.Errorf("mcp session did not return endpoint event")
 	}
 
-	endpoint, err := resolveMCPEndpoint(base, strings.TrimSpace(data))
+	responseBase := resp.Request.URL
+	endpoint, err := resolveMCPEndpoint(responseBase, strings.TrimSpace(data))
 	if err != nil {
 		_ = resp.Body.Close()
 		return nil, err
@@ -175,7 +218,7 @@ func (c *OutboundClient) newSession(ctx context.Context) (*outboundSession, erro
 
 	return &outboundSession{
 		client:   c.httpClient,
-		baseURL:  base,
+		baseURL:  responseBase,
 		endpoint: endpoint,
 		body:     resp.Body,
 		reader:   reader,
@@ -300,7 +343,7 @@ func validateMCPEndpoint(base, endpoint *url.URL) error {
 	if endpoint.User != nil {
 		return fmt.Errorf("mcp endpoint userinfo is not allowed")
 	}
-	if !strings.EqualFold(endpoint.Scheme, base.Scheme) || !strings.EqualFold(endpoint.Host, base.Host) {
+	if !sameMCPOrigin(base, endpoint) {
 		return fmt.Errorf("mcp endpoint must stay on the original origin")
 	}
 	return nil
