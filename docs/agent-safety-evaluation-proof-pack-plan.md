@@ -644,6 +644,30 @@ docs: 发布 Agent 安全实测证据
 - Stage 5A 只证明真实客户端集成链在本轮 synthetic 场景中工作，仍不把 ATG 描述成
   OS sandbox 或完整 enforcement boundary。
 
+阶段 5B 已于 2026-08-09 完成：
+
+- Windows / Linux full evaluation run
+  [`31290905501`](https://github.com/aki0225/AgentToolGate/actions/runs/31290905501)
+  已通过，并生成 README、Pages 和
+  `evaluation/published/agent-safety-proof.json` 使用的公开快照。
+- `v0.2.0-rc1` 指向
+  `cdfc8abc39d81248860dae0cfe062baf642a581a`。Release workflow
+  [`31292260522`](https://github.com/aki0225/AgentToolGate/actions/runs/31292260522)
+  成功，五个资产已重新下载并通过 `SHA256SUMS` 核验。
+- RC Windows evaluator 附件完整复跑 30 个用例，结果为
+  `30 passed / 0 failed / 0 skipped`。RC 通过后，同一候选提交发布为
+  [`v0.2.0`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.2.0)。
+- 正式 Release workflow
+  [`31292672647`](https://github.com/aki0225/AgentToolGate/actions/runs/31292672647)
+  成功。正式 Windows evaluator 附件再次完整复跑 30 个用例，42 个 manifest 条目
+  的文件大小和 SHA256 全部匹配。
+- 发布验证主机没有 WSL 或 Docker，因此没有声称本机完整执行 Linux Release 附件。
+  Linux 附件的原生 `doctor` 和 `validate` 由 Release workflow 的 Linux runner
+  执行；完整 Linux 结果来自同一评估源码提交的 full evaluation。
+- 评估快照源提交为 `7a5f33e3c15f0b7994e0083b4a06c0f4e1ecfc44`，发布源提交为
+  `cdfc8abc39d81248860dae0cfe062baf642a581a`。后者包含前者生成并独立核验后的公开
+  快照，不把两类提交混写为同一次运行。
+
 ## 15. 验证要求
 
 评估工具自身：
@@ -693,7 +717,7 @@ git diff --check
 - [x] PR quick suite 和手动 full suite 可运行。
 - [x] Pages 和 README 不包含手工编造指标。
 - [x] 真实 Codex / Claude 验收使用 disposable repo 和 synthetic 数据。
-- [ ] `v0.2.0` 下载内容、源码、报告和公开文档一致。
+- [x] `v0.2.0` 下载内容、源码、报告和公开文档一致。
 
 ## 17. 中断与恢复规则
 

@@ -223,27 +223,64 @@ failed/skipped 计数与 results 一致，报告完整且敏感扫描无命中�
   回放完成媒体验收。
 - 公开 transcript、metadata、Audit、Hook、postconditions、WebM 和 manifest 位于
   `evaluation/client-acceptance/`。
-- Release workflow 已能构建 Windows / Linux evaluator 附件，但还没有候选标签下载
-  物的独立核验结果。
 
-尚未实现：
+阶段 5B 已于 2026-08-09 完成：
 
-- `v0.2.0-rc1` 和 `v0.2.0`。
+- Windows / Linux full evaluation run
+  [`31290905501`](https://github.com/aki0225/AgentToolGate/actions/runs/31290905501)
+  已在 `7a5f33e3c15f0b7994e0083b4a06c0f4e1ecfc44` 上通过：Quick 为
+  `18 passed / 0 failed / 0 skipped`，Windows full 为
+  `30 passed / 0 failed / 0 skipped`，Linux full 为
+  `26 passed / 0 failed / 4 skipped`。Linux 的 4 个 skipped 均为明确的平台不适用
+  用例。
+- 公开快照、README 和 Pages 已由上述 run 的 Artifact 导入，并随
+  `cdfc8abc39d81248860dae0cfe062baf642a581a` 发布。评估源提交与发布源提交不同：
+  前者产生原始评估结果，后者只增加脱敏证据和公开说明。
+- [`v0.2.0-rc1`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.2.0-rc1)
+  指向 `cdfc8abc39d81248860dae0cfe062baf642a581a`。Release workflow
+  [`31292260522`](https://github.com/aki0225/AgentToolGate/actions/runs/31292260522)
+  的 Windows、Linux 和 Release job 全部成功，且被正确标记为 prerelease。
+- RC 的五个 Release 资产已重新下载，`SHA256SUMS` 与下载字节全部一致。Windows
+  evaluator 附件使用包内 `agenttoolgate.exe` 完整复跑 30 个用例，结果为
+  `30 passed / 0 failed / 0 skipped`；42 个 Proof Pack manifest 条目均通过大小和
+  SHA256 复算。
+- [`v0.2.0`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.2.0)
+  指向同一候选提交。正式 Release workflow
+  [`31292672647`](https://github.com/aki0225/AgentToolGate/actions/runs/31292672647)
+  的三个 job 全部成功，Release 状态为非 draft、非 prerelease。
+- 正式 Windows evaluator 附件再次完整复跑 30 个用例，结果为
+  `30 passed / 0 failed / 0 skipped`；42 个 manifest 条目全部匹配，文本资产和
+  二进制绝对路径扫描无敏感命中。
+- 当前 Windows 验证主机没有 WSL 或 Docker，不能直接执行 Linux ELF。Linux 附件的
+  原生 `doctor` 和 evaluator `validate` 由 Release workflow 的 Linux runner
+  完成；完整 Linux 行为证据来自同一评估源码提交的 full evaluation run
+  `31290905501`。不要把这项组合证据描述成“本机完整复跑 Linux Release 附件”。
 
-## 5. 下一步只做阶段 5B
+### RC 资产
 
-阶段 5B 先提交并推送 Stage 5A 证据，确认 CI 后运行同一候选提交的 Windows / Linux
-full evaluation，再创建 `v0.2.0-rc1`：
+| 资产 | 字节数 | SHA256 |
+| --- | ---: | --- |
+| `agenttoolgate-windows-amd64.zip` | 18,815,952 | `99534d032617ae3360253cb93c64dc1a30acbfde38271c2157ef08412e1da91e` |
+| `agenttoolgate-linux-amd64.tar.gz` | 18,327,001 | `6adc1e945eb3f8a7a8bb963e670371b390cca997ccb8f246dbb78ecc189e102c` |
+| `agenttoolgate-evaluation-windows-amd64.zip` | 29,350,619 | `5df902dd749c18138a734866f114478d74dc2c754c07b65ef6a5980c7a6d6092` |
+| `agenttoolgate-evaluation-linux-amd64.tar.gz` | 28,610,669 | `77cebade4aeb555a35ceb6e2a24f306a2e3cdfbb33fc57387f2f0cab8d6761a5` |
+| `SHA256SUMS` | 416 | `3fdf9631fc0e279adbb981bdfe35cac2391a2365fa1a44445e560990de23bb3c` |
 
-1. 独立复算 `evaluation/client-acceptance/manifest.json`，严格解析全部 JSON，播放两段
-   WebM 到结束，并执行敏感信息扫描。
-2. 提交并推送 Stage 5A 证据，确认普通 CI 绿色。
-3. 对同一候选提交运行 GitHub Actions Windows / Linux full evaluation。
-4. 用核验后的 Artifact 刷新 `evaluation/published/agent-safety-proof.json`、README 和
-   Pages，确保汇总值只来自公开快照。
-5. 创建 `v0.2.0-rc1`，下载并核验 Windows / Linux 产品包、两个 evaluator 包和
-   `SHA256SUMS`。
-6. 候选验收通过后再创建 `v0.2.0`，不覆盖 `v0.1.0` 或其他历史标签。
+### 正式资产
+
+| 资产 | 字节数 | SHA256 |
+| --- | ---: | --- |
+| `agenttoolgate-windows-amd64.zip` | 18,815,955 | `a623095802cda5c0396addc980c8c33dd61698a649db934cb00ad205ae03586e` |
+| `agenttoolgate-linux-amd64.tar.gz` | 18,326,968 | `26af5f713f599be7371c0b8a1e38160776c30af2bb060346c190793a6a484bbc` |
+| `agenttoolgate-evaluation-windows-amd64.zip` | 29,350,617 | `93585b3e1c160971ccbd2b1e00967ecf850fb9b761a9724bea18d39e7ccdd3d6` |
+| `agenttoolgate-evaluation-linux-amd64.tar.gz` | 28,610,242 | `619b9b4a0142e804c5e76691eaaf9938fa56658dbe0f8e53022e7d9835b7f6dd` |
+| `SHA256SUMS` | 416 | `b58b8b3dbe2fc70c6a76699331881bbae57a0dee6611ed510a3ffc90c99f835e` |
+
+## 5. 当前结论
+
+阶段 5 已完成。`v0.2.0` 的下载内容、源码提交、公开评估快照、README 和 Pages 已建立
+可追溯关系。后续新增规则、客户端或平台时，应创建新的评估 run 和 Release，不覆盖
+本轮标签或历史证据。
 
 ## 6. 恢复步骤
 
@@ -261,17 +298,17 @@ Get-Content docs/agent-safety-evaluation-proof-pack-plan.md
 - 没有残留 `agenttoolgate` / `atg-eval` 进程。
 - 不读取或提交 `.tmp/` 中的历史运行产物。
 
-然后只创建阶段 5B 的候选发布验证提交。
+如需继续发布后开发，从新的独立任务开始，不修改 `v0.2.0` 或 `v0.2.0-rc1` 标签。
 
 ## 7. 禁止顺带修改
 
-阶段 5B 不要顺带修改：
+后续维护不要为了让评估变绿而顺带修改：
 
 - `.codex/hooks/**`
 - `.claude/hooks/**`
 - `backend/internal/guard/**`
 - Policy / Approval 的生产安全语义
-- Release workflow 和正式 tag
+- 已发布的 Release workflow 结果和正式 tag
 - 前端控制台
 
 如果评估发现生产安全缺陷，应保留 failed evidence，并单独创建修复提交，不允许
