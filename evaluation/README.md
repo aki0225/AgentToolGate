@@ -85,8 +85,8 @@
 
 阶段 4A 已接入 CI 与跨平台 Proof Pack：
 
-- `evaluation/suites/pr-quick-v1.jsonl` 固定选择 6 个危险、6 个良性和 6 个治理用例；
-  CI 校验 18 个 ID 唯一且均来自 canonical suite。
+- `evaluation/suites/pr-quick-v1.jsonl` 固定选择 6 个危险、8 个良性和 6 个治理用例；
+  CI 校验 20 个 ID 唯一且均来自 canonical suite。
 - `push`、`pull_request` 和 `workflow_dispatch` 在 Ubuntu runner 实际执行 quick suite。
 - `workflow_dispatch` 额外在 Windows / Linux 原生 runner 执行完整三套 suite；一套失败
   不会阻止后续 suite 运行，最终统一返回非零。

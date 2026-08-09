@@ -36,6 +36,7 @@ type Store interface {
 	GetToolCallByApprovalID(ctx context.Context, workspaceID, approvalID string) (model.ToolCall, error)
 	CreateToolCall(ctx context.Context, input model.CreateToolCallInput) (model.ToolCall, error)
 	UpdateToolCall(ctx context.Context, workspaceID, callID string, input model.UpdateToolCallInput) (model.ToolCall, error)
+	TransitionToolCall(ctx context.Context, workspaceID, callID, fromStatus string, input model.UpdateToolCallInput) (model.ToolCall, error)
 
 	ListConnectors(ctx context.Context, workspaceID string) ([]model.Connector, error)
 	GetConnectorByID(ctx context.Context, workspaceID, connectorID string) (model.Connector, error)

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -25,6 +24,7 @@ import (
 const (
 	defaultMCPOutboundTimeoutMs = 3000
 	hardMCPOutboundTimeoutMs    = 30000
+	mcpSecretRefModeWorkspace   = "workspace"
 )
 
 var (
@@ -36,6 +36,7 @@ type mcpConnectorConfig struct {
 	URL              string            `json:"url"`
 	Headers          map[string]string `json:"headers"`
 	HeaderSecretRefs map[string]string `json:"headerSecretRefs"`
+	SecretRefMode    string            `json:"secretRefMode,omitempty"`
 	TimeoutMs        int               `json:"timeoutMs,omitempty"`
 }
 
@@ -111,7 +112,10 @@ func (a *App) syncMCPConnector(ctx context.Context, workspaceID string, connecto
 	if err := validateMCPConnectorHeaderSecretRefs(cfg.HeaderSecretRefs); err != nil {
 		return syncConnectorResponse{}, err
 	}
-	resolvedHeaders, err := a.resolveMCPConnectorHeadersForWorkspace(ctx, workspaceID, cfg)
+	if err := a.validateMCPConnectorRuntimeTarget(cfg); err != nil {
+		return syncConnectorResponse{}, err
+	}
+	resolvedHeaders, resolvedSecretValues, err := a.resolveMCPConnectorHeadersForWorkspace(ctx, workspaceID, cfg)
 	if err != nil {
 		return syncConnectorResponse{}, err
 	}
@@ -128,6 +132,7 @@ func (a *App) syncMCPConnector(ctx context.Context, workspaceID string, connecto
 	skipped := make([]string, 0)
 	remoteKeys := map[string]struct{}{}
 	for _, remoteTool := range remoteTools {
+		remoteTool = redactMCPRemoteTool(remoteTool, resolvedSecretValues)
 		toolName := normalizeMCPRemoteToolName(remoteTool.Name)
 		if toolName == "" {
 			continue
@@ -198,7 +203,7 @@ func (a *App) validateMCPToolCallBeforePolicy(ctx context.Context, workspaceID s
 	if effectiveMCPTransport(cfg.Transport) != "sse" {
 		return badRequest("mcp connector transport must be sse")
 	}
-	if _, err := parseAndValidateMCPConnectorURL(cfg.URL); err != nil {
+	if err := a.validateMCPConnectorRuntimeTarget(cfg); err != nil {
 		return err
 	}
 	if err := validateMCPConnectorHeaders(cfg.Headers); err != nil {
@@ -207,7 +212,7 @@ func (a *App) validateMCPToolCallBeforePolicy(ctx context.Context, workspaceID s
 	if err := validateMCPConnectorHeaderSecretRefs(cfg.HeaderSecretRefs); err != nil {
 		return err
 	}
-	if _, err := a.resolveMCPConnectorHeadersForWorkspace(ctx, workspaceID, cfg); err != nil {
+	if _, _, err := a.resolveMCPConnectorHeadersForWorkspace(ctx, workspaceID, cfg); err != nil {
 		return err
 	}
 	return validateMCPToolArguments(decodedArgs)
@@ -244,7 +249,7 @@ func (a *App) executeMCPTool(ctx context.Context, tool model.Tool, decodedArgs a
 	if effectiveMCPTransport(cfg.Transport) != "sse" {
 		return nil, nil, badRequest("mcp connector transport must be sse")
 	}
-	if _, err := parseAndValidateMCPConnectorURL(cfg.URL); err != nil {
+	if err := a.validateMCPConnectorRuntimeTarget(cfg); err != nil {
 		return nil, nil, err
 	}
 	if err := validateMCPConnectorHeaders(cfg.Headers); err != nil {
@@ -253,7 +258,7 @@ func (a *App) executeMCPTool(ctx context.Context, tool model.Tool, decodedArgs a
 	if err := validateMCPConnectorHeaderSecretRefs(cfg.HeaderSecretRefs); err != nil {
 		return nil, nil, err
 	}
-	resolvedHeaders, err := a.resolveMCPConnectorHeadersForWorkspace(ctx, tool.WorkspaceID, cfg)
+	resolvedHeaders, resolvedSecretValues, err := a.resolveMCPConnectorHeadersForWorkspace(ctx, tool.WorkspaceID, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -273,7 +278,7 @@ func (a *App) executeMCPTool(ctx context.Context, tool model.Tool, decodedArgs a
 	if isMCPToolError(resultMap) {
 		return nil, nil, fmt.Errorf("mcp tool %s returned an error", tool.Key())
 	}
-	resultJSON, err = json.Marshal(resultMap)
+	resultJSON, err = json.Marshal(redactResolvedSecretValues(resultMap, resolvedSecretValues))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -478,7 +483,7 @@ func validateMCPConnectorHeaders(headers map[string]string) error {
 		if !isValidHTTPHeaderName(trimmedKey) {
 			return badRequest("mcp connector header name is invalid")
 		}
-		if isMCPForbiddenConnectorHeader(trimmedKey) {
+		if isMCPForbiddenLiteralHeader(trimmedKey) {
 			return badRequest(fmt.Sprintf("mcp connector header %s is not allowed", trimmedKey))
 		}
 		if !isValidHTTPHeaderValue(value) {
@@ -497,7 +502,7 @@ func validateMCPConnectorHeaderSecretRefs(refs map[string]string) error {
 		if !isValidHTTPHeaderName(trimmedKey) {
 			return badRequest("mcp connector header secret ref header name is invalid")
 		}
-		if isMCPForbiddenConnectorHeader(trimmedKey) {
+		if isMCPForbiddenSecretRefHeader(trimmedKey) {
 			return badRequest(fmt.Sprintf("mcp connector header %s is not allowed", trimmedKey))
 		}
 		trimmedRef := strings.TrimSpace(ref)
@@ -520,51 +525,94 @@ func resolveMCPConnectorHeaders(cfg mcpConnectorConfig) (map[string]string, erro
 				return nil, badRequest(fmt.Sprintf("mcp connector header %s cannot be defined in both headers and headerSecretRefs", trimmedKey))
 			}
 		}
-		trimmedRef := strings.TrimSpace(ref)
-		secretValue := strings.TrimSpace(os.Getenv(trimmedRef))
-		if secretValue == "" {
-			return nil, badRequest(fmt.Sprintf("mcp connector header secret ref %s is not configured", trimmedRef))
-		}
-		if !isValidHTTPHeaderValue(secretValue) {
-			return nil, badRequest(fmt.Sprintf("mcp connector header secret ref %s value is invalid", trimmedRef))
-		}
-		resolved[trimmedKey] = secretValue
+		return nil, badRequest(fmt.Sprintf("mcp connector header secret ref %s requires workspace Secret resolution", strings.TrimSpace(ref)))
 	}
 	return resolved, nil
 }
 
-func (a *App) resolveMCPConnectorHeadersForWorkspace(ctx context.Context, workspaceID string, cfg mcpConnectorConfig) (map[string]string, error) {
+func (a *App) resolveMCPConnectorHeadersForWorkspace(ctx context.Context, workspaceID string, cfg mcpConnectorConfig) (map[string]string, []string, error) {
 	resolved := make(map[string]string, len(cfg.Headers)+len(cfg.HeaderSecretRefs))
 	for key, value := range cfg.Headers {
 		resolved[strings.TrimSpace(key)] = value
 	}
+	resolvedSecretValues := make([]string, 0, len(cfg.HeaderSecretRefs))
 	for key, ref := range cfg.HeaderSecretRefs {
 		trimmedKey := strings.TrimSpace(key)
 		for existing := range resolved {
 			if strings.EqualFold(existing, trimmedKey) {
-				return nil, badRequest(fmt.Sprintf("mcp connector header %s cannot be defined in both headers and headerSecretRefs", trimmedKey))
+				return nil, nil, badRequest(fmt.Sprintf("mcp connector header %s cannot be defined in both headers and headerSecretRefs", trimmedKey))
 			}
 		}
 		trimmedRef := strings.TrimSpace(ref)
-		secretValue, err := a.resolveLegacyEnvSecretRefValue(ctx, workspaceID, trimmedRef)
+		var secretValue string
+		var err error
+		switch strings.ToLower(strings.TrimSpace(cfg.SecretRefMode)) {
+		case "", mcpSecretRefModeWorkspace:
+			secretValue, err = a.resolveSecretRefValue(ctx, workspaceID, trimmedRef)
+		default:
+			return nil, nil, badRequest("mcp connector secretRefMode is invalid")
+		}
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !isValidHTTPHeaderValue(secretValue) {
-			return nil, badRequest(fmt.Sprintf("mcp connector header secret ref %s value is invalid", trimmedRef))
+			return nil, nil, badRequest(fmt.Sprintf("mcp connector header secret ref %s value is invalid", trimmedRef))
 		}
 		resolved[trimmedKey] = secretValue
+		resolvedSecretValues = append(resolvedSecretValues, secretValue)
 	}
-	return resolved, nil
+	return resolved, resolvedSecretValues, nil
 }
 
-func isMCPForbiddenConnectorHeader(header string) bool {
+func isMCPForbiddenLiteralHeader(header string) bool {
+	switch strings.ToLower(strings.TrimSpace(header)) {
+	case "authorization", "cookie", "host", "set-cookie", "proxy-authorization":
+		return true
+	default:
+		return false
+	}
+}
+
+func isMCPForbiddenSecretRefHeader(header string) bool {
 	switch strings.ToLower(strings.TrimSpace(header)) {
 	case "host", "set-cookie", "proxy-authorization":
 		return true
 	default:
 		return false
 	}
+}
+
+func (a *App) validateMCPConnectorRuntimeTarget(cfg mcpConnectorConfig) error {
+	parsed, err := parseAndValidateMCPConnectorURL(cfg.URL)
+	if err != nil {
+		return err
+	}
+	if len(a.cfg.MCPAllowedHosts) > 0 {
+		_, err := parseAndValidateHTTPURL(parsed.String(), a.cfg.MCPAllowedHosts)
+		return err
+	}
+	if len(cfg.HeaderSecretRefs) > 0 {
+		return badRequest("MCP_ALLOWED_HOSTS must be configured for secret-bearing MCP connector")
+	}
+	return nil
+}
+
+func redactMCPRemoteTool(tool mcp.OutboundTool, secretValues []string) mcp.OutboundTool {
+	if len(secretValues) == 0 {
+		return tool
+	}
+	tool.Title, _ = redactResolvedSecretString(tool.Title, secretValues)
+	tool.Description, _ = redactResolvedSecretString(tool.Description, secretValues)
+	var schema any
+	if len(tool.InputSchema) > 0 && json.Unmarshal(tool.InputSchema, &schema) == nil {
+		tool.InputSchema = marshalDecodedValue(redactResolvedSecretValues(schema, secretValues))
+	}
+	return tool
+}
+
+func redactResolvedSecretString(value string, secretValues []string) (string, bool) {
+	redacted, ok := redactResolvedSecretValues(value, secretValues).(string)
+	return redacted, ok
 }
 
 func validateMCPToolArguments(decodedArgs any) error {

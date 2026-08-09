@@ -110,7 +110,7 @@ mcp_<connector>.<remote_tool>
 - `destructiveHint=true` 注册为 delete/high，需要审批。
 - `openWorldHint=true`、写类名称或未知名称都需要审批。
 
-执行时，`mcp_*` 工具仍然是普通 tool call：按 workspace 查 connector，解析 env-backed `headerSecretRefs`，脱敏 payload，为写/未知风险工具创建 approval，写 audit explanation 和 OTel child span。
+执行时，`mcp_*` 工具仍然是普通 tool call：按 workspace 查 connector，通过 `headerSecretRefs` 查找 workspace Secret，再由 Secret 的 env-backed `valueRef` 在后端运行时解析真实值；随后脱敏 payload，为写/未知风险工具创建 approval，写 audit explanation 和 OTel child span。所有 MCP Connector（包括没有 `secretRefMode` 的旧记录）都必须通过 workspace Secret 解析；引用缺失时 fail closed。
 
 当前 MCP Outbound 只支持 HTTP + SSE transport，不应写成已支持 stdio、OAuth 或完整 Streamable HTTP outbound。
 

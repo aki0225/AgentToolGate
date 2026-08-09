@@ -34,6 +34,7 @@ const (
 var (
 	githubOwnerPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
 	githubRepoPattern  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+	errGitHubRedirect  = errors.New("github API redirect target is not allowed")
 )
 
 type githubRepoRef struct {
@@ -61,9 +62,9 @@ type githubCreateIssueArgs struct {
 }
 
 type githubConnectorConfig struct {
-	APIBaseURL     string   `json:"apiBaseURL"`
-	AllowedRepos   []string `json:"allowedRepos"`
-	TokenSecretRef string   `json:"tokenSecretRef"`
+	APIBaseURL     string    `json:"apiBaseURL"`
+	AllowedRepos   *[]string `json:"allowedRepos"`
+	TokenSecretRef string    `json:"tokenSecretRef"`
 }
 
 type githubRuntimeConfig struct {
@@ -82,6 +83,31 @@ func (a *App) validateToolCallBeforePolicyResponse(ctx context.Context, workspac
 	}
 	if strings.HasPrefix(namespace, "mcp_") {
 		return a.validateMCPToolCallBeforePolicy(ctx, workspaceID, tool, decodedArgs)
+	}
+	if namespace == "database" && name == "query" {
+		args, err := parseDatabaseQueryArgs(decodedArgs)
+		if err != nil {
+			return err
+		}
+		datasource := strings.TrimSpace(a.cfg.DatabaseQueryDatasource)
+		if datasource == "" {
+			datasource = defaultDatabaseQueryDatasource
+		}
+		if strings.TrimSpace(args.Datasource) == "" {
+			args.Datasource = datasource
+		}
+		if args.Datasource != datasource {
+			return badRequest(fmt.Sprintf("unsupported datasource %q", args.Datasource))
+		}
+		if err := a.ensureConnectorEnabledIfPresent(ctx, workspaceID, "database", args.Datasource); err != nil {
+			return err
+		}
+		allowedTables, err := parseDatabaseAllowedTables(a.cfg.DatabaseQueryAllowedTables)
+		if err != nil {
+			return err
+		}
+		_, err = guardDatabaseSQL(args.SQL, effectiveDatabaseQueryMaxRows(a.cfg.DatabaseQueryMaxRows), allowedTables)
+		return err
 	}
 	if namespace != "github" {
 		return nil
@@ -305,8 +331,11 @@ func (a *App) githubAPIRequest(ctx context.Context, workspaceID string, runtimeC
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	resp, err := newGitHubHTTPClient(timeout, runtimeCfg.APIBaseURL).Do(req)
 	if err != nil {
+		if errors.Is(err, errGitHubRedirect) {
+			return fmt.Errorf("github API request failed: redirect target not allowed")
+		}
 		return fmt.Errorf("github API request failed: %w", err)
 	}
 	defer resp.Body.Close()
@@ -325,8 +354,12 @@ func (a *App) githubAPIRequest(ctx context.Context, workspaceID string, runtimeC
 }
 
 func (a *App) resolveGitHubRuntimeConfig(ctx context.Context, workspaceID string) (githubRuntimeConfig, error) {
+	apiBaseURL, err := normalizeGitHubAPIBaseURL(a.cfg.GitHubAPIBaseURL)
+	if err != nil {
+		return githubRuntimeConfig{}, err
+	}
 	runtimeCfg := githubRuntimeConfig{
-		APIBaseURL:   a.cfg.GitHubAPIBaseURL,
+		APIBaseURL:   apiBaseURL,
 		AllowedRepos: append([]string(nil), a.cfg.GitHubAllowedRepos...),
 	}
 
@@ -337,16 +370,22 @@ func (a *App) resolveGitHubRuntimeConfig(ctx context.Context, workspaceID string
 		}
 		return githubRuntimeConfig{}, err
 	}
+	if !connector.Enabled {
+		return githubRuntimeConfig{}, badRequest("github connector default is disabled")
+	}
 
 	parsed, err := parseGitHubConnectorConfig(connector.ConfigJSON)
 	if err != nil {
 		return githubRuntimeConfig{}, err
 	}
-	if trimmed := strings.TrimSpace(parsed.APIBaseURL); trimmed != "" {
-		runtimeCfg.APIBaseURL = trimmed
+	if parsed.APIBaseURL != "" && parsed.APIBaseURL != runtimeCfg.APIBaseURL {
+		return githubRuntimeConfig{}, badRequest("github connector apiBaseURL must match deployment GITHUB_API_BASE_URL")
 	}
-	if len(parsed.AllowedRepos) > 0 {
-		runtimeCfg.AllowedRepos = append([]string(nil), parsed.AllowedRepos...)
+	if parsed.AllowedRepos != nil {
+		runtimeCfg.AllowedRepos, err = intersectGitHubAllowedRepos(runtimeCfg.AllowedRepos, *parsed.AllowedRepos)
+		if err != nil {
+			return githubRuntimeConfig{}, err
+		}
 	}
 	if trimmed := strings.TrimSpace(parsed.TokenSecretRef); trimmed != "" {
 		if !isValidSecretReferenceValue(trimmed) {
@@ -391,8 +430,12 @@ func parseGitHubConnectorConfig(raw json.RawMessage) (githubConnectorConfig, err
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return githubConnectorConfig{}, badRequest("github connector config is invalid")
 	}
-	if cfg.APIBaseURL != "" && !strings.HasPrefix(strings.ToLower(strings.TrimSpace(cfg.APIBaseURL)), "http") {
-		return githubConnectorConfig{}, badRequest("github API base URL is invalid")
+	if strings.TrimSpace(cfg.APIBaseURL) != "" {
+		normalized, err := normalizeGitHubAPIBaseURL(cfg.APIBaseURL)
+		if err != nil {
+			return githubConnectorConfig{}, err
+		}
+		cfg.APIBaseURL = normalized
 	}
 	if cfg.TokenSecretRef != "" && !isValidSecretReferenceValue(cfg.TokenSecretRef) {
 		return githubConnectorConfig{}, badRequest("github token secret ref is invalid")
@@ -507,6 +550,27 @@ func (r githubAllowedRepos) Contains(owner, repo string) bool {
 	return ok
 }
 
+func intersectGitHubAllowedRepos(ceiling, requested []string) ([]string, error) {
+	allowed, err := parseGitHubAllowedRepos(ceiling)
+	if err != nil {
+		return nil, err
+	}
+	if len(requested) == 0 {
+		return []string{}, nil
+	}
+	requestedRepos, err := parseGitHubAllowedRepos(requested)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(requestedRepos.items))
+	for _, repo := range requestedRepos.items {
+		if allowed.Contains(repo.Owner, repo.Repo) {
+			result = append(result, repo.FullName)
+		}
+	}
+	return result, nil
+}
+
 func normalizeGitHubRepoRef(owner, repo string) (githubRepoRef, error) {
 	owner = strings.TrimSpace(owner)
 	repo = strings.TrimSpace(repo)
@@ -589,16 +653,11 @@ func githubPositiveIntArg(obj map[string]any, key string) (int, error) {
 }
 
 func buildGitHubAPIURL(baseURL, path string) (string, error) {
-	if strings.TrimSpace(baseURL) == "" {
-		baseURL = defaultGitHubAPIBaseURL
+	normalized, err := normalizeGitHubAPIBaseURL(baseURL)
+	if err != nil {
+		return "", err
 	}
-	base, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil || base.Scheme == "" || base.Host == "" {
-		return "", fmt.Errorf("github API base URL is invalid")
-	}
-	if base.Scheme != "http" && base.Scheme != "https" {
-		return "", fmt.Errorf("github API base URL is invalid")
-	}
+	base, _ := url.Parse(normalized)
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
@@ -606,6 +665,62 @@ func buildGitHubAPIURL(baseURL, path string) (string, error) {
 	base.RawQuery = ""
 	base.Fragment = ""
 	return base.String(), nil
+}
+
+func normalizeGitHubAPIBaseURL(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		trimmed = defaultGitHubAPIBaseURL
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Opaque != "" {
+		return "", badRequest("github API base URL is invalid")
+	}
+	if parsed.User != nil {
+		return "", badRequest("github API base URL userinfo is not allowed")
+	}
+	if parsed.RawQuery != "" || parsed.ForceQuery {
+		return "", badRequest("github API base URL query is not allowed")
+	}
+	if parsed.Fragment != "" {
+		return "", badRequest("github API base URL fragment is not allowed")
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", badRequest("github API base URL is invalid")
+	}
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawPath = ""
+	return parsed.String(), nil
+}
+
+func newGitHubHTTPClient(timeout time.Duration, baseURL string) *http.Client {
+	normalizedBase, err := normalizeGitHubAPIBaseURL(baseURL)
+	if err != nil {
+		return &http.Client{Timeout: timeout}
+	}
+	base, err := url.Parse(normalizedBase)
+	if err != nil {
+		return &http.Client{Timeout: timeout}
+	}
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if !sameGitHubOrigin(base, req.URL) {
+				return errGitHubRedirect
+			}
+			return nil
+		},
+	}
+}
+
+func sameGitHubOrigin(base, candidate *url.URL) bool {
+	if base == nil || candidate == nil {
+		return false
+	}
+	return strings.EqualFold(base.Scheme, candidate.Scheme) &&
+		strings.EqualFold(base.Host, candidate.Host)
 }
 
 func effectiveGitHubTimeout(value time.Duration) time.Duration {

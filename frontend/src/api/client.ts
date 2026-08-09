@@ -21,10 +21,29 @@ import type {
   Workspace,
 } from "../types";
 
-const API_BASE_URL =
+const configuredApiBaseUrl =
   import.meta.env?.VITE_API_BASE_URL ??
-  (typeof process !== "undefined" ? process.env.VITE_API_BASE_URL : undefined) ??
-  "http://localhost:8080";
+  (typeof process !== "undefined" ? process.env.VITE_API_BASE_URL : undefined);
+const API_BASE_URL = resolveApiBaseUrl(
+  configuredApiBaseUrl,
+  typeof window !== "undefined" ? window.location.origin : undefined,
+  Boolean(import.meta.env?.DEV),
+);
+
+export function resolveApiBaseUrl(
+  configuredBaseUrl?: string,
+  browserOrigin?: string,
+  development = false,
+): string {
+  const configured = configuredBaseUrl?.trim();
+  if (configured) {
+    return new URL(configured, browserOrigin ?? "http://localhost").origin;
+  }
+  if (development) {
+    return "http://localhost:8080";
+  }
+  return browserOrigin?.trim() || "http://localhost";
+}
 
 export function buildApiUrl(path: string): string {
   return new URL(path, API_BASE_URL).toString();

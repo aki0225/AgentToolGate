@@ -127,6 +127,12 @@ func TestMemoryUpdateToolCallClearsExecutionInput(t *testing.T) {
 	assertUpdateToolCallClearsExecutionInput(t, st)
 }
 
+func TestMemoryToolCallTransitionIsCompareAndSwap(t *testing.T) {
+	t.Parallel()
+
+	assertToolCallTransitionIsCompareAndSwap(t, NewMemoryStore())
+}
+
 func TestMemoryToolCallExplanationPersists(t *testing.T) {
 	t.Parallel()
 
@@ -349,6 +355,71 @@ func assertUpdateToolCallClearsExecutionInput(t *testing.T, st Store) {
 		t.Fatalf("update tool call: %v", err)
 	}
 	assertJSONEqual(t, updated.InputExecutionJSON, `{}`)
+}
+
+func assertToolCallTransitionIsCompareAndSwap(t *testing.T, st Store) {
+	t.Helper()
+
+	ctx := context.Background()
+	suffix := uuid.NewString()
+	workspace, err := st.CreateWorkspace(ctx, model.CreateWorkspaceInput{
+		Name:                  "Tool Call CAS Workspace " + suffix,
+		Slug:                  "tool-call-cas-" + suffix,
+		ZitadelOrganizationID: "org-tool-call-cas-" + suffix,
+	})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	tool, err := st.CreateTool(ctx, model.CreateToolInput{
+		WorkspaceID:      workspace.ID,
+		Namespace:        "mock",
+		Name:             "cas",
+		DisplayName:      "Mock CAS",
+		OperationType:    "write",
+		RiskLevel:        "medium",
+		RequiresApproval: true,
+		InputSchemaJSON:  json.RawMessage(`{"type":"object"}`),
+		OutputSchemaJSON: json.RawMessage(`{"type":"object"}`),
+		Enabled:          true,
+	})
+	if err != nil {
+		t.Fatalf("create tool: %v", err)
+	}
+	call, err := st.CreateToolCall(ctx, model.CreateToolCallInput{
+		WorkspaceID:        workspace.ID,
+		RequestID:          "req-tool-call-cas-" + suffix,
+		ToolID:             tool.ID,
+		ToolKey:            tool.Key(),
+		Status:             "approval_required",
+		RiskLevel:          "medium",
+		PolicyDecision:     "require_approval",
+		InputRedactedJSON:  json.RawMessage(`{"value":"[REDACTED]"}`),
+		InputExecutionJSON: json.RawMessage(`{"value":"synthetic"}`),
+		OutputRedactedJSON: json.RawMessage(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("create tool call: %v", err)
+	}
+
+	transitioned, err := st.TransitionToolCall(ctx, workspace.ID, call.ID, "approval_required", model.UpdateToolCallInput{
+		Status:             "success",
+		InputExecutionJSON: json.RawMessage(`{}`),
+		OutputRedactedJSON: json.RawMessage(`{"ok":true}`),
+	})
+	if err != nil {
+		t.Fatalf("transition tool call: %v", err)
+	}
+	if transitioned.Status != "success" || string(transitioned.InputExecutionJSON) != "{}" {
+		t.Fatalf("unexpected transitioned call: %+v", transitioned)
+	}
+
+	if _, err := st.TransitionToolCall(ctx, workspace.ID, call.ID, "approval_required", model.UpdateToolCallInput{
+		Status:             "failed",
+		InputExecutionJSON: json.RawMessage(`{}`),
+		OutputRedactedJSON: json.RawMessage(`{}`),
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale tool call transition must conflict, got %v", err)
+	}
 }
 
 func assertToolCallExplanationPersists(t *testing.T, st Store) {

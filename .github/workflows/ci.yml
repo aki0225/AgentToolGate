@@ -106,6 +106,12 @@ jobs:
       - name: Verify Python
         run: python --version
 
+      - name: Test Codex Hook Bridge
+        run: python .codex/hooks/test_agent_guard_pretool.py
+
+      - name: Test Claude Hook Bridge
+        run: python .claude/hooks/test_agent_guard_pretool.py
+
       - name: Test evaluation tool
         run: go -C tools/atg-eval test -count=1 -timeout 60s ./...
 
@@ -144,11 +150,11 @@ jobs:
           counts = Counter(case["suite"] for case in cases)
           expected = Counter({
               "dangerous-actions-v1": 6,
-              "benign-development-v1": 6,
+              "benign-development-v1": 8,
               "governance-invariants-v1": 6,
           })
-          if counts != expected or len({case["id"] for case in cases}) != 18:
-              raise SystemExit(f"PR quick suite 必须是 6+6+6 且 ID 唯一，实际={counts}")
+          if counts != expected or len({case["id"] for case in cases}) != 20:
+              raise SystemExit(f"PR quick suite 必须是 6+8+6 且 ID 唯一，实际={counts}")
           PY
 
       - name: Run PR quick evaluation
@@ -355,8 +361,12 @@ jobs:
       E2E_API_BASE_URL: http://127.0.0.1:8080
       E2E_BASE_URL: http://127.0.0.1:5173
       E2E_BROWSER_CHANNEL: chrome
+      E2E_HTTP_MOCK_CONNECT_HOST: 127.0.0.1
+      E2E_HTTP_MOCK_LISTEN_HOST: 127.0.0.1
+      E2E_HTTP_MOCK_PORT: "18080"
       E2E_VIDEO: "off"
       HOST: 127.0.0.1
+      HTTP_ALLOWED_HOSTS: 127.0.0.1:18080,localhost:18080
       LOCAL_EMAIL: ci@example.com
       LOCAL_NAME: CI Dev
       LOCAL_ROLE: owner
@@ -435,6 +445,10 @@ jobs:
       - name: 运行前端可靠性回归
         working-directory: frontend
         run: npm run e2e -- e2e/frontend-reliability.spec.ts e2e/approval-stream-client.spec.ts
+
+      - name: 运行审批与策略安全回归
+        working-directory: frontend
+        run: npm run e2e -- e2e/approval-usability.spec.ts e2e/policies-role-guard.spec.ts e2e/local-real-demo.spec.ts
 
       - name: 失败时上传 Playwright 诊断产物
         if: failure()

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"agenttoolgate/backend/internal/auth"
 	"agenttoolgate/backend/internal/config"
 	"agenttoolgate/backend/internal/model"
+	"agenttoolgate/backend/internal/policy"
 	"agenttoolgate/backend/internal/store"
 )
 
@@ -21,16 +23,35 @@ const approvalHardeningOtherRequester = "other-requester"
 
 type approvalRequesterOverrideStore struct {
 	store.Store
-	requestedBy string
+	requestedBy   string
+	requesterRole string
 }
 
-func approvalReviewableTestStore(st store.Store) store.Store {
-	return &approvalRequesterOverrideStore{Store: st, requestedBy: approvalHardeningOtherRequester}
+func approvalReviewableTestStore(st store.Store, requesterRoles ...string) store.Store {
+	requesterRole := roleOwner
+	if len(requesterRoles) > 0 {
+		requesterRole = requesterRoles[0]
+	}
+	return &approvalRequesterOverrideStore{
+		Store:         st,
+		requestedBy:   approvalHardeningOtherRequester,
+		requesterRole: requesterRole,
+	}
 }
 
 func (s *approvalRequesterOverrideStore) CreateApprovalRequest(ctx context.Context, input model.CreateApprovalRequestInput) (model.ApprovalRequest, error) {
 	if strings.TrimSpace(s.requestedBy) != "" {
 		input.RequestedBy = strings.TrimSpace(s.requestedBy)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(defaultJSON(input.DecisionPayloadJSON), &payload); err == nil {
+		if _, exists := payload["requesterRole"]; !exists {
+			frozenPayloadJSON, err := freezeApprovalRequesterRole(input.DecisionPayloadJSON, s.requesterRole)
+			if err != nil {
+				return model.ApprovalRequest{}, err
+			}
+			input.DecisionPayloadJSON = frozenPayloadJSON
+		}
 	}
 	return s.Store.CreateApprovalRequest(ctx, input)
 }
@@ -88,6 +109,176 @@ func TestApprovalSelfReviewForbiddenForApproveAndReject(t *testing.T) {
 	}
 }
 
+func TestLocalApprovalAllowsExplicitIndependentReviewerCredential(t *testing.T) {
+	const reviewerToken = "synthetic-local-reviewer-token-1234"
+	t.Setenv("AGT_LOCAL_REVIEWER_TOKEN", reviewerToken)
+
+	srv, st, workspace := newApprovalHardeningTestApp(t, false)
+	createMockTool(t, st, workspace.ID, "mock", "localreview", "Local Review", "write", "low", false)
+
+	callResp := postJSON(t, srv, "/api/tool-calls", `{"tool":"mock.localreview","arguments":{"message":"review me"}}`)
+	if callResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", callResp.Code, callResp.Body.String())
+	}
+	var response toolCallResponse
+	decodeBody(t, callResp.Body.Bytes(), &response)
+	if response.Status != "approval_required" || response.ApprovalID == "" {
+		t.Fatalf("expected approval_required, got %+v", response)
+	}
+
+	approveResp := postJSONWithBearer(t, srv, "/api/approvals/"+response.ApprovalID+"/approve", `{"reason":"reviewed locally"}`, reviewerToken)
+	if approveResp.Code != http.StatusOK {
+		t.Fatalf("expected explicit local reviewer credential to approve, got %d body=%s", approveResp.Code, approveResp.Body.String())
+	}
+	var action approvalActionResponse
+	decodeBody(t, approveResp.Body.Bytes(), &action)
+	if action.Approval.Status != "approved" || action.Approval.ReviewedBy != "local-reviewer" {
+		t.Fatalf("expected independent local reviewer identity, got %+v", action.Approval)
+	}
+}
+
+func TestApprovalRevalidatesDisabledToolBeforeTransition(t *testing.T) {
+	t.Parallel()
+
+	srv, st, workspace := newApprovalHardeningTestApp(t, true)
+	tool := createMockTool(t, st, workspace.ID, "mock", "disabledafterrequest", "Disabled After Request", "write", "low", false)
+
+	callResp := postJSON(t, srv, "/api/tool-calls", `{"tool":"mock.disabledafterrequest","arguments":{"message":"do not run"}}`)
+	if callResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", callResp.Code, callResp.Body.String())
+	}
+	var response toolCallResponse
+	decodeBody(t, callResp.Body.Bytes(), &response)
+
+	enabled := false
+	if _, err := st.UpdateTool(context.Background(), workspace.ID, tool.ID, model.UpdateToolInput{Enabled: &enabled}); err != nil {
+		t.Fatalf("disable tool: %v", err)
+	}
+
+	approveResp := postJSON(t, srv, "/api/approvals/"+response.ApprovalID+"/approve", "")
+	if approveResp.Code != http.StatusConflict {
+		t.Fatalf("expected 409 after tool was disabled, got %d body=%s", approveResp.Code, approveResp.Body.String())
+	}
+	assertApprovalStillPending(t, st, workspace.ID, response.ApprovalID)
+}
+
+func TestApprovalRevalidatesManagedPolicyBeforeTransition(t *testing.T) {
+	t.Parallel()
+
+	srv, st, workspace := newApprovalHardeningTestApp(t, true)
+	createMockTool(t, st, workspace.ID, "mock", "policychanged", "Policy Changed", "write", "low", false)
+
+	callResp := postJSON(t, srv, "/api/tool-calls", `{"tool":"mock.policychanged","arguments":{"message":"do not run"}}`)
+	if callResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", callResp.Code, callResp.Body.String())
+	}
+	var response toolCallResponse
+	decodeBody(t, callResp.Body.Bytes(), &response)
+
+	if _, err := st.CreatePolicyRule(context.Background(), model.CreatePolicyRuleInput{
+		WorkspaceID:     workspace.ID,
+		Name:            "deny pending call",
+		Enabled:         true,
+		Priority:        1000,
+		Effect:          policyDeny,
+		ConnectorType:   "mock",
+		ToolNamePattern: "mock.policychanged",
+		OperationType:   "*",
+		RiskLevel:       "*",
+		ResourcePattern: "*",
+		Reason:          "policy changed before approval",
+	}); err != nil {
+		t.Fatalf("create deny policy: %v", err)
+	}
+
+	approveResp := postJSON(t, srv, "/api/approvals/"+response.ApprovalID+"/approve", "")
+	if approveResp.Code != http.StatusConflict {
+		t.Fatalf("expected 409 after policy tightened, got %d body=%s", approveResp.Code, approveResp.Body.String())
+	}
+	assertApprovalStillPending(t, st, workspace.ID, response.ApprovalID)
+}
+
+func TestApprovalRevalidationUsesFrozenRequesterRole(t *testing.T) {
+	t.Parallel()
+
+	for _, requesterRole := range []string{roleAgent, "member"} {
+		requesterRole := requesterRole
+		t.Run(requesterRole, func(t *testing.T) {
+			t.Parallel()
+
+			srv, st, workspace := newApprovalHardeningTestApp(t, true)
+			tool := createMockTool(t, st, workspace.ID, "mock", "frozenrole"+requesterRole, "Frozen Role "+requesterRole, "write", "low", false)
+			requesterSubject := "requester-" + requesterRole
+			requesterCtx := RequestContext{
+				Identity: auth.Identity{
+					Mode:           "oidc",
+					Subject:        requesterSubject,
+					Email:          requesterSubject + "@example.test",
+					Name:           "Requester " + requesterRole,
+					OrganizationID: workspace.ZitadelOrganizationID,
+					Role:           requesterRole,
+				},
+				Workspace: workspace,
+				User: model.User{
+					ID:            requesterSubject,
+					WorkspaceID:   workspace.ID,
+					ZitadelUserID: requesterSubject,
+					Email:         requesterSubject + "@example.test",
+					Name:          "Requester " + requesterRole,
+					Role:          requesterRole,
+				},
+			}
+
+			response, err := srv.createToolCall(
+				context.Background(),
+				requesterCtx,
+				tool.Key(),
+				json.RawMessage(`{"message":"must not execute"}`),
+			)
+			if err != nil {
+				t.Fatalf("create requester tool call: %v", err)
+			}
+			if response.Status != "approval_required" || response.ApprovalID == "" {
+				t.Fatalf("expected pending approval, got %+v", response)
+			}
+
+			approval, err := st.GetApprovalRequestByID(context.Background(), workspace.ID, response.ApprovalID)
+			if err != nil {
+				t.Fatalf("get approval: %v", err)
+			}
+			frozenRole, err := frozenApprovalRequesterRole(approval)
+			if err != nil {
+				t.Fatalf("read frozen requester role: %v", err)
+			}
+			if frozenRole != requesterRole {
+				t.Fatalf("expected frozen requester role %q, got %q payload=%s", requesterRole, frozenRole, approval.DecisionPayloadJSON)
+			}
+
+			engine, err := policy.NewEngine(append([]policy.Rule{{
+				Name:     "deny-original-" + requesterRole,
+				Priority: 2000,
+				Match: policy.Match{
+					ToolNamespace: "mock",
+					ToolName:      tool.Name,
+					UserRole:      requesterRole,
+				},
+				Effect: policy.EffectDeny,
+				Reason: "original requester role is now denied",
+			}}, policy.DefaultRules()...))
+			if err != nil {
+				t.Fatalf("create tightened policy: %v", err)
+			}
+			srv.policies = engine
+
+			approveResp := postJSON(t, srv, "/api/approvals/"+response.ApprovalID+"/approve", "")
+			if approveResp.Code != http.StatusConflict {
+				t.Fatalf("owner approval must conflict after requester role deny, got %d body=%s", approveResp.Code, approveResp.Body.String())
+			}
+			assertApprovalStillPending(t, st, workspace.ID, response.ApprovalID)
+		})
+	}
+}
+
 func TestApprovalReviewReasonAndFrozenExecutionInput(t *testing.T) {
 	t.Parallel()
 
@@ -141,6 +332,9 @@ func TestApprovalReviewReasonAndFrozenExecutionInput(t *testing.T) {
 	}
 	if echo["message"] == "tampered" {
 		t.Fatalf("approval executed tampered input: %+v", echo)
+	}
+	if echo["token"] != "[REDACTED]" {
+		t.Fatalf("approval response must not return the frozen secret, got echo=%+v", echo)
 	}
 	call, err := st.GetToolCallByApprovalID(context.Background(), workspace.ID, response.ApprovalID)
 	if err != nil {
@@ -302,7 +496,36 @@ func newApprovalHardeningTestApp(t *testing.T, overrideRequester bool) (*App, st
 	}
 	var appStore store.Store = st
 	if overrideRequester {
-		appStore = approvalReviewableTestStore(st)
+		appStore = approvalReviewableTestStore(st, cfg.LocalRole)
 	}
 	return New(cfg, appStore, authenticator, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))), appStore, workspaces[0]
+}
+
+func postJSONWithBearer(t *testing.T, srv *App, path, body, token string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	return rec
+}
+
+func assertApprovalStillPending(t *testing.T, st store.Store, workspaceID, approvalID string) {
+	t.Helper()
+
+	approval, err := st.GetApprovalRequestByID(context.Background(), workspaceID, approvalID)
+	if err != nil {
+		t.Fatalf("get approval: %v", err)
+	}
+	if approval.Status != "pending" {
+		t.Fatalf("approval must remain pending, got %+v", approval)
+	}
+	call, err := st.GetToolCallByApprovalID(context.Background(), workspaceID, approvalID)
+	if err != nil {
+		t.Fatalf("get tool call: %v", err)
+	}
+	if call.Status != "approval_required" || call.ApprovalStatus != "pending" || string(call.OutputRedactedJSON) != "{}" {
+		t.Fatalf("tool call must remain unexecuted, got %+v", call)
+	}
 }

@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../co
 import { Skeleton } from "../components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { useI18n } from "../i18n";
+import { governanceActionLabel, governanceRiskLabel, governanceStatusLabel } from "../lib/governanceLabels";
 import type { DashboardSummary, Tool, ToolCall } from "../types";
 
 export function DashboardPage() {
@@ -195,7 +196,9 @@ export function DashboardPage() {
                       <div className="mt-1 text-sm text-muted-foreground">{call.durationMs}ms</div>
                     </div>
                     <div className="grid justify-items-end gap-2 text-right">
-                      <Badge variant={statusBadgeVariant(call.status)}>{call.status}</Badge>
+                      <Badge variant={statusBadgeVariant(call.status)} title={call.status}>
+                        {governanceStatusLabel(t, call.status)}
+                      </Badge>
                       <span className="text-xs text-muted-foreground">{new Date(call.createdAt).toLocaleString()}</span>
                     </div>
                   </Link>
@@ -306,10 +309,14 @@ export function DashboardPage() {
                           </Link>
                         </TableCell>
                         <TableCell>
-                          <Badge variant={operationBadgeVariant(tool.operationType)}>{tool.operationType}</Badge>
+                          <Badge variant={operationBadgeVariant(tool.operationType)} title={tool.operationType}>
+                            {governanceActionLabel(t, tool.operationType)}
+                          </Badge>
                         </TableCell>
                         <TableCell>
-                          <Badge variant={riskBadgeVariant(tool.riskLevel)}>{tool.riskLevel}</Badge>
+                          <Badge variant={riskBadgeVariant(tool.riskLevel)} title={tool.riskLevel}>
+                            {governanceRiskLabel(t, tool.riskLevel)}
+                          </Badge>
                         </TableCell>
                         <TableCell>
                           <Badge variant={tool.enabled ? "success" : "destructive"}>

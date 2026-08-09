@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Skeleton } from "../components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { useI18n } from "../i18n";
+import { governanceRiskLabel } from "../lib/governanceLabels";
 import { toast } from "sonner";
 import type { Tool } from "../types";
 
@@ -296,7 +297,9 @@ export function ToolsPage() {
                         <Badge variant={operationBadgeVariant(tool.operationType)}>{tool.operationType}</Badge>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={riskBadgeVariant(tool.riskLevel)}>{tool.riskLevel}</Badge>
+                        <Badge variant={riskBadgeVariant(tool.riskLevel)} title={tool.riskLevel}>
+                          {governanceRiskLabel(t, tool.riskLevel)}
+                        </Badge>
                       </TableCell>
                       <TableCell>
                         <Badge variant={tool.requiresApproval ? "pending" : "secondary"} className="gap-1">

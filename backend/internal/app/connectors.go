@@ -15,8 +15,8 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// DefaultBootstrapConnectors 返回启动时要自动创建的参考型 connector。
-// 这些记录只用于管理台展示和后续 sync 入口，不取代运行时的环境变量配置。
+// DefaultBootstrapConnectors 返回启动时自动创建的 connector。
+// 记录以环境变量为初始值；HTTP、GitHub 和 MCP 会在运行时读取可治理字段。
 func DefaultBootstrapConnectors(cfg config.Config) []model.BootstrapConnectorInput {
 	return []model.BootstrapConnectorInput{
 		{
@@ -167,7 +167,7 @@ func (a *App) handleCreateConnector(w http.ResponseWriter, r *http.Request) {
 		displayName = connectorType + "." + name
 	}
 
-	configJSON, err := normalizeConnectorConfigJSON(req.ConfigJSON)
+	configJSON, err := normalizeConnectorConfigJSONForType(connectorType, req.ConfigJSON)
 	if err != nil {
 		a.respondError(w, err)
 		return
@@ -220,9 +220,14 @@ func (a *App) handlePatchConnector(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	existing, err := a.store.GetConnectorByID(r.Context(), reqCtx.Workspace.ID, connectorID)
+	if err != nil {
+		a.respondError(w, err)
+		return
+	}
 	configJSON := json.RawMessage{}
 	if len(req.ConfigJSON) > 0 {
-		normalized, err := normalizeConnectorConfigJSON(req.ConfigJSON)
+		normalized, err := normalizeConnectorConfigJSONForType(existing.Type, req.ConfigJSON)
 		if err != nil {
 			a.respondError(w, err)
 			return
@@ -289,6 +294,19 @@ func normalizeConnectorConfigJSON(raw json.RawMessage) (json.RawMessage, error) 
 	return normalized, nil
 }
 
+func normalizeConnectorConfigJSONForType(connectorType string, raw json.RawMessage) (json.RawMessage, error) {
+	normalized, err := normalizeConnectorConfigJSON(raw)
+	if err != nil || !strings.EqualFold(strings.TrimSpace(connectorType), "mcp") {
+		return normalized, err
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(normalized, &decoded); err != nil {
+		return nil, badRequest("configJson must be a JSON object")
+	}
+	decoded["secretRefMode"] = mcpSecretRefModeWorkspace
+	return json.Marshal(decoded)
+}
+
 func redactConnectorsForResponse(connectors []model.Connector) []model.Connector {
 	items := make([]model.Connector, 0, len(connectors))
 	for _, connector := range connectors {
@@ -322,8 +340,13 @@ func redactConnectorConfigValue(value any) any {
 	case map[string]any:
 		redacted := make(map[string]any, len(typed))
 		for key, item := range typed {
+			if strings.EqualFold(strings.TrimSpace(key), "allowedHosts") {
+				// allowlist 是运行时治理配置，不包含凭据，必须原样保存。
+				redacted[key] = redactConnectorConfigValue(item)
+				continue
+			}
 			if strings.EqualFold(strings.TrimSpace(key), "headerSecretRefs") {
-				// headerSecretRefs 只保存环境变量引用名，不保存解析后的密钥值；需要保留引用名用于后端运行时解析。
+				// headerSecretRefs 保存 workspace Secret 名称，不保存解析后的密钥值。
 				redacted[key] = cloneConnectorSecretRefs(item)
 				continue
 			}

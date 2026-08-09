@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,10 +11,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -49,6 +53,39 @@ type hookControlDocument struct {
 	UpdatedAt string `json:"updatedAt,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 }
+
+type hookAgentGuardRequest struct {
+	Adapter          string `json:"adapter"`
+	Tool             string `json:"tool"`
+	ActionType       string `json:"actionType"`
+	Target           string `json:"target"`
+	WorkspaceRoot    string `json:"workspaceRoot,omitempty"`
+	WorkingDirectory string `json:"workingDirectory,omitempty"`
+	GuardDecision    string `json:"guardDecision,omitempty"`
+	GuardRiskLevel   string `json:"guardRiskLevel,omitempty"`
+	IsScript         bool   `json:"isScript"`
+	ContentEncoding  string `json:"contentEncoding"`
+	Content          string `json:"content"`
+	TicketID         string `json:"ticketId,omitempty"`
+}
+
+type hookAgentGuardResponse struct {
+	Decision       string `json:"decision"`
+	Reason         string `json:"reason,omitempty"`
+	ApprovalID     string `json:"approvalId,omitempty"`
+	ApprovalStatus string `json:"approvalStatus,omitempty"`
+	CallID         string `json:"callId,omitempty"`
+	Fingerprint    string `json:"fingerprint,omitempty"`
+}
+
+type hookTicketDocument struct {
+	TicketID      string  `json:"ticketId"`
+	Fingerprint   string  `json:"fingerprint"`
+	RequestDigest string  `json:"requestDigest"`
+	ExpiresAtUnix float64 `json:"expiresAtUnix"`
+}
+
+const hookTicketTTL = 10 * time.Minute
 
 func main() {
 	if code := run(os.Args[1:], os.Stdout, os.Stderr); code != 0 {
@@ -294,6 +331,9 @@ func findCLIRepoRoot(start string) (string, error) {
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(current, ".git")); err == nil {
+			return current, nil
+		}
+		if _, err := os.Stat(filepath.Join(current, ".agenttoolgate")); err == nil {
 			return current, nil
 		}
 		parent := filepath.Dir(current)
@@ -562,25 +602,711 @@ func runGuardHook(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	var result any
-	emit := true
-	if client == "claude" {
-		result, err = guard.EvaluateClaudeHookPayload(payload)
-	} else {
-		result, emit, err = guard.EvaluateCodexHookPayload(payload)
+	if hookExecutionDisabled() {
+		return 0
 	}
+	action, err := adaptHookAction(client, payload)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	if !emit {
+	if isAgentToolGateMCPTool(action.ToolName) {
 		return 0
 	}
-	if err := json.NewEncoder(stdout).Encode(result); err != nil {
+	repoRoot, ok := hookRepoRoot(action)
+	if !ok {
+		return 0
+	}
+	action = bindHookActionToRepo(action, repoRoot)
+	hookMode := readHookControlDocument(repoRoot).Mode
+	if hookMode == projectHookModeOff {
+		return 0
+	}
+
+	localDecision := guard.Evaluate(action)
+	request := buildHookAgentGuardRequest(client, action, repoRoot, localDecision)
+	if isHookFastPathRepoRead(action, repoRoot) {
+		return 0
+	}
+	if hookMode == projectHookModeDryRun {
+		if err := recordHookDryRun(repoRoot, action, request); err != nil {
+			fmt.Fprintln(stderr, "写入 hook dry-run 预览失败")
+			return 1
+		}
+		return 0
+	}
+
+	ticketID, ticketErr := loadHookTicket(repoRoot, request)
+	if ticketErr != nil {
+		return emitHookDecision(client, hookAgentGuardResponse{
+			Decision: "deny",
+			Reason:   "hook ticket cleanup failed",
+		}, stdout, stderr)
+	}
+	request.TicketID = ticketID
+	status, decision, requestErr := callHookAgentGuard(request)
+	if requestErr != nil {
+		if status != 0 {
+			return emitHookDecision(client, hookAgentGuardResponse{
+				Decision: "deny",
+				Reason:   "agenttoolgate returned an invalid response",
+			}, stdout, stderr)
+		}
+		if isExplicitLowRiskOfflineHook(action, localDecision) {
+			if err := recordHookPendingAudit(repoRoot, request, "ATG offline, local pending audit"); err != nil {
+				return emitHookDecision(client, hookAgentGuardResponse{
+					Decision: "deny",
+					Reason:   "ATG offline, pending audit unavailable",
+				}, stdout, stderr)
+			}
+			return emitHookDecision(client, hookAgentGuardResponse{Decision: "allow"}, stdout, stderr)
+		}
+		reason := "ATG offline, action not explicitly low risk"
+		if strings.EqualFold(strings.TrimSpace(localDecision.Decision), "deny") {
+			reason = "ATG offline, sensitive target denied"
+		}
+		return emitHookDecision(client, hookAgentGuardResponse{
+			Decision: "deny",
+			Reason:   reason,
+		}, stdout, stderr)
+	}
+
+	decision = enforceHookDecisionFloor(localDecision, request, normalizeHookAgentGuardResponse(status, decision))
+	if err := updateHookTicket(repoRoot, request, decision); err != nil {
+		reason := "hook ticket cleanup failed"
+		if strings.EqualFold(strings.TrimSpace(decision.Decision), "deny_with_ticket") {
+			reason = "hook ticket persistence failed"
+		}
+		decision = hookAgentGuardResponse{Decision: "deny", Reason: reason}
+	}
+	return emitHookDecision(client, decision, stdout, stderr)
+}
+
+func hookExecutionDisabled() bool {
+	return os.Getenv("TRELLIS_HOOKS") == "0" || os.Getenv("TRELLIS_DISABLE_HOOKS") == "1"
+}
+
+func isAgentToolGateMCPTool(toolName string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(toolName)), "mcp__agenttoolgate__")
+}
+
+func adaptHookAction(client string, payload []byte) (guard.ActionInput, error) {
+	if client == "claude" {
+		return guard.AdaptClaudePayload(payload)
+	}
+	return guard.AdaptCodexPayload(payload)
+}
+
+func hookRepoRoot(action guard.ActionInput) (string, bool) {
+	for _, candidate := range []string{action.CWD, currentWorkingDirectory()} {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		root, err := findCLIRepoRoot(candidate)
+		if err == nil {
+			return root, true
+		}
+	}
+	return "", false
+}
+
+func currentWorkingDirectory() string {
+	current, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return current
+}
+
+func bindHookActionToRepo(action guard.ActionInput, repoRoot string) guard.ActionInput {
+	action.ProjectRoot = repoRoot
+	if workingRoot, err := findCLIRepoRoot(action.CWD); err != nil || !sameHookPath(workingRoot, repoRoot) {
+		action.CWD = repoRoot
+	}
+	return action
+}
+
+func sameHookPath(left, right string) bool {
+	return strings.EqualFold(filepath.Clean(strings.TrimSpace(left)), filepath.Clean(strings.TrimSpace(right)))
+}
+
+func buildHookAgentGuardRequest(client string, action guard.ActionInput, repoRoot string, localDecision guard.Decision) hookAgentGuardRequest {
+	actionType := strings.ToLower(strings.TrimSpace(action.ActionType))
+	target := strings.TrimSpace(action.Target)
+	content := strings.TrimSpace(action.ContentPreview)
+	switch actionType {
+	case "command", "exec", "execute":
+		actionType = "exec"
+		content = strings.TrimSpace(action.Command)
+		if target == "" {
+			target = extractHookCommandTarget(content)
+		}
+	case "network":
+		actionType = "read"
+		if method := strings.ToUpper(strings.TrimSpace(action.NetworkMethod)); method != "" && method != http.MethodGet && method != http.MethodHead {
+			actionType = "write"
+		}
+		if target == "" {
+			target = strings.TrimSpace(action.NetworkURL)
+		}
+	default:
+		if strings.Contains(strings.ToLower(action.ToolName), "read") {
+			actionType = "read"
+		} else if actionType == "" || actionType == "unknown" {
+			actionType = "write"
+		}
+	}
+	if target == "" {
+		target = strings.TrimSpace(action.NetworkURL)
+	}
+	if target == "" {
+		target = strings.TrimSpace(action.ToolName)
+	}
+	if content == "" && actionType == "exec" {
+		content = strings.TrimSpace(action.Command)
+	}
+	return hookAgentGuardRequest{
+		Adapter:          client,
+		Tool:             strings.TrimSpace(action.ToolName),
+		ActionType:       actionType,
+		Target:           target,
+		WorkspaceRoot:    strings.TrimSpace(repoRoot),
+		WorkingDirectory: strings.TrimSpace(action.CWD),
+		GuardDecision:    strings.ToLower(strings.TrimSpace(localDecision.Decision)),
+		GuardRiskLevel:   strings.ToLower(strings.TrimSpace(localDecision.RiskLevel)),
+		IsScript:         isHookScriptTarget(target) || isHookScriptTarget(content),
+		ContentEncoding:  "plain",
+		Content:          content,
+	}
+}
+
+func isHookFastPathRepoRead(action guard.ActionInput, repoRoot string) bool {
+	actionType := strings.ToLower(strings.TrimSpace(action.ActionType))
+	toolName := strings.ToLower(strings.TrimSpace(action.ToolName))
+	if actionType != "read" || toolName != "read" {
+		return false
+	}
+	if !hookReadTargetWithinRepo(action, repoRoot) {
+		return false
+	}
+	candidate := action
+	candidate.ProjectRoot = repoRoot
+	if strings.TrimSpace(candidate.CWD) == "" {
+		candidate.CWD = repoRoot
+	}
+	decision := guard.Evaluate(candidate)
+	return decision.Decision == "allow" && decision.RiskLevel == "low"
+}
+
+func hookReadTargetWithinRepo(action guard.ActionInput, repoRoot string) bool {
+	target := strings.TrimSpace(action.Target)
+	if target == "" {
+		return false
+	}
+	root, err := filepath.Abs(repoRoot)
+	if err != nil {
+		return false
+	}
+	base := strings.TrimSpace(action.CWD)
+	if base == "" {
+		base = root
+	}
+	candidate := target
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(base, candidate)
+	}
+	candidate, err = filepath.Abs(candidate)
+	if err != nil {
+		return false
+	}
+	if resolvedRoot, resolveErr := filepath.EvalSymlinks(root); resolveErr == nil {
+		root = resolvedRoot
+	}
+	if resolvedCandidate, resolveErr := filepath.EvalSymlinks(candidate); resolveErr == nil {
+		candidate = resolvedCandidate
+	} else {
+		return false
+	}
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil || relative == "." {
+		return err == nil
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
+}
+
+func extractHookCommandTarget(command string) string {
+	if target := extractHookPowerShellTarget(command); target != "" {
+		return target
+	}
+	return strings.TrimSpace(command)
+}
+
+func extractHookPowerShellTarget(command string) string {
+	specs := []struct {
+		Name        string
+		TargetIndex int
+	}{
+		{Name: "set-content", TargetIndex: 0},
+		{Name: "add-content", TargetIndex: 0},
+		{Name: "out-file", TargetIndex: 0},
+		{Name: "new-item", TargetIndex: 0},
+		{Name: "copy-item", TargetIndex: 1},
+		{Name: "move-item", TargetIndex: 1},
+		{Name: "rename-item", TargetIndex: 1},
+	}
+	lowerCommand := strings.ToLower(command)
+	for _, spec := range specs {
+		offset := strings.Index(lowerCommand, spec.Name)
+		if offset < 0 {
+			continue
+		}
+		tokens := splitHookCommandTokens(command[offset+len(spec.Name):])
+		positionals := make([]string, 0, 2)
+		for index := 0; index < len(tokens); index++ {
+			token := tokens[index]
+			if token == ";" || token == "&" || token == "|" {
+				break
+			}
+			lowerToken := strings.ToLower(token)
+			if isHookTargetParameter(lowerToken) && index+1 < len(tokens) {
+				return tokens[index+1]
+			}
+			if strings.HasPrefix(token, "-") {
+				if hookParameterConsumesValue(lowerToken) && index+1 < len(tokens) {
+					index++
+				}
+				continue
+			}
+			positionals = append(positionals, token)
+		}
+		if len(positionals) > spec.TargetIndex {
+			return positionals[spec.TargetIndex]
+		}
+	}
+	return ""
+}
+
+func splitHookCommandTokens(value string) []string {
+	var tokens []string
+	var current strings.Builder
+	var quote rune
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, current.String())
+		current.Reset()
+	}
+	for _, char := range value {
+		if quote != 0 {
+			if char == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(char)
+			continue
+		}
+		switch char {
+		case '\'', '"':
+			quote = char
+		case ';', '&', '|':
+			flush()
+			tokens = append(tokens, string(char))
+		case ' ', '\t', '\r', '\n':
+			flush()
+		default:
+			current.WriteRune(char)
+		}
+	}
+	flush()
+	return tokens
+}
+
+func isHookTargetParameter(value string) bool {
+	switch value {
+	case "-path", "-literalpath", "-filepath", "-destination":
+		return true
+	default:
+		return false
+	}
+}
+
+func hookParameterConsumesValue(value string) bool {
+	switch value {
+	case "-credential", "-encoding", "-filter", "-include", "-exclude", "-itemtype", "-name", "-newname", "-stream", "-type", "-value":
+		return true
+	default:
+		return false
+	}
+}
+
+func isHookScriptTarget(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	for _, suffix := range []string{".ps1", ".psm1", ".vbs", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".py", ".sh", ".bash", ".bat", ".cmd", ".pl", ".rb", ".php"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func hookAgentGuardURL() string {
+	base := strings.TrimRight(strings.TrimSpace(os.Getenv("AGENTTOOLGATE_URL")), "/")
+	if base == "" {
+		base = "http://127.0.0.1:8080"
+	}
+	return base + "/api/agent-guard/evaluate"
+}
+
+func callHookAgentGuard(payload hookAgentGuardRequest) (int, hookAgentGuardResponse, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return -1, hookAgentGuardResponse{}, err
+	}
+	req, err := http.NewRequest(http.MethodPost, hookAgentGuardURL(), bytes.NewReader(raw))
+	if err != nil {
+		return -1, hookAgentGuardResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if token := strings.TrimSpace(os.Getenv("AGENTTOOLGATE_BEARER_TOKEN")); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if workspace := firstNonEmptyString(
+		os.Getenv("AGENTTOOLGATE_WORKSPACE_ORG_ID"),
+		os.Getenv("WORKSPACE_ORG_ID"),
+	); workspace != "" {
+		req.Header.Set("X-Workspace-Org-Id", workspace)
+	}
+	response, err := (&http.Client{Timeout: hookHTTPTimeout()}).Do(req)
+	if err != nil {
+		return 0, hookAgentGuardResponse{}, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		return response.StatusCode, hookAgentGuardResponse{}, err
+	}
+	var decision hookAgentGuardResponse
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(&decision); err != nil {
+		return response.StatusCode, hookAgentGuardResponse{}, fmt.Errorf("invalid agent guard response")
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return response.StatusCode, hookAgentGuardResponse{}, fmt.Errorf("invalid agent guard response")
+	}
+	return response.StatusCode, decision, nil
+}
+
+func hookHTTPTimeout() time.Duration {
+	const defaultTimeout = 200 * time.Millisecond
+	raw := strings.TrimSpace(os.Getenv("AGENTTOOLGATE_HOOK_TIMEOUT_MS"))
+	if raw == "" {
+		return defaultTimeout
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 50 || value > 2000 {
+		return defaultTimeout
+	}
+	return time.Duration(value) * time.Millisecond
+}
+
+func normalizeHookAgentGuardResponse(status int, response hookAgentGuardResponse) hookAgentGuardResponse {
+	if status < 200 || status >= 300 {
+		return hookAgentGuardResponse{
+			Decision: "deny",
+			Reason:   fmt.Sprintf("agenttoolgate request failed (HTTP %d)", status),
+		}
+	}
+	response.Decision = strings.ToLower(strings.TrimSpace(response.Decision))
+	switch response.Decision {
+	case "allow", "deny":
+		return response
+	case "deny_with_ticket":
+		if strings.TrimSpace(response.ApprovalID) != "" && strings.TrimSpace(response.Fingerprint) != "" {
+			return response
+		}
+		return hookAgentGuardResponse{Decision: "deny", Reason: "agenttoolgate returned an invalid ticket response"}
+	default:
+		return hookAgentGuardResponse{Decision: "deny", Reason: "agenttoolgate returned an invalid decision"}
+	}
+}
+
+func enforceHookDecisionFloor(local guard.Decision, request hookAgentGuardRequest, response hookAgentGuardResponse) hookAgentGuardResponse {
+	switch strings.ToLower(strings.TrimSpace(local.Decision)) {
+	case "deny":
+		return hookAgentGuardResponse{
+			Decision: "deny",
+			Reason:   firstNonEmptyString(local.Reason, "Guard Core denied this action"),
+		}
+	case "ask":
+		if strings.EqualFold(strings.TrimSpace(response.Decision), "allow") && strings.TrimSpace(request.TicketID) == "" {
+			return hookAgentGuardResponse{
+				Decision: "deny",
+				Reason:   firstNonEmptyString(local.Reason, "Guard Core requires confirmation"),
+			}
+		}
+	}
+	return response
+}
+
+func emitHookDecision(client string, decision hookAgentGuardResponse, stdout, stderr io.Writer) int {
+	result := strings.ToLower(strings.TrimSpace(decision.Decision))
+	if client == "codex" && result == "allow" {
+		return 0
+	}
+	permission := "deny"
+	if client == "claude" {
+		switch result {
+		case "allow":
+			permission = "allow"
+		case "deny_with_ticket":
+			permission = "ask"
+		}
+	}
+	reason := strings.TrimSpace(decision.Reason)
+	if reason == "" {
+		switch result {
+		case "allow":
+			reason = "allowed"
+		case "deny_with_ticket":
+			reason = "approval required"
+		default:
+			reason = "denied"
+		}
+	}
+	if decision.ApprovalID != "" {
+		reason += " (ticket: " + decision.ApprovalID + ")"
+	}
+	specific := map[string]string{
+		"hookEventName":      "PreToolUse",
+		"permissionDecision": permission,
+	}
+	if permission != "allow" {
+		specific["permissionDecisionReason"] = reason
+	}
+	output := map[string]any{"hookSpecificOutput": specific}
+	if err := json.NewEncoder(stdout).Encode(output); err != nil {
 		fmt.Fprintln(stderr, "输出 hook 决策失败")
 		return 1
 	}
 	return 0
+}
+
+func isExplicitLowRiskOfflineHook(action guard.ActionInput, decision guard.Decision) bool {
+	if strings.ToLower(strings.TrimSpace(decision.Decision)) != "allow" || strings.ToLower(strings.TrimSpace(decision.RiskLevel)) != "low" {
+		return false
+	}
+	if strings.TrimSpace(action.NetworkURL) != "" {
+		return false
+	}
+	command := strings.TrimSpace(action.Command)
+	if command == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(action.ActionType)) {
+	case "command", "exec", "execute":
+	default:
+		return false
+	}
+	return guard.IsExplicitReadOnlyCommand(command)
+}
+
+func hookRequestDigest(payload hookAgentGuardRequest) string {
+	fields := []any{
+		payload.Adapter,
+		payload.Tool,
+		payload.ActionType,
+		payload.Target,
+		payload.WorkspaceRoot,
+		payload.WorkingDirectory,
+		payload.GuardDecision,
+		payload.GuardRiskLevel,
+		payload.IsScript,
+		payload.ContentEncoding,
+		payload.Content,
+	}
+	raw, _ := json.Marshal(fields)
+	sum := sha256.Sum256(raw)
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func hookTicketPath(repoRoot string, payload hookAgentGuardRequest) string {
+	return filepath.Join(repoRoot, ".tmp", "agenttoolgate", "hook-tickets", hookRequestDigest(payload)+".json")
+}
+
+func loadHookTicket(repoRoot string, payload hookAgentGuardRequest) (string, error) {
+	path := hookTicketPath(repoRoot, payload)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	var doc hookTicketDocument
+	if err := json.Unmarshal(raw, &doc); err != nil ||
+		strings.TrimSpace(doc.TicketID) == "" ||
+		strings.TrimSpace(doc.Fingerprint) == "" ||
+		doc.RequestDigest != hookRequestDigest(payload) ||
+		doc.ExpiresAtUnix <= float64(time.Now().Unix()) {
+		if err := removeHookTicket(path); err != nil {
+			return "", err
+		}
+		return "", nil
+	}
+	return strings.TrimSpace(doc.TicketID), nil
+}
+
+func updateHookTicket(repoRoot string, payload hookAgentGuardRequest, response hookAgentGuardResponse) error {
+	switch response.Decision {
+	case "deny_with_ticket":
+		return writeHookTicket(repoRoot, payload, response)
+	case "allow", "deny":
+		return removeHookTicket(hookTicketPath(repoRoot, payload))
+	}
+	return nil
+}
+
+func removeHookTicket(path string) error {
+	err := os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+func writeHookTicket(repoRoot string, payload hookAgentGuardRequest, response hookAgentGuardResponse) error {
+	if strings.TrimSpace(response.ApprovalID) == "" || strings.TrimSpace(response.Fingerprint) == "" {
+		return errors.New("hook ticket is incomplete")
+	}
+	path := hookTicketPath(repoRoot, payload)
+	doc := hookTicketDocument{
+		TicketID:      strings.TrimSpace(response.ApprovalID),
+		Fingerprint:   strings.TrimSpace(response.Fingerprint),
+		RequestDigest: hookRequestDigest(payload),
+		ExpiresAtUnix: float64(time.Now().Add(hookTicketTTL).Unix()),
+	}
+	return writeHookJSONFile(path, doc)
+}
+
+func writeHookJSONFile(path string, value any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	raw = append(raw, '\n')
+	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(raw); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func recordHookDryRun(repoRoot string, action guard.ActionInput, request hookAgentGuardRequest) error {
+	decision := guard.Evaluate(action)
+	record := map[string]any{
+		"workspace":       firstNonEmptyString(os.Getenv("AGENTTOOLGATE_WORKSPACE_ORG_ID"), os.Getenv("WORKSPACE_ORG_ID"), filepath.Base(repoRoot)),
+		"actor":           firstNonEmptyString(os.Getenv("AGENTTOOLGATE_ACTOR"), os.Getenv("USER"), os.Getenv("USERNAME")),
+		"adapter":         request.Adapter,
+		"tool":            request.Tool,
+		"action":          request.ActionType,
+		"target":          redactHookTarget(request.Target),
+		"mode":            "dry-run",
+		"riskLevel":       decision.RiskLevel,
+		"decisionPreview": decision.Decision,
+		"signals":         decision.Signals,
+		"time":            time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	return appendHookJSONLine(filepath.Join(repoRoot, ".tmp", "agenttoolgate", "hook-dry-run.jsonl"), record)
+}
+
+func recordHookPendingAudit(repoRoot string, request hookAgentGuardRequest, reason string) error {
+	record := map[string]any{
+		"workspace": firstNonEmptyString(os.Getenv("AGENTTOOLGATE_WORKSPACE_ORG_ID"), os.Getenv("WORKSPACE_ORG_ID"), filepath.Base(repoRoot)),
+		"actor":     firstNonEmptyString(os.Getenv("AGENTTOOLGATE_ACTOR"), os.Getenv("USER"), os.Getenv("USERNAME")),
+		"tool":      request.Tool,
+		"action":    request.ActionType,
+		"target":    redactHookTarget(request.Target),
+		"time":      time.Now().UTC().Format(time.RFC3339Nano),
+		"reason":    reason,
+		"offline":   true,
+	}
+	return appendHookJSONLine(filepath.Join(repoRoot, ".tmp", "local-action-firewall", "pending-audit.jsonl"), record)
+}
+
+func appendHookJSONLine(path string, value any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.Write(append(raw, '\n'))
+	return err
+}
+
+var hookSensitiveTargetPattern = regexp.MustCompile(`(?i)\b(token|access_token|api_key|key|secret|password|auth|signature|cookie)\s*[:=]\s*([^\s&;]+)`)
+var hookBearerPattern = regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+`)
+
+func redactHookTarget(target string) string {
+	trimmed := strings.TrimSpace(target)
+	parsed, err := url.Parse(trimmed)
+	if err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" {
+		parsed.User = nil
+		query := parsed.Query()
+		for key := range query {
+			if isSensitiveHookTargetKey(key) {
+				query.Set(key, "[REDACTED]")
+			}
+		}
+		parsed.RawQuery = query.Encode()
+		parsed.Fragment = ""
+		return parsed.String()
+	}
+	redacted := hookSensitiveTargetPattern.ReplaceAllString(trimmed, "$1=[REDACTED]")
+	return hookBearerPattern.ReplaceAllString(redacted, "Bearer [REDACTED]")
+}
+
+func isSensitiveHookTargetKey(key string) bool {
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), "-", "_")
+	for _, marker := range []string{"token", "secret", "password", "auth", "signature", "cookie"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return normalized == "key" || normalized == "api_key" || strings.HasSuffix(normalized, "_key")
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func openStore(ctx context.Context, cfg config.Config) (store.Store, error) {

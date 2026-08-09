@@ -29,8 +29,13 @@ type Authenticator struct {
 }
 
 func NewAuthenticator(ctx context.Context, cfg config.Config) (*Authenticator, error) {
-	if !cfg.UsesOIDC() {
+	switch strings.ToLower(strings.TrimSpace(cfg.AuthMode)) {
+	case "local":
 		return &Authenticator{cfg: cfg}, nil
+	case "oidc":
+		// 继续初始化 OIDC provider。
+	default:
+		return nil, fmt.Errorf("unsupported AUTH_MODE %q: expected local or oidc", cfg.AuthMode)
 	}
 
 	provider, err := oidc.NewProvider(ctx, cfg.OIDCIssuerURL)
@@ -85,10 +90,6 @@ func (a *Authenticator) Authenticate(ctx context.Context, bearerToken, workspace
 		Role:           claimString(claims, a.cfg.OIDCRoleClaim),
 	}
 
-	if identity.OrganizationID == "" {
-		identity.OrganizationID = strings.TrimSpace(workspaceOrgID)
-	}
-
 	if identity.Subject == "" {
 		identity.Subject = token.Subject
 	}
@@ -128,14 +129,22 @@ func (a *Authenticator) ResolvePrincipal(ctx context.Context, st store.Store, id
 }
 
 func (a *Authenticator) resolveWorkspace(ctx context.Context, st store.Store, identity Identity) (model.Workspace, error) {
-	if identity.OrganizationID != "" {
-		workspace, err := st.GetWorkspaceByOrganizationID(ctx, identity.OrganizationID)
+	organizationID := strings.TrimSpace(identity.OrganizationID)
+	if organizationID != "" {
+		workspace, err := st.GetWorkspaceByOrganizationID(ctx, organizationID)
 		if err == nil {
 			return workspace, nil
 		}
 		if !errors.Is(err, store.ErrNotFound) {
 			return model.Workspace{}, err
 		}
+		if a.cfg.UsesOIDC() {
+			return model.Workspace{}, fmt.Errorf("OIDC organization %q is not mapped to a workspace: %w", organizationID, store.ErrNotFound)
+		}
+	}
+
+	if a.cfg.UsesOIDC() {
+		return model.Workspace{}, errors.New("OIDC identity is missing the configured workspace organization claim")
 	}
 
 	workspaces, err := st.ListWorkspaces(ctx)

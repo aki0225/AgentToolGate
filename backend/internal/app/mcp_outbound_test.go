@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +22,9 @@ func TestMCPOutboundSyncAndGovernedCallFlow(t *testing.T) {
 	t.Parallel()
 
 	mockServer := newMockOutboundMCPServer(t)
-	srv, st, workspace := newMCPAppTestServer(t, config.Config{})
+	srv, st, workspace := newMCPAppTestServer(t, config.Config{
+		MCPAllowedHosts: []string{mustURLHost(t, mockServer.URL)},
+	})
 
 	connector, err := st.CreateConnector(context.Background(), model.CreateConnectorInput{
 		WorkspaceID: workspace.ID,
@@ -136,13 +137,29 @@ func TestMCPOutboundSyncAndGovernedCallFlow(t *testing.T) {
 	}
 }
 
-func TestMCPOutboundHeaderSecretRefsInjectEnvAndDoNotLeak(t *testing.T) {
-	const secretRef = "MCP_WEATHER_AUTH_TEST"
+func TestMCPOutboundHeaderSecretRefsUseWorkspaceSecretAndDoNotLeak(t *testing.T) {
+	const secretRef = "mcp_weather_auth"
+	const secretEnv = "MCP_WEATHER_AUTH_TEST"
 	const secretValue = "Bearer mcp-secret-token-12345"
-	t.Setenv(secretRef, secretValue)
+	t.Setenv(secretEnv, secretValue)
 
 	mockServer := newMockOutboundMCPServer(t)
-	srv, st, workspace := newMCPAppTestServer(t, config.Config{})
+	srv, st, workspace := newMCPAppTestServer(t, config.Config{
+		MCPAllowedHosts: []string{mustURLHost(t, mockServer.URL)},
+	})
+
+	createSecretResp := postJSON(t, srv, "/api/secrets", fmt.Sprintf(`{
+		"name":%q,
+		"description":"MCP auth token",
+		"enabled":true,
+		"secretType":"token",
+		"valueSource":"env",
+		"valueRef":%q,
+		"metadata":{"scope":"mcp"}
+	}`, secretRef, secretEnv))
+	if createSecretResp.Code != http.StatusCreated {
+		t.Fatalf("create workspace Secret failed: %d body=%s", createSecretResp.Code, createSecretResp.Body.String())
+	}
 
 	createResp := postJSON(t, srv, "/api/connectors", fmt.Sprintf(`{
 		"type":"mcp",
@@ -168,6 +185,13 @@ func TestMCPOutboundHeaderSecretRefsInjectEnvAndDoNotLeak(t *testing.T) {
 
 	var created model.Connector
 	decodeBody(t, createResp.Body.Bytes(), &created)
+	storedConnector, err := st.GetConnectorByID(context.Background(), workspace.ID, created.ID)
+	if err != nil {
+		t.Fatalf("get stored connector: %v", err)
+	}
+	if !strings.Contains(string(storedConnector.ConfigJSON), `"secretRefMode":"workspace"`) {
+		t.Fatalf("new MCP connector must use workspace Secret mode, got %s", storedConnector.ConfigJSON)
+	}
 	syncResp := postJSON(t, srv, "/api/connectors/"+created.ID+"/sync", `{}`)
 	if syncResp.Code != http.StatusOK {
 		t.Fatalf("sync with secret ref failed: %d body=%s", syncResp.Code, syncResp.Body.String())
@@ -203,12 +227,115 @@ func TestMCPOutboundHeaderSecretRefsInjectEnvAndDoNotLeak(t *testing.T) {
 	}
 }
 
-func TestMCPOutboundMissingSecretRefFailsBeforeApprovalAndRemoteCall(t *testing.T) {
-	const secretRef = "MCP_MISSING_AUTH_TEST"
-	_ = os.Unsetenv(secretRef)
+func TestMCPOutboundRedactsResolvedHeaderSecretsFromOrdinaryOutputFields(t *testing.T) {
+	const (
+		shortSecret    = "xy"
+		alphabetSecret = "orchid"
+	)
+	t.Setenv("MCP_SHORT_SECRET_ENV", shortSecret)
+	t.Setenv("MCP_ALPHABET_SECRET_ENV", alphabetSecret)
 
 	mockServer := newMockOutboundMCPServer(t)
-	srv, st, workspace := newMCPAppTestServer(t, config.Config{})
+	mockServer.outputReflections = []string{shortSecret, alphabetSecret}
+	srv, st, workspace := newMCPAppTestServer(t, config.Config{
+		MCPAllowedHosts: []string{mustURLHost(t, mockServer.URL)},
+	})
+	for _, secret := range []struct {
+		name     string
+		valueRef string
+	}{
+		{name: "mcp_short_secret", valueRef: "MCP_SHORT_SECRET_ENV"},
+		{name: "mcp_alphabet_secret", valueRef: "MCP_ALPHABET_SECRET_ENV"},
+	} {
+		if _, err := st.CreateSecret(context.Background(), model.CreateSecretInput{
+			WorkspaceID:    workspace.ID,
+			WorkspaceOrgID: workspace.ZitadelOrganizationID,
+			Name:           secret.name,
+			Description:    "MCP reflected header Secret",
+			Enabled:        true,
+			SecretType:     "token",
+			ValueSource:    "env",
+			ValueRef:       secret.valueRef,
+			Metadata:       json.RawMessage(`{"scope":"mcp"}`),
+		}); err != nil {
+			t.Fatalf("create Secret %s: %v", secret.name, err)
+		}
+	}
+
+	connector, err := st.CreateConnector(context.Background(), model.CreateConnectorInput{
+		WorkspaceID: workspace.ID,
+		Type:        "mcp",
+		Name:        "reflected_secrets",
+		DisplayName: "Reflected Secrets MCP",
+		ConfigJSON: mustBootstrapConnectorJSON(map[string]any{
+			"transport":     "sse",
+			"url":           mockServer.URL + "/mcp/sse",
+			"secretRefMode": mcpSecretRefModeWorkspace,
+			"headerSecretRefs": map[string]string{
+				"X-Short-Auth":    "mcp_short_secret",
+				"X-Alphabet-Auth": "mcp_alphabet_secret",
+			},
+		}),
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create connector: %v", err)
+	}
+	syncResp := postJSON(t, srv, "/api/connectors/"+connector.ID+"/sync", `{}`)
+	if syncResp.Code != http.StatusOK {
+		t.Fatalf("sync connector: %d body=%s", syncResp.Code, syncResp.Body.String())
+	}
+
+	readResp := postJSON(t, srv, "/api/tool-calls", `{"tool":"mcp_reflected_secrets.get_forecast","arguments":{"city":"Shanghai"}}`)
+	if readResp.Code != http.StatusOK {
+		t.Fatalf("MCP call failed: %d body=%s", readResp.Code, readResp.Body.String())
+	}
+	var response toolCallResponse
+	decodeBody(t, readResp.Body.Bytes(), &response)
+	if response.Status != "success" {
+		t.Fatalf("expected MCP success, got %+v", response)
+	}
+	apiOutput, err := json.Marshal(response.Result)
+	if err != nil {
+		t.Fatalf("marshal MCP result: %v", err)
+	}
+	if !mockServer.sawHeader("X-Short-Auth", shortSecret) || !mockServer.sawHeader("X-Alphabet-Auth", alphabetSecret) {
+		t.Fatalf("expected upstream MCP server to receive both resolved header Secrets")
+	}
+	for _, secret := range []string{shortSecret, alphabetSecret} {
+		if strings.Contains(string(apiOutput), secret) {
+			t.Fatalf("MCP API result leaked resolved Secret %q: %s", secret, apiOutput)
+		}
+	}
+	if !strings.Contains(string(apiOutput), "[REDACTED]") {
+		t.Fatalf("expected exact Secret redaction in MCP API result: %s", apiOutput)
+	}
+	if !strings.Contains(string(apiOutput), `"[REDACTED]#2"`) {
+		t.Fatalf("expected colliding redacted MCP keys to be preserved: %s", apiOutput)
+	}
+
+	calls, err := st.ListToolCalls(context.Background(), workspace.ID)
+	if err != nil {
+		t.Fatalf("list tool calls: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected one MCP tool call, got %d", len(calls))
+	}
+	for _, secret := range []string{shortSecret, alphabetSecret} {
+		if strings.Contains(string(calls[0].OutputRedactedJSON), secret) {
+			t.Fatalf("MCP audit leaked resolved Secret %q: %s", secret, calls[0].OutputRedactedJSON)
+		}
+	}
+}
+
+func TestMCPOutboundEnvWithoutWorkspaceSecretFailsBeforeApprovalAndRemoteCall(t *testing.T) {
+	const secretRef = "MCP_MISSING_AUTH_TEST"
+	t.Setenv(secretRef, "Bearer env-fallback-must-not-be-used")
+
+	mockServer := newMockOutboundMCPServer(t)
+	srv, st, workspace := newMCPAppTestServer(t, config.Config{
+		MCPAllowedHosts: []string{mustURLHost(t, mockServer.URL)},
+	})
 
 	connector, err := st.CreateConnector(context.Background(), model.CreateConnectorInput{
 		WorkspaceID: workspace.ID,
@@ -216,8 +343,9 @@ func TestMCPOutboundMissingSecretRefFailsBeforeApprovalAndRemoteCall(t *testing.
 		Name:        "missing_secret",
 		DisplayName: "Missing Secret MCP",
 		ConfigJSON: mustBootstrapConnectorJSON(map[string]any{
-			"transport": "sse",
-			"url":       mockServer.URL + "/mcp/sse",
+			"transport":     "sse",
+			"url":           mockServer.URL + "/mcp/sse",
+			"secretRefMode": mcpSecretRefModeWorkspace,
 			"headerSecretRefs": map[string]string{
 				"Authorization": secretRef,
 			},
@@ -278,6 +406,66 @@ func TestMCPOutboundMissingSecretRefFailsBeforeApprovalAndRemoteCall(t *testing.
 	}
 }
 
+func TestMCPOutboundLegacyEnvSecretRefDoesNotReadProcessEnvironment(t *testing.T) {
+	const secretRef = "MCP_LEGACY_AUTH_TEST"
+	const secretValue = "Bearer legacy-mcp-secret"
+	t.Setenv(secretRef, secretValue)
+
+	mockServer := newMockOutboundMCPServer(t)
+	srv, st, workspace := newMCPAppTestServer(t, config.Config{
+		MCPAllowedHosts: []string{mustURLHost(t, mockServer.URL)},
+	})
+	legacyConfig := mustBootstrapConnectorJSON(map[string]any{
+		"transport": "sse",
+		"url":       mockServer.URL + "/mcp/sse",
+		"headerSecretRefs": map[string]string{
+			"Authorization": secretRef,
+		},
+	})
+	connector, err := st.CreateConnector(context.Background(), model.CreateConnectorInput{
+		WorkspaceID: workspace.ID,
+		Type:        "mcp",
+		Name:        "legacy_secret",
+		DisplayName: "Legacy Secret MCP",
+		ConfigJSON:  legacyConfig,
+		Enabled:     true,
+	})
+	if err != nil {
+		t.Fatalf("create legacy connector: %v", err)
+	}
+
+	syncResp := postJSON(t, srv, "/api/connectors/"+connector.ID+"/sync", `{}`)
+	if syncResp.Code != http.StatusBadRequest || !strings.Contains(syncResp.Body.String(), "was not found") {
+		t.Fatalf("legacy env ref must require a workspace Secret, got %d body=%s", syncResp.Code, syncResp.Body.String())
+	}
+	if mockServer.sawHeader("Authorization", secretValue) || len(mockServer.methodsSnapshot()) != 0 {
+		t.Fatalf("legacy env ref must not reach the upstream server")
+	}
+
+	patchResp := patchJSON(t, srv, "/api/connectors/"+connector.ID, fmt.Sprintf(`{
+		"configJson":{
+			"transport":"sse",
+			"url":%q,
+			"headerSecretRefs":{"Authorization":%q}
+		}
+	}`, mockServer.URL+"/mcp/sse", secretRef))
+	if patchResp.Code != http.StatusOK {
+		t.Fatalf("update connector: %d body=%s", patchResp.Code, patchResp.Body.String())
+	}
+
+	updated, err := st.GetConnectorByID(context.Background(), workspace.ID, connector.ID)
+	if err != nil {
+		t.Fatalf("get updated connector: %v", err)
+	}
+	if !strings.Contains(string(updated.ConfigJSON), `"secretRefMode":"workspace"`) {
+		t.Fatalf("updated connector must migrate to workspace Secret mode, got %s", updated.ConfigJSON)
+	}
+	resync := postJSON(t, srv, "/api/connectors/"+connector.ID+"/sync", `{}`)
+	if resync.Code != http.StatusBadRequest || !strings.Contains(resync.Body.String(), "was not found") {
+		t.Fatalf("migrated connector must require workspace Secret, got %d body=%s", resync.Code, resync.Body.String())
+	}
+}
+
 func TestMCPOutboundRejectsDuplicatePlainAndSecretRefHeader(t *testing.T) {
 	const secretRef = "MCP_DUP_AUTH_TEST"
 	t.Setenv(secretRef, "Bearer duplicate-secret")
@@ -309,9 +497,7 @@ func TestMCPOutboundRejectDoesNotCallRemoteAndRedactsAudit(t *testing.T) {
 		ConfigJSON: mustBootstrapConnectorJSON(map[string]any{
 			"transport": "sse",
 			"url":       mockServer.URL + "/mcp/sse",
-			"headers": map[string]string{
-				"Authorization": "Bearer upstream-secret-token",
-			},
+			"headers":   map[string]string{"X-Demo": "upstream-marker"},
 		}),
 		Enabled: true,
 	})
@@ -348,7 +534,7 @@ func TestMCPOutboundRejectDoesNotCallRemoteAndRedactsAudit(t *testing.T) {
 		t.Fatalf("expected pending tool call")
 	}
 	pendingInput := string(calls[0].InputRedactedJSON)
-	for _, leaked := range []string{"raw body secret", "caller-secret-token", "upstream-secret-token"} {
+	for _, leaked := range []string{"raw body secret", "caller-secret-token"} {
 		if strings.Contains(pendingInput, leaked) {
 			t.Fatalf("mcp pending audit input leaked %q: %s", leaked, pendingInput)
 		}
@@ -681,15 +867,16 @@ func TestMCPOutboundEmitsConnectorSpanAttributes(t *testing.T) {
 }
 
 type mockOutboundMCPServer struct {
-	URL            string
-	mu             sync.Mutex
-	sessions       map[string]chan mcp.JSONRPCResponse
-	requestHeaders []http.Header
-	requestMethods []string
-	tools          []map[string]any
-	callCount      int32
-	outputSecret   string
-	server         *httptest.Server
+	URL               string
+	mu                sync.Mutex
+	sessions          map[string]chan mcp.JSONRPCResponse
+	requestHeaders    []http.Header
+	requestMethods    []string
+	tools             []map[string]any
+	callCount         int32
+	outputSecret      string
+	outputReflections []string
+	server            *httptest.Server
 }
 
 func newMockOutboundMCPServer(t *testing.T) *mockOutboundMCPServer {
@@ -818,6 +1005,18 @@ func (m *mockOutboundMCPServer) buildResponse(req mcp.JSONRPCRequest) mcp.JSONRP
 		if strings.TrimSpace(m.outputSecret) != "" {
 			text = text + " token " + m.outputSecret
 			metadata["token"] = m.outputSecret
+		}
+		if len(m.outputReflections) > 0 {
+			reflected := strings.Join(m.outputReflections, " and ")
+			text = text + " reflected " + reflected
+			metadata["message"] = "plain " + reflected
+			metadata[m.outputReflections[0]] = "Secret reflected as a key"
+			metadata[m.outputReflections[len(m.outputReflections)-1]] = "Another Secret reflected as a key"
+			metadata["prefix-"+m.outputReflections[len(m.outputReflections)-1]] = "Secret reflected inside a key"
+			metadata["details"] = []any{
+				map[string]any{"value": m.outputReflections[0]},
+				"nested " + m.outputReflections[len(m.outputReflections)-1],
+			}
 		}
 		return mcp.JSONRPCResponse{
 			JSONRPC: "2.0",

@@ -176,13 +176,14 @@ func populateActionFromPayload(action *ActionInput, payload map[string]any) {
 	if toolInput != nil {
 		maps = append(maps, toolInput)
 	}
+	envelope := []map[string]any{payload}
 
 	action.ToolName = firstStringFromMaps(maps, "tool_name", "toolName", "tool", "name")
 	action.ActionType = firstStringFromMaps(maps, "action_type", "actionType", "action", "kind", "type")
-	action.CWD = firstStringFromMaps(maps, "cwd", "working_directory", "workingDirectory", "workdir")
-	action.ProjectRoot = firstStringFromMaps(maps, "project_root", "projectRoot", "workspace_root", "workspaceRoot", "repo_root", "repoRoot")
+	action.CWD = firstStringFromMaps(envelope, "cwd", "working_directory", "workingDirectory", "workdir")
+	action.ProjectRoot = firstStringFromMaps(envelope, "project_root", "projectRoot", "workspace_root", "workspaceRoot", "repo_root", "repoRoot")
 	action.Command = firstStringFromMaps(maps, "command", "cmd", "shell_command", "shellCommand", "script")
-	action.Target = firstStringFromMaps(maps, "target", "path", "file_path", "filePath", "filename", "file")
+	action.Target = firstStringFromMaps(maps, "target", "path", "file_path", "filePath", "filename", "file", "pattern", "glob")
 	action.ContentPreview = firstStringFromMaps(maps, "content_preview", "contentPreview", "content", "body", "text", "new_string", "newString", "diff", "patch", "input")
 	action.NetworkMethod = firstStringFromMaps(maps, "network_method", "networkMethod", "method", "http_method", "httpMethod")
 	action.NetworkURL = firstStringFromMaps(maps, "network_url", "networkUrl", "url", "uri", "endpoint")
@@ -201,7 +202,7 @@ func inferActionType(action ActionInput) string {
 	if action.Command != "" || containsAny(tool, "bash", "shell", "powershell", "terminal", "exec") {
 		return "command"
 	}
-	if containsAny(tool, "read", "view", "open") {
+	if containsAny(tool, "read", "view", "open", "grep", "glob") {
 		return "read"
 	}
 	if containsAny(tool, "write", "edit", "apply_patch", "patch") {

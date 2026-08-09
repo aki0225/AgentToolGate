@@ -454,6 +454,31 @@ func (s *MemoryStore) UpdateToolCall(_ context.Context, workspaceID, callID stri
 	return s.withApprovalStatusLocked(call), nil
 }
 
+func (s *MemoryStore) TransitionToolCall(_ context.Context, workspaceID, callID, fromStatus string, input model.UpdateToolCallInput) (model.ToolCall, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	call, ok := s.calls[callID]
+	if !ok || call.WorkspaceID != workspaceID {
+		return model.ToolCall{}, ErrNotFound
+	}
+	if !strings.EqualFold(strings.TrimSpace(call.Status), strings.TrimSpace(fromStatus)) {
+		return model.ToolCall{}, ErrConflict
+	}
+	call.Status = input.Status
+	call.DurationMs = input.DurationMs
+	if len(input.InputExecutionJSON) > 0 {
+		call.InputExecutionJSON = cloneJSON(defaultJSON(input.InputExecutionJSON))
+	}
+	call.OutputRedactedJSON = cloneJSON(defaultJSON(input.OutputRedactedJSON))
+	call.ErrorMessage = input.ErrorMessage
+	if strings.TrimSpace(input.TraceID) != "" {
+		call.TraceID = input.TraceID
+	}
+	s.calls[callID] = call
+	return s.withApprovalStatusLocked(call), nil
+}
+
 func cloneToolCallExplanation(input *model.ToolCallExplanation) *model.ToolCallExplanation {
 	if input == nil {
 		return nil

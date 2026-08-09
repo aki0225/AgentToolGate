@@ -82,6 +82,17 @@ export interface ApprovalRequest {
   requestedBy: string;
   reviewedBy?: string;
   reason?: string;
+  fingerprint?: string;
+  adapter?: string;
+  actionType?: string;
+  target?: string;
+  canonicalTarget?: string;
+  contentEncoding?: string;
+  contentHash?: string;
+  scriptHash?: string;
+  resolvedFileIdentity?: string;
+  parentIdentity?: string;
+  decisionPayloadJson?: unknown;
   expiresAt: string;
   createdAt: string;
   updatedAt: string;

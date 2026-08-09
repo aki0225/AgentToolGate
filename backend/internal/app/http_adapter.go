@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"agenttoolgate/backend/internal/store"
 	"agenttoolgate/backend/internal/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -42,21 +43,30 @@ type httpRequestArgs struct {
 	HasBody          bool
 }
 
+type httpRuntimePolicy struct {
+	AllowedHosts   []string
+	AllowedMethods []string
+}
+
 type parsedHTTPAllowedHosts struct {
 	values map[string]struct{}
 }
 
 func (a *App) validateHTTPRequestBeforePolicy(ctx context.Context, workspaceID string, decodedArgs any) error {
-	args, err := a.parseHTTPRequestArgs(decodedArgs)
+	policy, err := a.resolveHTTPRuntimePolicy(ctx, workspaceID)
 	if err != nil {
 		return err
 	}
-	_, err = a.resolveHTTPRequestHeaders(ctx, workspaceID, args)
+	args, err := parseHTTPRequestArgsWithPolicy(decodedArgs, policy)
+	if err != nil {
+		return err
+	}
+	_, _, err = a.resolveHTTPRequestHeaders(ctx, workspaceID, args)
 	return err
 }
 
 func (a *App) deriveHTTPPolicyDecision(decodedArgs any, currentDecision, currentReason string) (string, string) {
-	args, err := a.parseHTTPRequestArgs(decodedArgs)
+	args, err := parseHTTPRequestArgs(decodedArgs)
 	if err != nil {
 		return currentDecision, currentReason
 	}
@@ -75,7 +85,12 @@ func (a *App) executeHTTPRequest(ctx context.Context, workspaceID string, decode
 		span.End()
 	}()
 
-	args, err := a.parseHTTPRequestArgs(decodedArgs)
+	policy, err := a.resolveHTTPRuntimePolicy(ctx, workspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	args, err := parseHTTPRequestArgsWithPolicy(decodedArgs, policy)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -87,7 +102,7 @@ func (a *App) executeHTTPRequest(ctx context.Context, workspaceID string, decode
 	timeout := effectiveHTTPTimeout(time.Duration(a.cfg.HTTPTimeoutMs) * time.Millisecond)
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	resolvedHeaders, err := a.resolveHTTPRequestHeaders(requestCtx, workspaceID, args)
+	resolvedHeaders, resolvedSecretValues, err := a.resolveHTTPRequestHeaders(requestCtx, workspaceID, args)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -112,7 +127,7 @@ func (a *App) executeHTTPRequest(ctx context.Context, workspaceID string, decode
 		req.Header.Set(key, value)
 	}
 
-	timeoutClient := newGuardedHTTPClient(timeout, a.cfg.HTTPAllowedHosts)
+	timeoutClient := newGuardedHTTPClient(timeout, policy.AllowedHosts)
 	resp, err := timeoutClient.Do(req)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
@@ -124,7 +139,10 @@ func (a *App) executeHTTPRequest(ctx context.Context, workspaceID string, decode
 		if errors.Is(err, errHTTPRedirectLimitExceeded) {
 			return nil, nil, badRequest("http redirect limit exceeded")
 		}
-		return nil, nil, fmt.Errorf("http request failed: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, nil, errors.New("http request timed out")
+		}
+		return nil, nil, errors.New("http request failed")
 	}
 	defer resp.Body.Close()
 	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
@@ -139,14 +157,19 @@ func (a *App) executeHTTPRequest(ctx context.Context, workspaceID string, decode
 		return nil, nil, err
 	}
 
-	resultPayload = map[string]any{
+	rawResultPayload := map[string]any{
 		"method":        args.Method,
-		"url":           args.URL.String(),
+		"url":           redactHTTPURLForTelemetry(args.URL),
 		"statusCode":    resp.StatusCode,
-		"headers":       redactHTTPHeaders(resp.Header),
+		"headers":       httpResponseHeaderValues(resp.Header),
 		"body":          bodyValue,
 		"bodyTruncated": truncated,
 	}
+	redactedPayload, ok := redactJSONValueByKey(redactResolvedSecretValues(rawResultPayload, resolvedSecretValues)).(map[string]any)
+	if !ok {
+		return nil, nil, fmt.Errorf("redact http response")
+	}
+	resultPayload = redactedPayload
 	resultJSON, err = json.Marshal(resultPayload)
 	if err != nil {
 		return nil, nil, err
@@ -154,7 +177,7 @@ func (a *App) executeHTTPRequest(ctx context.Context, workspaceID string, decode
 	return resultPayload, resultJSON, nil
 }
 
-func (a *App) parseHTTPRequestArgs(decodedArgs any) (httpRequestArgs, error) {
+func parseHTTPRequestArgs(decodedArgs any) (httpRequestArgs, error) {
 	obj, ok := decodedArgs.(map[string]any)
 	if !ok {
 		return httpRequestArgs{}, badRequest("http.request arguments must be a JSON object")
@@ -165,9 +188,6 @@ func (a *App) parseHTTPRequestArgs(decodedArgs any) (httpRequestArgs, error) {
 		return httpRequestArgs{}, err
 	}
 	method = strings.ToUpper(strings.TrimSpace(method))
-	if !isConfiguredHTTPMethodAllowed(method, a.cfg.HTTPAllowedMethods) {
-		return httpRequestArgs{}, badRequest(fmt.Sprintf("http method %s is not allowed", method))
-	}
 	if !isHTTPSafeMethod(method) && !isHTTPWriteMethod(method) {
 		return httpRequestArgs{}, badRequest(fmt.Sprintf("http method %s is not supported", method))
 	}
@@ -176,7 +196,7 @@ func (a *App) parseHTTPRequestArgs(decodedArgs any) (httpRequestArgs, error) {
 	if err != nil {
 		return httpRequestArgs{}, err
 	}
-	parsedURL, err := parseAndValidateHTTPURL(rawURL, a.cfg.HTTPAllowedHosts)
+	parsedURL, err := parseHTTPURL(rawURL)
 	if err != nil {
 		return httpRequestArgs{}, err
 	}
@@ -199,6 +219,86 @@ func (a *App) parseHTTPRequestArgs(decodedArgs any) (httpRequestArgs, error) {
 		Body:             body,
 		HasBody:          hasBody,
 	}, nil
+}
+
+func parseHTTPRequestArgsWithPolicy(decodedArgs any, policy httpRuntimePolicy) (httpRequestArgs, error) {
+	args, err := parseHTTPRequestArgs(decodedArgs)
+	if err != nil {
+		return httpRequestArgs{}, err
+	}
+	if !isHTTPMethodAllowed(args.Method, policy.AllowedMethods) {
+		return httpRequestArgs{}, badRequest(fmt.Sprintf("http method %s is not allowed", args.Method))
+	}
+	parsedURL, err := parseAndValidateHTTPURL(args.URL.String(), policy.AllowedHosts)
+	if err != nil {
+		return httpRequestArgs{}, err
+	}
+	args.URL = parsedURL
+	return args, nil
+}
+
+func (a *App) resolveHTTPRuntimePolicy(ctx context.Context, workspaceID string) (httpRuntimePolicy, error) {
+	policy := httpRuntimePolicy{
+		AllowedHosts:   append([]string(nil), a.cfg.HTTPAllowedHosts...),
+		AllowedMethods: configuredHTTPAllowedMethods(a.cfg.HTTPAllowedMethods),
+	}
+
+	connector, err := lookupConnectorByTypeAndName(ctx, a.store, workspaceID, "http", "default")
+	if errors.Is(err, store.ErrNotFound) {
+		return policy, nil
+	}
+	if err != nil {
+		return httpRuntimePolicy{}, err
+	}
+	if !connector.Enabled {
+		return httpRuntimePolicy{}, badRequest("http connector default is disabled")
+	}
+
+	var connectorConfig struct {
+		AllowedHosts   *[]string `json:"allowedHosts"`
+		AllowedMethods *[]string `json:"allowedMethods"`
+	}
+	if err := json.Unmarshal(defaultJSON(connector.ConfigJSON), &connectorConfig); err != nil {
+		return httpRuntimePolicy{}, badRequest("http connector default config is invalid")
+	}
+	if connectorConfig.AllowedHosts != nil {
+		policy.AllowedHosts = intersectHTTPAllowedHosts(policy.AllowedHosts, *connectorConfig.AllowedHosts)
+	}
+	if connectorConfig.AllowedMethods != nil {
+		policy.AllowedMethods = intersectHTTPAllowedMethods(policy.AllowedMethods, *connectorConfig.AllowedMethods)
+	}
+	return policy, nil
+}
+
+func intersectHTTPAllowedHosts(ceiling, requested []string) []string {
+	allowed := make(map[string]struct{}, len(ceiling))
+	for _, host := range ceiling {
+		if normalized := normalizeHTTPHostKey(host); normalized != "" {
+			allowed[normalized] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(requested))
+	for _, host := range requested {
+		normalized := normalizeHTTPHostKey(host)
+		if _, ok := allowed[normalized]; ok {
+			result = append(result, normalized)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func intersectHTTPAllowedMethods(ceiling, requested []string) []string {
+	allowed := normalizedHTTPAllowedMethodSet(ceiling)
+	result := make([]string, 0, len(requested))
+	for _, method := range requested {
+		normalized := strings.ToUpper(strings.TrimSpace(method))
+		if _, ok := allowed[normalized]; ok {
+			result = append(result, normalized)
+		}
+	}
+	sort.Strings(result)
+	return result
 }
 
 func requiredHTTPStringArg(obj map[string]any, key string) (string, error) {
@@ -283,24 +383,26 @@ func parseHTTPRequestHeaderSecretRefs(value any, headers map[string]string) (map
 	return secretRefs, nil
 }
 
-func (a *App) resolveHTTPRequestHeaders(ctx context.Context, workspaceID string, args httpRequestArgs) (map[string]string, error) {
+func (a *App) resolveHTTPRequestHeaders(ctx context.Context, workspaceID string, args httpRequestArgs) (map[string]string, []string, error) {
 	resolved := make(map[string]string, len(args.Headers)+len(args.HeaderSecretRefs))
 	for key, value := range args.Headers {
 		resolved[strings.TrimSpace(key)] = value
 	}
-	secretValues, err := a.resolveSecretRefs(ctx, workspaceID, args.HeaderSecretRefs)
+	secretHeaders, err := a.resolveSecretRefs(ctx, workspaceID, args.HeaderSecretRefs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	for key, value := range secretValues {
+	resolvedSecretValues := make([]string, 0, len(secretHeaders))
+	for key, value := range secretHeaders {
 		for existing := range resolved {
 			if strings.EqualFold(existing, key) {
-				return nil, badRequest(fmt.Sprintf("http header %s cannot be defined in both headers and headerSecretRefs", key))
+				return nil, nil, badRequest(fmt.Sprintf("http header %s cannot be defined in both headers and headerSecretRefs", key))
 			}
 		}
 		resolved[key] = value
+		resolvedSecretValues = append(resolvedSecretValues, value)
 	}
-	return resolved, nil
+	return resolved, resolvedSecretValues, nil
 }
 
 func newGuardedHTTPClient(timeout time.Duration, rawAllowedHosts []string) *http.Client {
@@ -332,16 +434,9 @@ func cloneHTTPTransportWithoutProxy() *http.Transport {
 }
 
 func parseAndValidateHTTPURL(rawURL string, rawAllowedHosts []string) (*url.URL, error) {
-	parsedURL, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		return nil, badRequest("http url is invalid")
-	}
-	if parsedURL.User != nil {
-		return nil, badRequest("http url userinfo is not allowed")
-	}
-	scheme := strings.ToLower(parsedURL.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return nil, badRequest("only http and https urls are allowed")
+	parsedURL, err := parseHTTPURL(rawURL)
+	if err != nil {
+		return nil, err
 	}
 
 	allowedHosts, err := parseHTTPAllowedHosts(rawAllowedHosts)
@@ -355,6 +450,21 @@ func parseAndValidateHTTPURL(rawURL string, rawAllowedHosts []string) (*url.URL,
 	}
 	if !hostAllowed {
 		return nil, badRequest(fmt.Sprintf("http host %s is not allowed", hostKey))
+	}
+	return parsedURL, nil
+}
+
+func parseHTTPURL(rawURL string) (*url.URL, error) {
+	parsedURL, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return nil, badRequest("http url is invalid")
+	}
+	if parsedURL.User != nil {
+		return nil, badRequest("http url userinfo is not allowed")
+	}
+	scheme := strings.ToLower(parsedURL.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return nil, badRequest("only http and https urls are allowed")
 	}
 	return parsedURL, nil
 }
@@ -406,16 +516,30 @@ func guardHTTPHost(hostname string, hostAllowed bool) error {
 	return nil
 }
 
-func isConfiguredHTTPMethodAllowed(method string, rawAllowedMethods []string) bool {
-	allowed := effectiveHTTPAllowedMethods(rawAllowedMethods)
+func isHTTPMethodAllowed(method string, rawAllowedMethods []string) bool {
+	allowed := normalizedHTTPAllowedMethodSet(rawAllowedMethods)
 	_, ok := allowed[method]
 	return ok
 }
 
-func effectiveHTTPAllowedMethods(rawAllowedMethods []string) map[string]struct{} {
+func configuredHTTPAllowedMethods(rawAllowedMethods []string) []string {
 	if len(rawAllowedMethods) == 0 {
-		rawAllowedMethods = defaultHTTPAllowedMethods
+		return append([]string(nil), defaultHTTPAllowedMethods...)
 	}
+	return normalizeHTTPAllowedMethods(rawAllowedMethods)
+}
+
+func normalizeHTTPAllowedMethods(rawAllowedMethods []string) []string {
+	allowed := normalizedHTTPAllowedMethodSet(rawAllowedMethods)
+	values := make([]string, 0, len(allowed))
+	for method := range allowed {
+		values = append(values, method)
+	}
+	sort.Strings(values)
+	return values
+}
+
+func normalizedHTTPAllowedMethodSet(rawAllowedMethods []string) map[string]struct{} {
 	allowed := map[string]struct{}{}
 	for _, method := range rawAllowedMethods {
 		normalized := strings.ToUpper(strings.TrimSpace(method))
@@ -538,23 +662,19 @@ func readHTTPResponseBody(body io.Reader, maxBytes int) (any, bool, error) {
 	}
 	var decoded any
 	if len(raw) > 0 && json.Unmarshal(raw, &decoded) == nil {
-		return redactJSONValueByKey(decoded), truncated, nil
+		return decoded, truncated, nil
 	}
 	return string(raw), truncated, nil
 }
 
-func redactHTTPHeaders(headers http.Header) map[string]string {
-	result := make(map[string]string, len(headers))
+func httpResponseHeaderValues(headers http.Header) map[string]any {
+	result := make(map[string]any, len(headers))
 	keys := make([]string, 0, len(headers))
 	for key := range headers {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		if isSensitiveJSONKey(key) {
-			result[key] = "[REDACTED]"
-			continue
-		}
 		result[key] = strings.Join(headers.Values(key), ",")
 	}
 	return result
@@ -569,7 +689,7 @@ func redactHTTPURLForTelemetry(value *url.URL) string {
 	redacted.Fragment = ""
 	query := redacted.Query()
 	for key := range query {
-		if isSensitiveJSONKey(key) {
+		if isSensitiveApprovalQueryKey(key) {
 			query.Set(key, "[REDACTED]")
 		}
 	}

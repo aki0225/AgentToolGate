@@ -140,6 +140,22 @@ func TestPostgresUpdateToolCallClearsExecutionInput(t *testing.T) {
 	assertUpdateToolCallClearsExecutionInput(t, st)
 }
 
+func TestPostgresToolCallTransitionIsCompareAndSwap(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	st, err := NewPostgresStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("new postgres store: %v", err)
+	}
+	t.Cleanup(st.Close)
+
+	assertToolCallTransitionIsCompareAndSwap(t, st)
+}
+
 func TestPostgresToolCallExplanationPersists(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {

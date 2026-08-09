@@ -1,6 +1,6 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 import type { User as OidcUser } from "oidc-client-ts";
-import { ApiError, getApiErrorMessage, listTools } from "../src/api/client";
+import { ApiError, getApiErrorMessage, listTools, resolveApiBaseUrl } from "../src/api/client";
 import { bootstrapAuthSession } from "../src/auth/bootstrap";
 import type { DashboardSummary, MeResponse, Tool, ToolCall, User, Workspace } from "../src/types";
 
@@ -118,6 +118,12 @@ test("API client：非 JSON 错误不泄漏 HTML，403 可按 locale 映射", as
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("API client：生产内嵌使用同源，Vite 开发默认连接本地后端", () => {
+  expect(resolveApiBaseUrl(undefined, "http://127.0.0.1:8080")).toBe("http://127.0.0.1:8080");
+  expect(resolveApiBaseUrl("", "http://127.0.0.1:5173", true)).toBe("http://localhost:8080");
+  expect(resolveApiBaseUrl("http://localhost:8080", "http://127.0.0.1:5173")).toBe("http://localhost:8080");
 });
 
 test("本地多 workspace：未选择时进入登录页，选择后再建立 session", async ({ page }) => {

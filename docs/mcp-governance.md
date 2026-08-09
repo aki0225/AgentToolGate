@@ -50,7 +50,7 @@ SSE fallback:    /mcp/sse
 外部 MCP Server 配置为 `type=mcp` Connector。当前 outbound 实现支持旧版 HTTP + SSE transport。同步流程包括：
 
 - 校验 connector config。
-- 解析 env-backed `headerSecretRefs`。
+- 解析 `headerSecretRefs` 指向的 workspace Secret，再从 Secret 的 env-backed `valueRef` 读取后端运行时值。
 - 调用外部 MCP Server 的 `initialize` 和 `tools/list`。
 - 注册或更新本地 Tool Registry 条目。
 
@@ -107,11 +107,18 @@ MCP Connector config 示例：
 - 敏感 header 必须使用 `headerSecretRefs`。
 - `headerSecretRefs` 指向 workspace Secret 名称。
 - 当前 workspace Secret 只保存 env-backed `valueRef`，不保存 secret value。
+- 新建或更新的 MCP Connector 自动写入 workspace Secret 模式。没有 `secretRefMode` 的旧 Connector 也按 workspace Secret 解析，不再直接读取同名进程环境变量。
+- 使用 `headerSecretRefs` 时，后端必须配置非空 `MCP_ALLOWED_HOSTS`，Connector URL 必须命中该部署级上限。Connector 只能继续缩小范围，不能扩大部署配置。
+- MCP HTTP 重定向只允许协议、主机和有效端口均不变的同源跳转。跨 origin 跳转即使目标也在 allowlist 中仍会在发送 Secret header 或请求体前被拒绝。
 - 后端只在 sync/call 执行时解析 env value。
 - Secret 缺失、禁用或后端 runtime env 未配置时 fail closed，不触达外部 MCP Server。
 - 解析后的 secret value 不进入 API response、audit、log、telemetry 或 frontend state。
 
 对于 write/unknown/destructive MCP 工具，approval 创建在 outbound `tools/call` 之前。审批成功前，外部 MCP Server 不会收到真实调用。
+
+批准动作完成状态转换后，后端会在实际调用 Connector 前再次读取当前工具、策略和冻结参数。二次重验证失败时不会触达上游，工具调用标记为失败并清空冻结执行参数。该检查缩小了审批与执行之间的 TOCTOU 窗口，但不是 Store 与外部 Connector 之间的跨系统原子事务。
+
+审批列表和批准/拒绝响应是安全投影：只返回脱敏摘要和稳定错误，不返回冻结执行参数、原始 Secret、URL 私密部分或底层 Connector 错误。
 
 ## 拒绝和审批场景
 

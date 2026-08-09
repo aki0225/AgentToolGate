@@ -99,11 +99,269 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
                 self.assertEqual(payload["target"], ".ssh/authorized_keys")
                 self.assertTrue(module.is_high_risk_offline_target(payload))
 
+    def test_offline_exec_fallback_only_allows_exact_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            for module in (HOOK, CODEX_HOOK):
+                def eligible(command: str) -> bool:
+                    return module.is_explicitly_low_risk_offline_action(
+                        str(repo),
+                        {
+                            "actionType": "exec",
+                            "target": command,
+                            "content": command,
+                            "workingDirectory": str(repo),
+                        },
+                    )
+
+                for command in (
+                    "git status",
+                    "pwd",
+                    "Get-Location",
+                ):
+                    with self.subTest(module=module.__name__, command=command):
+                        self.assertTrue(eligible(command))
+
+                for command in (
+                    'rg "foo|bar" .',
+                    'rg "powershell|curl" docs',
+                    "rg -n TODO src",
+                    "rg --hidden TODO .",
+                    "grep -r TODO .",
+                    "grep -n TODO README.md",
+                    "Select-String -LiteralP ..\\outside.txt TODO",
+                    "git diff --stat",
+                    "git diff -O..\\outside",
+                    "Get-Content README.md -Wai",
+                    r'rg foo . x\"; touch owned #"',
+                    "sed -n '1,40p' README.md",
+                    "ls",
+                    'rg --pre "powershell -Command Get-Content" .',
+                    "rg secret (Get-Location)",
+                    r"rg secret C:\Users\demo",
+                    r"rg secret ..\outside",
+                    "rg secret $env:USERPROFILE",
+                    "git diff --output=.ssh/id_rsa",
+                    "git log --ext-diff",
+                    r"git diff --no-index ..\a ..\b",
+                    "Select-String -Pattern TODO -Path Env:",
+                    r"Select-String -Pattern TODO -Path ..\outside.txt",
+                    r"Select-String -Pattern TODO -Path README.md,..\outside.txt",
+                    "sed -i 's/a/b/' README.md",
+                    "sed -n '1w .ssh/id_rsa' README.md",
+                    "sed -n '1e touch owned' README.md",
+                    "git status\nSet-Content report.md changed",
+                    "git status\r\nSet-Content report.md changed",
+                            r"git status \; Set-Content report.md changed",
+                            r"sed -n 1\,40p README.md",
+                            "Get-ChildItem Env:",
+                            "Get-ChildItem -Path:Env:",
+                            "Get-ChildItem -Path:([System.IO.Directory]::GetCurrentDirectory())",
+                            r"Get-ChildItem C:\Users",
+                            r"Get-ChildItem ..\outside",
+                            "Get-Content Env:API_TOKEN",
+                            r"Get-Content C:\Users\demo\notes.txt",
+                            r"Get-Content ..\outside.txt",
+                            r"Get-Content README.md,..\outside.txt",
+                            "Get-Content $env:USERPROFILE",
+                            "Get-Content (Invoke-WebRequest https://example.test)",
+                            "Get-Content -Wait README.md",
+                            "cat /etc/passwd",
+                            "cat ~/notes.txt",
+                            r"sed -n '1,20p' ..\outside.txt",
+                        ):
+                    with self.subTest(module=module.__name__, command=command):
+                        self.assertFalse(eligible(command))
+
     def test_agenttoolgate_mcp_tools_do_not_enter_local_guard_twice(self) -> None:
         for module in (HOOK, CODEX_HOOK):
             with self.subTest(module=module.__name__):
                 self.assertFalse(module.is_guarded_tool("mcp__agenttoolgate__mock_echo"))
                 self.assertTrue(module.is_guarded_tool("mcp__external_server__write_file"))
+                self.assertTrue(module.is_guarded_tool("Read"))
+                self.assertTrue(module.is_guarded_tool("Grep"))
+                self.assertTrue(module.is_guarded_tool("Glob"))
+
+    def test_claude_tool_input_supports_go_adapter_aliases(self) -> None:
+        for key in ("args", "arguments", "params", "input"):
+            with self.subTest(key=key):
+                tool_input = HOOK.get_tool_input({key: {"file_path": "src/client.pem"}})
+                self.assertEqual(tool_input["file_path"], "src/client.pem")
+
+    def test_search_tools_map_their_read_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            cases = [
+                ("Grep", {"pattern": "TODO", "path": "src"}, "src", False),
+                ("Grep", {"pattern": "TODO"}, ".", False),
+                ("Grep", {"pattern": ".", "path": "src/client.pem"}, "src/client.pem", True),
+                ("Glob", {"pattern": "**/*.py", "path": "src"}, "src/**/*.py", False),
+                ("Glob", {"pattern": ".github/workflows/**"}, ".github/workflows/**", True),
+                ("Glob", {"pattern": "**/*.pem", "path": "src"}, "src/**/*.pem", True),
+            ]
+            for module in (HOOK, CODEX_HOOK):
+                for tool_name, tool_input, expected_target, high_risk in cases:
+                    with self.subTest(module=module.__name__, tool=tool_name, tool_input=tool_input):
+                        payload = module.build_agent_guard_request(
+                            module.detect_adapter(),
+                            {"cwd": str(repo)},
+                            tool_name,
+                            tool_input,
+                            str(repo),
+                        )
+                        self.assertEqual(payload["actionType"], "read")
+                        self.assertEqual(payload["target"].replace("\\", "/"), expected_target)
+                        self.assertEqual(module.is_high_risk_offline_target(payload), high_risk)
+                        self.assertEqual(
+                            module.is_explicitly_low_risk_offline_action(str(repo), payload),
+                            not high_risk or module.is_project_metadata_read_target(payload["target"]),
+                        )
+
+    def test_powershell_positional_write_targets_are_extracted(self) -> None:
+        cases = [
+            ("Set-Content '.ssh/id_rsa' 'synthetic'", ".ssh/id_rsa"),
+            ("New-Item '.git/hooks/pre-commit' -ItemType File", ".git/hooks/pre-commit"),
+            ("Copy-Item 'safe.txt' '.ssh/authorized_keys'", ".ssh/authorized_keys"),
+        ]
+        for module in (HOOK, CODEX_HOOK):
+            for command, expected in cases:
+                with self.subTest(module=module.__name__, command=command):
+                    payload = module.build_agent_guard_request(
+                        module.detect_adapter(),
+                        {"cwd": os.getcwd()},
+                        "PowerShell",
+                        {"command": command},
+                    )
+                    self.assertEqual(payload["target"], expected)
+                    self.assertTrue(module.is_high_risk_offline_target(payload))
+
+    def test_request_includes_workspace_root_and_ticket_digest_binds_it(self) -> None:
+        for module in (HOOK, CODEX_HOOK):
+            with self.subTest(module=module.__name__):
+                first = module.build_agent_guard_request(
+                    module.detect_adapter(),
+                    {"cwd": "E:/repo-a"},
+                    "Read",
+                    {"file_path": "README.md"},
+                    "E:/repo-a",
+                )
+                second = dict(first)
+                second["workspaceRoot"] = "E:/repo-b"
+                third = dict(first)
+                third["workingDirectory"] = "E:/repo-a/nested"
+                self.assertEqual(first["workspaceRoot"], "E:/repo-a")
+                self.assertNotEqual(module.hook_request_digest(first), module.hook_request_digest(second))
+                self.assertNotEqual(module.hook_request_digest(first), module.hook_request_digest(third))
+
+    def test_initialized_non_git_project_root_is_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            nested = repo / "src" / "feature"
+            (repo / ".agenttoolgate").mkdir()
+            nested.mkdir(parents=True)
+            self.assertEqual(HOOK.find_repo_root(str(nested)), str(repo))
+
+    def test_live_ordinary_repo_read_delegates_to_go_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            (repo / "README.md").write_text("hello", encoding="utf-8")
+            captured: list[dict[str, Any]] = []
+
+            def go_cli(payload: dict[str, Any]) -> dict[str, Any]:
+                captured.append(payload)
+                return {}
+
+            raw = self.invoke_raw(
+                {
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": "README.md"},
+                    "cwd": str(repo),
+                },
+                go_cli=go_cli,
+                post_json=lambda *_args, **_kwargs: self.fail("普通仓库读取不应调用后端"),
+            )
+            self.assertEqual(raw, "")
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0]["tool_input"]["file_path"], "README.md")
+
+    def test_live_alias_sensitive_read_delegates_to_go_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            captured: list[dict[str, Any]] = []
+            expected = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "AgentToolGate 已阻止：命中敏感读取",
+                }
+            }
+
+            def go_cli(payload: dict[str, Any]) -> dict[str, Any]:
+                captured.append(payload)
+                return expected
+
+            output = self.invoke_hook(
+                {"tool_name": "Read", "args": {"file_path": "src/client.pem"}, "cwd": str(repo)},
+                go_cli=go_cli,
+                post_json=lambda *_args, **_kwargs: self.fail("Go CLI 成功时不应调用后端"),
+            )
+            self.assertEqual(output, expected)
+            self.assertEqual(len(captured), 1)
+            self.assertEqual(captured[0]["args"]["file_path"], "src/client.pem")
+
+    def test_dry_run_ordinary_repo_read_remains_low_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            (repo / "README.md").write_text("hello", encoding="utf-8")
+            self.set_hook_control(repo, "dry-run")
+            raw = self.invoke_raw(
+                {
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": "README.md"},
+                    "cwd": str(repo),
+                },
+                go_cli=lambda _payload: self.fail("dry-run 普通读取不应调用 Go CLI"),
+                post_json=lambda *_args, **_kwargs: self.fail("dry-run 普通读取不应调用后端"),
+                enable_live=False,
+            )
+            self.assertEqual(raw, "")
+            self.assertFalse((repo / ".tmp" / "agenttoolgate" / "hook-dry-run.jsonl").exists())
+
+    def test_dry_run_repo_read_fast_path_requires_explicit_local_read_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            for module in (HOOK, CODEX_HOOK):
+                local_read = module.build_agent_guard_request(
+                    module.detect_adapter(),
+                    {"cwd": str(repo)},
+                    "Read",
+                    {"file_path": "README.md"},
+                    str(repo),
+                )
+                with self.subTest(module=module.__name__, tool="Read"):
+                    self.assertTrue(module.is_fast_path_repo_read(str(repo), local_read))
+                    self.assertTrue(module.is_explicitly_low_risk_offline_action(str(repo), local_read))
+
+                for tool_name, tool_input in (
+                    ("WebSearch", {"query": "AgentToolGate"}),
+                    ("mcp__github__merge_pull_request", {"repository_full_name": "example/repo", "pr_number": 1}),
+                ):
+                    with self.subTest(module=module.__name__, tool=tool_name):
+                        payload = module.build_agent_guard_request(
+                            module.detect_adapter(),
+                            {"cwd": str(repo)},
+                            tool_name,
+                            tool_input,
+                            str(repo),
+                        )
+                        self.assertFalse(module.is_fast_path_repo_read(str(repo), payload))
+                        self.assertFalse(module.is_explicitly_low_risk_offline_action(str(repo), payload))
 
     def test_high_risk_target_uses_path_segments_not_bare_substrings(self) -> None:
         allowed_targets = [
@@ -111,6 +369,11 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             "docs/credentials-review-notes.md",
             "tmp/secrets-report.md",
             "notes/taskschd-analysis.txt",
+            "internal/secrets/parser.go",
+            "docs/credentials/guide.md",
+            "examples/startup/readme.md",
+            r"C:\Windows\System32\taskschd\job.txt",
+            "cmd/server/main.go",
         ]
         for target in allowed_targets:
             with self.subTest(target=target):
@@ -121,10 +384,22 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             ".ssh/authorized_keys",
             ".git/hooks/pre-commit",
             ".env",
+            ".env.production",
+            ".npmrc",
+            ".tmp/agenttoolgate/hook-control.json",
+            ".claude/settings.local.json",
+            ".codex/config.toml",
+            ".agents/skills/reviewer.md",
+            ".github/workflows/ci.yml",
+            "AGENTS.md",
+            "package.json",
+            "src/client.pem",
+            r"C:\Users\me\AppData\Local\BraveSoftware\Brave-Browser\User Data\Default\Login Data",
+            r"C:\Users\me\AppData\Local\Vivaldi\User Data\Default\Cookies",
+            r"C:\Users\me\AppData\Roaming\Opera Software\Opera Stable\History",
             r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Run\Updater",
             r"C:\Windows\System32\Config\SAM",
             r"C:\Windows\System32\Tasks\Updater",
-            r"C:\Windows\System32\taskschd\job.txt",
         ]
         for target in denied_targets:
             with self.subTest(target=target):
@@ -242,22 +517,18 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             self.assertTrue(preview["signals"])
             self.assertEqual(preview["target"], "https://example.test/path?token=[REDACTED]&debug=true")
 
-    def test_offline_read_only_and_keyword_mentions_are_allowed_with_pending_audit(self) -> None:
+    def test_offline_repo_reads_and_keyword_mentions_are_allowed_with_pending_audit(self) -> None:
         cases = [
-            (
-                "bash",
-                {"command": "sed -n '1,40p' examples/agent-demo/evidence/windows-startup-poisoning-output.txt"},
-            ),
-            ("bash", {"command": 'rg "startup" .'}),
-            ("bash", {"command": "grep credentials file"}),
-            ("bash", {"command": "ls examples/agent-demo/*.ps1"}),
-            (
-                "Write",
-                {
-                    "path": "report.md",
-                    "content": "这是一段描述自启目录 / credentials 风险的普通说明文档。",
-                },
-            ),
+            ("Read", {"file_path": "internal/secrets/parser.go"}),
+            ("Read", {"file_path": "docs/credentials/guide.md"}),
+            ("Read", {"file_path": "AGENTS.md"}),
+            ("Read", {"file_path": "package.json"}),
+            ("Read", {"file_path": ".claude/settings.local.json"}),
+            ("Read", {"file_path": ".codex/config.toml"}),
+            ("Grep", {"pattern": "timeout", "path": ".github/workflows"}),
+            ("Glob", {"pattern": ".agents/**/*.md"}),
+            ("Grep", {"pattern": "WindowStyle Hidden", "path": "docs"}),
+            ("Glob", {"pattern": "src/**/*.py"}),
         ]
         for tool_name, tool_input in cases:
             with self.subTest(tool=tool_name, tool_input=tool_input):
@@ -265,6 +536,35 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
                 self.assertEqual(decision["permissionDecision"], "allow")
                 audit_path = repo / ".tmp" / "local-action-firewall" / "pending-audit.jsonl"
                 self.assertTrue(audit_path.is_file(), "离线 allow 必须留下 pending audit")
+
+    def test_offline_exec_requires_go_cli_except_exact_commands(self) -> None:
+        for command in ("git status", "pwd", "Get-Location"):
+            with self.subTest(command=command):
+                decision, repo = self.run_offline_hook("bash", {"command": command})
+                self.assertEqual(decision["permissionDecision"], "allow")
+                self.assertTrue((repo / ".tmp" / "local-action-firewall" / "pending-audit.jsonl").is_file())
+
+        for command in (
+            'rg "WindowStyle Hidden" docs',
+            "rg --hidden TODO .",
+            "grep -r TODO .",
+            r"git diff -O..\outside",
+            r"Select-String -LiteralP ..\outside.txt TODO",
+            "Get-Content README.md -Wai",
+            r'rg foo . x\"; touch owned #"',
+        ):
+            with self.subTest(command=command):
+                decision, repo = self.run_offline_hook("bash", {"command": command})
+                self.assertEqual(decision["permissionDecision"], "deny")
+                self.assertFalse((repo / ".tmp" / "local-action-firewall" / "pending-audit.jsonl").exists())
+
+    def test_offline_workspace_write_fails_closed_without_go_cli(self) -> None:
+        decision, repo = self.run_offline_hook(
+            "Write",
+            {"path": "report.md", "content": "普通项目说明。"},
+        )
+        self.assertEqual(decision["permissionDecision"], "deny")
+        self.assertFalse((repo / ".tmp" / "local-action-firewall" / "pending-audit.jsonl").exists())
 
     def test_offline_real_high_risk_targets_still_fail_closed(self) -> None:
         cases = [
@@ -278,6 +578,8 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             ("Write", {"path": ".ssh/authorized_keys", "content": "ssh-rsa AAAA"}),
             ("Write", {"path": ".git/hooks/pre-commit", "content": "#!/bin/sh"}),
             ("Write", {"path": ".env", "content": "TOKEN=demo"}),
+            ("Read", {"file_path": "src/client.pem"}),
+            ("Grep", {"pattern": ".", "path": "src/client.pem"}),
             (
                 "bash",
                 {
@@ -308,6 +610,126 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
                 audit_path = repo / ".tmp" / "local-action-firewall" / "pending-audit.jsonl"
                 self.assertFalse(audit_path.exists(), "离线 deny 不应伪造 allow pending audit")
 
+    def test_http_non_2xx_and_unknown_decision_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            input_data = {
+                "tool_name": "Write",
+                "tool_input": {"path": "src/demo.txt", "content": "hello"},
+                "cwd": str(repo),
+            }
+            for response in (
+                (403, {"error": "forbidden"}, ""),
+                (200, {"decision": "unexpected", "reason": "bad contract"}, ""),
+            ):
+                with self.subTest(response=response):
+                    output = self.invoke_hook(input_data, post_json=lambda *_args, response=response, **_kwargs: response)
+                    self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_pending_audit_redacts_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            HOOK.record_local_pending_audit(
+                str(repo),
+                {
+                    "tool": "webfetch",
+                    "actionType": "read",
+                    "target": "https://example.test/path?token=super-secret-token&debug=true",
+                },
+                "offline",
+                True,
+            )
+            audit_path = repo / ".tmp" / "local-action-firewall" / "pending-audit.jsonl"
+            raw = audit_path.read_text(encoding="utf-8")
+            self.assertNotIn("super-secret-token", raw)
+            record = json.loads(raw.strip())
+            self.assertEqual(record["target"], "https://example.test/path?token=[REDACTED]&debug=true")
+
+    def test_offline_allow_denies_when_pending_audit_cannot_be_written(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            blocker = repo / ".tmp" / "local-action-firewall"
+            blocker.parent.mkdir(parents=True)
+            blocker.write_text("not-a-directory", encoding="utf-8")
+            output = self.invoke_hook(
+                {"tool_name": "Read", "tool_input": {"file_path": "README.md"}, "cwd": str(repo)},
+                go_cli=lambda _payload: None,
+                post_json=lambda *_args, **_kwargs: (0, {}, "offline"),
+            )
+            decision = output["hookSpecificOutput"]
+            self.assertEqual(decision["permissionDecision"], "deny")
+            self.assertIn("pending audit unavailable", decision["permissionDecisionReason"])
+
+    def test_ticket_persistence_failure_denies(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+
+            def post_json(*_args: Any, **_kwargs: Any) -> tuple[int, dict[str, Any], str]:
+                blocker = repo / ".tmp" / "agenttoolgate" / "hook-tickets"
+                blocker.parent.mkdir(parents=True, exist_ok=True)
+                blocker.write_text("not-a-directory", encoding="utf-8")
+                return (
+                    200,
+                    {
+                        "decision": "deny_with_ticket",
+                        "approvalId": "approval-persist-failure",
+                        "fingerprint": "fingerprint-persist-failure",
+                    },
+                    "",
+                )
+
+            output = self.invoke_hook(
+                {"tool_name": "Write", "tool_input": {"path": "src/demo.txt", "content": "hello"}, "cwd": str(repo)},
+                go_cli=lambda _payload: None,
+                post_json=post_json,
+            )
+            decision = output["hookSpecificOutput"]
+            self.assertEqual(decision["permissionDecision"], "deny")
+            self.assertIn("hook ticket persistence failed", decision["permissionDecisionReason"])
+
+    def test_ticket_is_reused_only_for_matching_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            captured: list[dict[str, Any]] = []
+            responses = iter(
+                [
+                    (
+                        200,
+                        {
+                            "decision": "deny_with_ticket",
+                            "reason": "approval required",
+                            "approvalId": "approval-test-1",
+                            "approvalStatus": "pending",
+                            "fingerprint": "fingerprint-test-1",
+                        },
+                        "",
+                    ),
+                    (200, {"decision": "allow", "reason": "ticket consumed"}, ""),
+                ]
+            )
+
+            def post_json(_url: str, payload: dict[str, Any], **_kwargs: Any) -> tuple[int, dict[str, Any], str]:
+                captured.append(dict(payload))
+                return next(responses)
+
+            input_data = {
+                "tool_name": "Write",
+                "tool_input": {"path": "src/demo.txt", "content": "ordinary workspace update"},
+                "cwd": str(repo),
+            }
+            first = self.invoke_hook(input_data, post_json=post_json)
+            self.assertEqual(first["hookSpecificOutput"]["permissionDecision"], "ask")
+            second = self.invoke_hook(input_data, post_json=post_json)
+            self.assertEqual(second["hookSpecificOutput"]["permissionDecision"], "allow")
+            self.assertNotIn("ticketId", captured[0])
+            self.assertEqual(captured[1]["ticketId"], "approval-test-1")
+            ticket_dir = repo / ".tmp" / "agenttoolgate" / "hook-tickets"
+            self.assertFalse(any(ticket_dir.glob("*.json")))
+
     def run_offline_hook(self, tool_name: str, tool_input: dict[str, Any]) -> tuple[dict[str, Any], Path]:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
@@ -329,8 +751,13 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
                     self.copy_tree(child, persisted / ".tmp")
             return decision, persisted
 
-    def invoke_hook(self, input_data: dict[str, Any]) -> dict[str, Any]:
-        raw = self.invoke_raw(input_data)
+    def invoke_hook(
+        self,
+        input_data: dict[str, Any],
+        post_json: Any | None = None,
+        go_cli: Any | None = None,
+    ) -> dict[str, Any]:
+        raw = self.invoke_raw(input_data, post_json=post_json, go_cli=go_cli)
         self.assertTrue(raw, "hook should emit a decision")
         return json.loads(raw)
 
@@ -338,9 +765,11 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
         self,
         input_data: dict[str, Any],
         post_json: Any | None = None,
+        go_cli: Any | None = None,
         enable_live: bool = True,
     ) -> str:
         original_post_json = HOOK.post_json
+        original_go_cli = HOOK.call_agenttoolgate_guard_hook_claude
         original_stdin = sys.stdin
         original_stdout = sys.stdout
         old_disable = os.environ.pop("TRELLIS_DISABLE_HOOKS", None)
@@ -349,6 +778,7 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             repo_root = HOOK.find_repo_root(input_data.get("cwd", os.getcwd()))
             if enable_live and repo_root is not None:
                 self.set_hook_control(Path(repo_root), "live")
+            HOOK.call_agenttoolgate_guard_hook_claude = go_cli or (lambda _payload: None)
             HOOK.post_json = post_json or (lambda *args, **kwargs: (0, {}, "offline"))
             sys.stdin = io.StringIO(json.dumps(input_data, ensure_ascii=False))
             captured = io.StringIO()
@@ -357,6 +787,7 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             raw = captured.getvalue().strip()
             return raw
         finally:
+            HOOK.call_agenttoolgate_guard_hook_claude = original_go_cli
             HOOK.post_json = original_post_json
             sys.stdin = original_stdin
             sys.stdout = original_stdout

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/netip"
@@ -11,12 +12,16 @@ import (
 
 	"agenttoolgate/backend/internal/model"
 	"agenttoolgate/backend/internal/policy"
+	"agenttoolgate/backend/internal/store"
 )
 
 const (
 	policyAllow           = "allow"
 	policyDeny            = "deny"
 	policyRequireApproval = "require_approval"
+
+	localReviewerTokenEnv = "AGT_LOCAL_REVIEWER_TOKEN"
+	localReviewerActorID  = "local-reviewer"
 )
 
 func (a *App) reloadPolicyEngine() {
@@ -71,6 +76,10 @@ func (a *App) decidePolicy(tool model.Tool, userRole string) (string, string) {
 }
 
 func (a *App) decidePolicyDetailed(tool model.Tool, userRole string) policy.Decision {
+	return a.decidePolicyDetailedWithRisk(tool, userRole, tool.RiskLevel)
+}
+
+func (a *App) decidePolicyDetailedWithRisk(tool model.Tool, userRole, riskLevel string) policy.Decision {
 	if a.policies == nil {
 		a.policies = policy.NewDefaultEngine()
 	}
@@ -80,7 +89,7 @@ func (a *App) decidePolicyDetailed(tool model.Tool, userRole string) policy.Deci
 		ToolName:         tool.Name,
 		OperationType:    tool.OperationType,
 		UserRole:         userRole,
-		RiskLevel:        tool.RiskLevel,
+		RiskLevel:        normalizeRiskLevel(riskLevel),
 		RequiresApproval: tool.RequiresApproval,
 		ToolEnabled:      tool.Enabled,
 		SupportedTool:    isExecutableTool(tool),
@@ -188,7 +197,7 @@ func (a *App) deriveToolCallRisk(tool model.Tool, decodedArgs any) string {
 			risk = maxRiskLevel(risk, "high")
 		}
 	case namespace == "http" && name == "request":
-		args, err := a.parseHTTPRequestArgs(decodedArgs)
+		args, err := parseHTTPRequestArgs(decodedArgs)
 		if err != nil {
 			return risk
 		}
@@ -265,6 +274,134 @@ func approvalSelfReviewForbidden(reqCtx RequestContext, requestedBy string) bool
 	return false
 }
 
+func (a *App) approvalReviewerForRequest(reqCtx RequestContext, requestedBy, reviewerToken string) (string, error) {
+	if !approvalSelfReviewForbidden(reqCtx, requestedBy) {
+		return approvalActorID(reqCtx), nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(a.cfg.AuthMode), "local") {
+		return "", forbidden("approval requester cannot review their own approval")
+	}
+
+	expected := strings.TrimSpace(os.Getenv(localReviewerTokenEnv))
+	provided := strings.TrimSpace(reviewerToken)
+	if len(expected) < 24 || len(provided) == 0 || subtle.ConstantTimeCompare([]byte(expected), []byte(provided)) != 1 {
+		return "", forbidden("approval requester cannot review their own approval")
+	}
+	return localReviewerActorID, nil
+}
+
+type approvalExecutionPlan struct {
+	tool        model.Tool
+	decodedArgs any
+}
+
+func freezeApprovalRequesterRole(payloadJSON json.RawMessage, requesterRole string) (json.RawMessage, error) {
+	requesterRole, err := normalizeFrozenApprovalRequesterRole(requesterRole)
+	if err != nil {
+		return nil, err
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(defaultJSON(payloadJSON), &payload); err != nil {
+		return nil, fmt.Errorf("%w: invalid frozen approval payload", store.ErrConflict)
+	}
+	if payload == nil {
+		payload = make(map[string]json.RawMessage)
+	}
+	encodedRole, err := json.Marshal(requesterRole)
+	if err != nil {
+		return nil, err
+	}
+	payload["requesterRole"] = encodedRole
+
+	frozenPayloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return frozenPayloadJSON, nil
+}
+
+func frozenApprovalRequesterRole(approval model.ApprovalRequest) (string, error) {
+	// requesterRole 是审批创建时冻结的策略输入，不代表查询了当前用户目录。
+	var payload struct {
+		RequesterRole string `json:"requesterRole"`
+	}
+	if err := json.Unmarshal(defaultJSON(approval.DecisionPayloadJSON), &payload); err != nil {
+		return "", fmt.Errorf("%w: invalid frozen approval payload", store.ErrConflict)
+	}
+	return normalizeFrozenApprovalRequesterRole(payload.RequesterRole)
+}
+
+func normalizeFrozenApprovalRequesterRole(role string) (string, error) {
+	normalized := normalizeRole(role)
+	switch normalized {
+	case roleOwner, roleAdmin, roleApprover, roleViewer, roleAgent, roleServiceAccount, "member":
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("%w: approval requester role is missing or invalid", store.ErrConflict)
+	}
+}
+
+func (a *App) revalidateApprovalExecution(ctx context.Context, workspaceID string, approval model.ApprovalRequest, call model.ToolCall) (approvalExecutionPlan, error) {
+	requesterRole, err := frozenApprovalRequesterRole(approval)
+	if err != nil {
+		return approvalExecutionPlan{}, err
+	}
+
+	tool, err := a.store.GetToolByKey(ctx, workspaceID, call.ToolKey)
+	if err != nil {
+		return approvalExecutionPlan{}, err
+	}
+
+	if strings.EqualFold(strings.TrimSpace(call.ToolKey), agentGuardEvaluateToolKey) {
+		if !tool.Enabled {
+			return approvalExecutionPlan{}, fmt.Errorf("%w: tool is disabled", store.ErrConflict)
+		}
+		var payload struct {
+			ActionType       string `json:"actionType"`
+			TargetCategory   string `json:"targetCategory"`
+			RiskLevel        string `json:"riskLevel"`
+			ContentSensitive bool   `json:"contentSensitive"`
+		}
+		if err := json.Unmarshal(defaultJSON(call.InputExecutionJSON), &payload); err != nil {
+			return approvalExecutionPlan{}, fmt.Errorf("%w: invalid frozen approval input", store.ErrConflict)
+		}
+		operationType := deriveAgentGuardOperationType(payload.ActionType, payload.RiskLevel)
+		decision, _, _ := a.decideAgentGuardPolicy(requesterRole, tool.Enabled, operationType, payload.RiskLevel, payload.ActionType, payload.TargetCategory, payload.ContentSensitive)
+		if decision == policyDeny {
+			return approvalExecutionPlan{}, fmt.Errorf("%w: current policy denies approval", store.ErrConflict)
+		}
+		return approvalExecutionPlan{tool: tool}, nil
+	}
+
+	decodedArgs, err := decodeJSONValue(defaultJSON(call.InputExecutionJSON))
+	if err != nil {
+		return approvalExecutionPlan{}, fmt.Errorf("%w: invalid frozen approval input", store.ErrConflict)
+	}
+	effectiveRisk := a.deriveToolCallRisk(tool, decodedArgs)
+	defaultDecision := a.decidePolicyDetailedWithRisk(tool, requesterRole, effectiveRisk)
+	policyDecision := string(defaultDecision.Effect)
+	policyReason := defaultDecision.Reason
+	policyRuleName := defaultDecision.RuleName
+	if policyDecision != policyDeny {
+		if err := a.validateToolCallBeforePolicyResponse(ctx, workspaceID, tool, decodedArgs); err != nil {
+			return approvalExecutionPlan{}, err
+		}
+		policyDecision, policyReason = a.deriveToolCallPolicy(tool, decodedArgs, policyDecision, policyReason)
+		if policyReason != defaultDecision.Reason {
+			policyRuleName = "derived-tool-policy"
+		}
+	}
+	evaluation, err := a.evaluateManagedPolicyForTool(ctx, workspaceID, tool, decodedArgs, effectiveRisk, policyDecision, policyReason, policyRuleName)
+	if err != nil {
+		return approvalExecutionPlan{}, err
+	}
+	if evaluation.Decision == policyDeny {
+		return approvalExecutionPlan{}, fmt.Errorf("%w: current policy denies approval", store.ErrConflict)
+	}
+	return approvalExecutionPlan{tool: tool, decodedArgs: decodedArgs}, nil
+}
+
 func normalizeRiskLevel(level string) string {
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "critical":
@@ -307,7 +444,10 @@ func containsSensitiveJSONKey(value any) bool {
 			if isSecretReferenceJSONKey(key) {
 				continue
 			}
-			if isSensitiveJSONKey(key) {
+			if strings.EqualFold(strings.TrimSpace(key), "headers") && containsSensitiveRiskHeader(item) {
+				return true
+			}
+			if isSensitiveRiskJSONKey(key) {
 				return true
 			}
 			if containsSensitiveJSONKey(item) {
@@ -319,6 +459,62 @@ func containsSensitiveJSONKey(value any) bool {
 			if containsSensitiveJSONKey(item) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func containsSensitiveRiskHeader(value any) bool {
+	headers, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	for key := range headers {
+		normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), "_", "-")
+		switch {
+		case normalized == "authorization",
+			normalized == "cookie",
+			normalized == "proxy-authorization",
+			strings.HasSuffix(normalized, "-token"),
+			strings.HasSuffix(normalized, "-api-key"),
+			strings.HasSuffix(normalized, "-secret"),
+			strings.HasSuffix(normalized, "-signature"):
+			return true
+		}
+	}
+	return false
+}
+
+func isSensitiveRiskJSONKey(key string) bool {
+	compact := strings.NewReplacer("-", "", "_", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(key)))
+	if compact == "" {
+		return false
+	}
+	switch compact {
+	case "password", "passwd", "pwd",
+		"secret", "clientsecret",
+		"token", "accesstoken", "refreshtoken", "authtoken", "idtoken", "sessiontoken",
+		"apikey", "accesskey", "privatekey",
+		"authorization", "cookie", "session":
+		return true
+	}
+
+	if hasSensitiveRiskKeySuffix(compact) {
+		return true
+	}
+	return strings.HasSuffix(compact, "value") &&
+		hasSensitiveRiskKeySuffix(strings.TrimSuffix(compact, "value"))
+}
+
+func hasSensitiveRiskKeySuffix(compact string) bool {
+	for _, suffix := range []string{
+		"password", "passwd", "pwd",
+		"secret", "token",
+		"apikey", "accesskey", "privatekey",
+		"authorization", "cookie",
+	} {
+		if strings.HasSuffix(compact, suffix) {
+			return true
 		}
 	}
 	return false

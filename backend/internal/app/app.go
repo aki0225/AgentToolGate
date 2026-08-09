@@ -96,12 +96,6 @@ type toolCallResponse struct {
 	ApprovalStatus string `json:"approvalStatus,omitempty"`
 }
 
-type approvalActionResponse struct {
-	Approval model.ApprovalRequest `json:"approval"`
-	ToolCall model.ToolCall        `json:"toolCall"`
-	Result   any                   `json:"result,omitempty"`
-}
-
 type policyRuleResponse struct {
 	Name       string                   `json:"name"`
 	Priority   int                      `json:"priority"`
@@ -523,7 +517,7 @@ func (a *App) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 		a.respondError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": approvals})
+	writeJSON(w, http.StatusOK, map[string]any{"items": newApprovalResponses(approvals)})
 }
 
 func (a *App) handleApproveApproval(w http.ResponseWriter, r *http.Request) {
@@ -566,9 +560,9 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, dec
 		a.respondError(w, store.ErrExpired)
 		return
 	}
-	reviewer := approvalActorID(reqCtx)
-	if approvalSelfReviewForbidden(reqCtx, approval.RequestedBy) {
-		a.respondError(w, forbidden("approval requester cannot review their own approval"))
+	reviewer, err := a.approvalReviewerForRequest(reqCtx, approval.RequestedBy, bearerToken(r.Header.Get("Authorization")))
+	if err != nil {
+		a.respondError(w, err)
 		return
 	}
 
@@ -576,6 +570,15 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, dec
 	if err != nil {
 		a.respondError(w, err)
 		return
+	}
+
+	var executionPlan approvalExecutionPlan
+	if decision == "approved" {
+		executionPlan, err = a.revalidateApprovalExecution(r.Context(), reqCtx.Workspace.ID, approval, call)
+		if err != nil {
+			a.respondError(w, err)
+			return
+		}
 	}
 
 	updatedApproval, err := a.store.TransitionApprovalRequest(r.Context(), reqCtx.Workspace.ID, approvalID, "pending", model.UpdateApprovalRequestInput{
@@ -589,7 +592,7 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, dec
 	}
 
 	if decision == "rejected" {
-		updatedCall, err := a.store.UpdateToolCall(r.Context(), reqCtx.Workspace.ID, call.ID, model.UpdateToolCallInput{
+		updatedCall, err := a.store.TransitionToolCall(r.Context(), reqCtx.Workspace.ID, call.ID, "approval_required", model.UpdateToolCallInput{
 			Status:             "rejected",
 			DurationMs:         0,
 			InputExecutionJSON: json.RawMessage(`{}`),
@@ -602,15 +605,48 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, dec
 			return
 		}
 		a.publishApprovalEvent(updatedApproval)
-		writeJSON(w, http.StatusOK, approvalActionResponse{
-			Approval: updatedApproval,
-			ToolCall: updatedCall,
+		writeJSON(w, http.StatusOK, newApprovalActionResponse(updatedApproval, updatedCall))
+		return
+	}
+
+	currentApproval, err := a.store.GetApprovalRequestByID(r.Context(), reqCtx.Workspace.ID, approvalID)
+	if err != nil {
+		a.respondError(w, err)
+		return
+	}
+	call, err = a.store.GetToolCallByApprovalID(r.Context(), reqCtx.Workspace.ID, approvalID)
+	if err != nil {
+		a.respondError(w, err)
+		return
+	}
+	if isConsumedAgentGuardApproval(currentApproval, call) {
+		writeJSON(w, http.StatusOK, newApprovalActionResponse(currentApproval, call))
+		return
+	}
+	executionPlan, err = a.revalidateApprovalExecution(r.Context(), reqCtx.Workspace.ID, currentApproval, call)
+	if err != nil {
+		updatedCall, updateErr := a.store.TransitionToolCall(r.Context(), reqCtx.Workspace.ID, call.ID, "approval_required", model.UpdateToolCallInput{
+			Status:             "failed",
+			DurationMs:         0,
+			InputExecutionJSON: json.RawMessage(`{}`),
+			OutputRedactedJSON: json.RawMessage(`{}`),
+			ErrorMessage:       approvalRevalidationFailedMessage,
+			TraceID:            call.TraceID,
 		})
+		if updateErr != nil {
+			if errors.Is(updateErr, store.ErrConflict) && a.writeCurrentConsumedAgentGuardApproval(w, r, reqCtx.Workspace.ID, approvalID) {
+				return
+			}
+			a.respondError(w, updateErr)
+			return
+		}
+		a.publishApprovalEvent(currentApproval)
+		writeJSON(w, http.StatusOK, newApprovalActionResponse(currentApproval, updatedCall))
 		return
 	}
 
 	if strings.EqualFold(strings.TrimSpace(call.ToolKey), agentGuardEvaluateToolKey) {
-		updatedCall, err := a.store.UpdateToolCall(r.Context(), reqCtx.Workspace.ID, call.ID, model.UpdateToolCallInput{
+		updatedCall, err := a.store.TransitionToolCall(r.Context(), reqCtx.Workspace.ID, call.ID, "approval_required", model.UpdateToolCallInput{
 			Status:             "approval_required",
 			DurationMs:         call.DurationMs,
 			InputExecutionJSON: json.RawMessage(`{}`),
@@ -619,29 +655,64 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, dec
 			TraceID:            call.TraceID,
 		})
 		if err != nil {
+			if errors.Is(err, store.ErrConflict) && a.writeCurrentConsumedAgentGuardApproval(w, r, reqCtx.Workspace.ID, approvalID) {
+				return
+			}
 			a.respondError(w, err)
 			return
 		}
-		a.publishApprovalEvent(updatedApproval)
-		writeJSON(w, http.StatusOK, approvalActionResponse{
-			Approval: updatedApproval,
-			ToolCall: updatedCall,
-		})
+		latestApproval, latestCall, consumed, latestErr := a.currentConsumedAgentGuardApproval(r.Context(), reqCtx.Workspace.ID, approvalID)
+		if latestErr != nil {
+			a.respondError(w, latestErr)
+			return
+		}
+		if consumed {
+			writeJSON(w, http.StatusOK, newApprovalActionResponse(latestApproval, latestCall))
+			return
+		}
+		a.publishApprovalEvent(currentApproval)
+		writeJSON(w, http.StatusOK, newApprovalActionResponse(currentApproval, updatedCall))
 		return
 	}
 
-	tool, err := a.store.GetToolByKey(r.Context(), reqCtx.Workspace.ID, call.ToolKey)
+	callBeforeClear := call
+	call, err = a.store.TransitionToolCall(r.Context(), reqCtx.Workspace.ID, call.ID, "approval_required", model.UpdateToolCallInput{
+		Status:             call.Status,
+		DurationMs:         call.DurationMs,
+		InputExecutionJSON: json.RawMessage(`{}`),
+		OutputRedactedJSON: json.RawMessage(`{}`),
+		ErrorMessage:       "",
+		TraceID:            call.TraceID,
+	})
 	if err != nil {
 		a.respondError(w, err)
 		return
 	}
 
+	executionPlan, err = a.revalidateApprovalExecution(r.Context(), reqCtx.Workspace.ID, currentApproval, callBeforeClear)
+	if err != nil {
+		updatedCall, updateErr := a.store.TransitionToolCall(r.Context(), reqCtx.Workspace.ID, call.ID, "approval_required", model.UpdateToolCallInput{
+			Status:             "failed",
+			DurationMs:         0,
+			InputExecutionJSON: json.RawMessage(`{}`),
+			OutputRedactedJSON: json.RawMessage(`{}`),
+			ErrorMessage:       approvalRevalidationFailedMessage,
+			TraceID:            call.TraceID,
+		})
+		if updateErr != nil {
+			a.respondError(w, updateErr)
+			return
+		}
+		a.publishApprovalEvent(currentApproval)
+		writeJSON(w, http.StatusOK, newApprovalActionResponse(currentApproval, updatedCall))
+		return
+	}
+
 	start := time.Now().UTC()
 	// 审批通过后只能使用创建审批单时冻结的执行参数；禁止回退到公开脱敏 input，避免审批时被替换或用脱敏值执行真实写操作。
-	executionInput := defaultJSON(call.InputExecutionJSON)
-	decodedArgs, _ := decodeJSONValue(executionInput)
+	tool := executionPlan.tool
 	connectorCtx, connectorSpan := telemetry.StartSpan(r.Context(), "agenttoolgate.connector.execute", attribute.String("tool.key", tool.Key()))
-	resultPayload, resultJSON, execErr := a.executeTool(connectorCtx, tool, reqCtx.Workspace.ID, decodedArgs)
+	_, resultJSON, execErr := a.executeTool(connectorCtx, tool, reqCtx.Workspace.ID, executionPlan.decodedArgs)
 	if execErr != nil {
 		telemetry.RecordError(connectorSpan, execErr)
 	}
@@ -655,7 +726,7 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, dec
 		resultJSON = json.RawMessage(`{}`)
 	}
 
-	updatedCall, err := a.store.UpdateToolCall(r.Context(), reqCtx.Workspace.ID, call.ID, model.UpdateToolCallInput{
+	updatedCall, err := a.store.TransitionToolCall(r.Context(), reqCtx.Workspace.ID, call.ID, "approval_required", model.UpdateToolCallInput{
 		Status:             status,
 		DurationMs:         durationMs,
 		InputExecutionJSON: json.RawMessage(`{}`),
@@ -667,13 +738,42 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, dec
 		a.respondError(w, err)
 		return
 	}
-	a.publishApprovalEvent(updatedApproval)
+	a.publishApprovalEvent(currentApproval)
 
-	writeJSON(w, http.StatusOK, approvalActionResponse{
-		Approval: updatedApproval,
-		ToolCall: updatedCall,
-		Result:   resultPayload,
-	})
+	writeJSON(w, http.StatusOK, newApprovalActionResponse(currentApproval, updatedCall))
+}
+
+func isConsumedAgentGuardApproval(approval model.ApprovalRequest, call model.ToolCall) bool {
+	return strings.EqualFold(strings.TrimSpace(call.ToolKey), agentGuardEvaluateToolKey) &&
+		strings.EqualFold(strings.TrimSpace(approval.Status), "consumed")
+}
+
+func (a *App) currentConsumedAgentGuardApproval(ctx context.Context, workspaceID, approvalID string) (model.ApprovalRequest, model.ToolCall, bool, error) {
+	approval, err := a.store.GetApprovalRequestByID(ctx, workspaceID, approvalID)
+	if err != nil {
+		return model.ApprovalRequest{}, model.ToolCall{}, false, err
+	}
+	call, err := a.store.GetToolCallByApprovalID(ctx, workspaceID, approvalID)
+	if err != nil {
+		return model.ApprovalRequest{}, model.ToolCall{}, false, err
+	}
+	if !isConsumedAgentGuardApproval(approval, call) {
+		return approval, call, false, nil
+	}
+	return approval, call, true, nil
+}
+
+func (a *App) writeCurrentConsumedAgentGuardApproval(w http.ResponseWriter, r *http.Request, workspaceID, approvalID string) bool {
+	approval, call, ok, err := a.currentConsumedAgentGuardApproval(r.Context(), workspaceID, approvalID)
+	if err != nil {
+		a.respondError(w, err)
+		return true
+	}
+	if !ok {
+		return false
+	}
+	writeJSON(w, http.StatusOK, newApprovalActionResponse(approval, call))
+	return true
 }
 
 func (a *App) handleDashboardSummary(w http.ResponseWriter, r *http.Request) {
@@ -1005,6 +1105,8 @@ func redactJSONValueByKey(value any) any {
 			redacted[index] = redactJSONValueByKey(item)
 		}
 		return redacted
+	case string:
+		return redactApprovalText(typed)
 	default:
 		return value
 	}

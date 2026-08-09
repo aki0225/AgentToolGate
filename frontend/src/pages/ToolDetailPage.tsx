@@ -22,6 +22,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { JsonBlock } from "../components/JsonBlock";
 import { useI18n } from "../i18n";
+import { governanceEffectLabel, governanceRiskLabel, governanceStatusLabel } from "../lib/governanceLabels";
 import type { DatabaseSchemaResponse, Tool, ToolCall, ToolCallResult } from "../types";
 
 const textareaClassName =
@@ -251,7 +252,9 @@ export function ToolDetailPage() {
           </div>
           <div className="flex flex-wrap gap-2">
             <Badge variant={operationBadgeVariant(tool.operationType)}>{tool.operationType}</Badge>
-            <Badge variant={riskBadgeVariant(tool.riskLevel)}>{tool.riskLevel}</Badge>
+            <Badge variant={riskBadgeVariant(tool.riskLevel)} title={tool.riskLevel}>
+              {governanceRiskLabel(t, tool.riskLevel)}
+            </Badge>
             <Badge variant={tool.enabled ? "success" : "destructive"}>{tool.enabled ? t("toolDetail.status.enabled") : t("toolDetail.status.disabled")}</Badge>
             {tool.requiresApproval && (
               <Badge variant="pending" className="gap-1">
@@ -461,7 +464,9 @@ export function ToolDetailPage() {
                       <p className="m-0 mt-1 text-xs text-muted-foreground">{t("toolDetail.response.description")}</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      <Badge variant={statusBadgeVariant(result.status)}>{result.status}</Badge>
+                      <Badge variant={statusBadgeVariant(result.status)} title={result.status}>
+                        {governanceStatusLabel(t, result.status)}
+                      </Badge>
                       <Dialog>
                         <DialogTrigger asChild>
                           <Button type="button" variant="outline" size="sm">
@@ -616,13 +621,23 @@ export function ToolDetailPage() {
                     {calls.map((call) => (
                       <TableRow key={call.id}>
                         <TableCell>
-                          <Badge variant={statusBadgeVariant(call.status)}>{call.status}</Badge>
+                          <Badge variant={statusBadgeVariant(call.status)} title={call.status}>
+                            {governanceStatusLabel(t, call.status)}
+                          </Badge>
                         </TableCell>
                         <TableCell>
-                          <Badge variant={policyBadgeVariant(call.policyDecision)}>{call.policyDecision}</Badge>
+                          <Badge variant={policyBadgeVariant(call.policyDecision)} title={call.policyDecision}>
+                            {governanceEffectLabel(t, call.policyDecision)}
+                          </Badge>
                         </TableCell>
                         <TableCell>
-                          {call.approvalStatus ? <Badge variant={statusBadgeVariant(call.approvalStatus)}>{call.approvalStatus}</Badge> : <span className="text-muted-foreground">-</span>}
+                          {call.approvalStatus ? (
+                            <Badge variant={statusBadgeVariant(call.approvalStatus)} title={call.approvalStatus}>
+                              {governanceStatusLabel(t, call.approvalStatus)}
+                            </Badge>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
                         </TableCell>
                         <TableCell className="text-muted-foreground">{call.durationMs}ms</TableCell>
                         <TableCell>

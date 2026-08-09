@@ -10,8 +10,7 @@ func TestEvaluateAllowsCommonReadOnlyCommands(t *testing.T) {
 	cases := []ActionInput{
 		{ToolName: "Bash", ActionType: "command", Command: "rg TODO .", CWD: `X:\demo\AgentToolGate`, ProjectRoot: `X:\demo\AgentToolGate`},
 		{ToolName: "Bash", ActionType: "command", Command: "git status", CWD: `X:\demo\AgentToolGate`, ProjectRoot: `X:\demo\AgentToolGate`},
-		{ToolName: "Bash", ActionType: "command", Command: "go test ./...", CWD: `X:\demo\AgentToolGate\backend`, ProjectRoot: `X:\demo\AgentToolGate`},
-		{ToolName: "Bash", ActionType: "command", Command: "npm run build", CWD: `X:\demo\AgentToolGate\frontend`, ProjectRoot: `X:\demo\AgentToolGate`},
+		{ToolName: "Bash", ActionType: "command", Command: "ls", CWD: `X:\demo\AgentToolGate`, ProjectRoot: `X:\demo\AgentToolGate`},
 		{ToolName: "Read", ActionType: "read", Target: `.\docs\README.md`, CWD: `X:\demo\AgentToolGate`, ProjectRoot: `X:\demo\AgentToolGate`},
 		{ToolName: "Browser", ActionType: "network", NetworkMethod: "GET", NetworkURL: "https://github.com/openai/openai-go"},
 	}
@@ -19,6 +18,23 @@ func TestEvaluateAllowsCommonReadOnlyCommands(t *testing.T) {
 		got := Evaluate(tc)
 		if got.Decision != "allow" || got.RiskLevel != "low" || !got.Silent {
 			t.Fatalf("expected allow/silent low for %+v, got %+v", tc, got)
+		}
+	}
+}
+
+func TestEvaluateRequiresConfirmationForProjectCodeExecution(t *testing.T) {
+	t.Parallel()
+
+	cases := []ActionInput{
+		{ToolName: "Bash", ActionType: "command", Command: "go test ./...", CWD: `X:\demo\AgentToolGate\backend`, ProjectRoot: `X:\demo\AgentToolGate`},
+		{ToolName: "Bash", ActionType: "command", Command: "go vet ./...", CWD: `X:\demo\AgentToolGate\backend`, ProjectRoot: `X:\demo\AgentToolGate`},
+		{ToolName: "Bash", ActionType: "command", Command: "npm test", CWD: `X:\demo\AgentToolGate\frontend`, ProjectRoot: `X:\demo\AgentToolGate`},
+		{ToolName: "Bash", ActionType: "command", Command: "npm run build", CWD: `X:\demo\AgentToolGate\frontend`, ProjectRoot: `X:\demo\AgentToolGate`},
+	}
+	for _, tc := range cases {
+		got := Evaluate(tc)
+		if got.Decision != "ask" || got.RiskLevel != "medium" || got.Silent {
+			t.Fatalf("project code execution must be medium ask/non-silent for %+v, got %+v", tc, got)
 		}
 	}
 }
@@ -49,6 +65,199 @@ func TestEvaluateDoesNotAllowSafeCommandWithDangerousTail(t *testing.T) {
 	}
 }
 
+func TestEvaluateReadOnlyCommandParsingBalancesSafetyAndUsability(t *testing.T) {
+	t.Parallel()
+
+	for _, command := range []string{
+		`rg "foo|bar" .`,
+		`rg 'foo;bar' .`,
+		`rg "powershell|curl" docs`,
+		`rg -n TODO src`,
+		`rg -a TODO src`,
+		`rg -C 2 TODO src`,
+		`rg --files docs`,
+		`grep -n TODO README.md`,
+		`Select-String -Pattern TODO -Path README.md`,
+		`git diff --stat`,
+		`git log -5 --oneline`,
+		`git show --stat HEAD`,
+		`git rev-parse --show-toplevel`,
+		`sed -n '1,40p' README.md`,
+		`sed -n '1,40P' README.md`,
+		`ls`,
+		`ls scripts/powershell`,
+		`ls examples/agent-demo/*.ps1`,
+		`dir .`,
+		`Get-ChildItem`,
+		`Get-Content -Raw README.md`,
+		`Get-Content README.md -TotalCount 20`,
+		`Get-Content AGENTS.md`,
+		`Get-Content package.json`,
+		`Get-Content package-lock.json`,
+		`Get-Content .claude/settings.json`,
+		`Get-Content .codex/config.toml`,
+		`Get-Content .agents/skills/review/SKILL.md`,
+		`Get-Content .github/workflows/ci.yml`,
+		`rg -n "timeout" .github/workflows`,
+		`grep -n "hooks" .codex/hooks/agent-guard-pretool.py`,
+		`cat docs/architecture.md`,
+		`type README.md`,
+		`pwd`,
+		`Get-Location`,
+	} {
+		got := Evaluate(ActionInput{
+			ToolName:    "Bash",
+			ActionType:  "command",
+			Command:     command,
+			CWD:         `X:\demo\project`,
+			ProjectRoot: `X:\demo\project`,
+		})
+		if got.Decision != "allow" || !got.Silent {
+			t.Fatalf("read-only command %q must remain silent allow, got %+v", command, got)
+		}
+	}
+
+	for _, command := range []string{
+		`rg --pre "powershell -Command Get-Content" .`,
+		`rg secret (Get-Location)`,
+		`rg secret C:\Users\demo`,
+		`rg secret ..\outside`,
+		`rg secret $env:USERPROFILE`,
+		`git diff --output=.ssh/id_rsa`,
+		`git diff --ext-diff`,
+		`git diff --no-index ..\a ..\b`,
+		`git log --output=.env.local`,
+		`Select-String -InputObject (Invoke-Expression "Get-Content .env")`,
+		`Select-String -Pattern TODO -Path Env:`,
+		`Select-String -Pattern TODO -Path ..\outside.txt`,
+		`Select-String -Pattern TODO -Path README.md,..\outside.txt`,
+		"git status\nSet-Content report.md changed",
+		"git status\r\nSet-Content report.md changed",
+		`git status \; Set-Content report.md changed`,
+		`sed -i 's/a/b/' README.md`,
+		`sed -n '1w report.txt' README.md`,
+		`sed -n '1e touch owned' README.md`,
+		`sed -n 1\,40p README.md`,
+		`Get-ChildItem Env:`,
+		`Get-ChildItem -Path:Env:`,
+		`Get-ChildItem -Path:([System.IO.Directory]::GetCurrentDirectory())`,
+		`Get-ChildItem C:\Users`,
+		`Get-ChildItem ..\outside`,
+		`Get-Content Env:API_TOKEN`,
+		`Get-Content C:\Users\demo\notes.txt`,
+		`Get-Content ..\outside.txt`,
+		`Get-Content README.md,..\outside.txt`,
+		`Get-Content $env:USERPROFILE`,
+		`Get-Content (Invoke-WebRequest https://example.test)`,
+		`Get-Content -Wait README.md`,
+		`cat /etc/passwd`,
+		`cat ~/notes.txt`,
+		`sed -n '1,20p' ..\outside.txt`,
+	} {
+		got := Evaluate(ActionInput{
+			ToolName:    "Bash",
+			ActionType:  "command",
+			Command:     command,
+			CWD:         `X:\demo\project`,
+			ProjectRoot: `X:\demo\project`,
+		})
+		if got.Decision == "allow" {
+			t.Fatalf("side-effect-capable command %q must not be silently allowed, got %+v", command, got)
+		}
+	}
+}
+
+func TestEvaluateReadOnlyCommandParserRegressionMatrix(t *testing.T) {
+	t.Parallel()
+
+	const (
+		projectRoot = `X:\demo\project`
+		projectCWD  = `X:\demo\project`
+		nestedCWD   = `X:\demo\project\backend`
+	)
+	cases := []struct {
+		name        string
+		command     string
+		cwd         string
+		projectRoot string
+		wantAllow   bool
+	}{
+		{name: "rg double dash pattern", command: `rg -- "-todo" README.md`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "grep double dash pattern", command: `grep -- "-todo" README.md`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "rg double quoted regex anchor", command: `rg "foo$" .`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "select string double quoted regex anchor", command: `Select-String -Pattern "foo$" -Path README.md`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "git double quoted regex anchor", command: `git log --grep="fix$"`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "rg lowercase flags", command: `rg -abc TODO src`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "rg combined context flag", command: `rg -nC2 TODO src`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "grep uppercase regex flags", command: `grep -EF TODO README.md`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "grep context flag", command: `grep -A 2 TODO README.md`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "git output indicator", command: `git diff --output-indicator-new=+`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "select string unique prefixes", command: `Select-String -Patt TODO -Lit README.md`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "get content unique path prefix", command: `Get-Content -Pa README.md`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "get child item unique recurse prefix", command: `Get-ChildItem -Rec .`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "native cat option", command: `cat -n README.md`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "native ls options", command: `ls -la`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "sed expression option", command: `sed -n -e '1,10p' README.md`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "sed end of options", command: `sed -n '1,10p' -- README.md`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "sed relative glob", command: `sed -n -e '1,10p' -- *.go`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "parent path remains in workspace", command: `rg TODO ..`, cwd: nestedCWD, projectRoot: projectRoot, wantAllow: true},
+
+		{name: "bash escaped quote chaining", command: `rg foo . x\"; touch owned #"`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "cwd outside project root", command: `rg TODO .`, cwd: `X:\outside`, projectRoot: projectRoot},
+		{name: "missing project root", command: `rg TODO .`, cwd: projectCWD},
+		{name: "parent path escapes workspace", command: `rg TODO ..`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "rg combined pattern file", command: `rg -Ff ..\patterns README.md`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "grep combined pattern file", command: `grep -Ff ..\patterns README.md`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "grep uppercase regex outside path", command: `grep -E TODO ..\outside`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "grep recursive short", command: `grep -r TODO .`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "grep dereference recursive short", command: `grep -R TODO .`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "grep recursive long", command: `grep --recursive TODO .`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "grep dereference recursive long", command: `grep --dereference-recursive TODO .`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "grep directory recurse mode", command: `grep -d recurse TODO .`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "rg hidden", command: `rg --hidden TODO .`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "rg unrestricted short", command: `rg -u TODO .`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "rg unrestricted combined", command: `rg -uuu TODO .`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "rg no ignore", command: `rg --no-ignore-vcs TODO .`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "rg follow long", command: `rg --follow TODO .`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "rg follow short", command: `rg -L TODO .`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "rg sensitive file", command: `rg TODO .env`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "grep project hook source", command: `grep TODO .codex/hooks/agent.py`, cwd: projectCWD, projectRoot: projectRoot, wantAllow: true},
+		{name: "git attached order file outside", command: `git diff -O..\orderfile`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "git separate order file outside", command: `git diff -O ..\orderfile`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "git sensitive order file", command: `git diff -O.env`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "select string abbreviated outside literal path", command: `Select-String -LiteralP ..\outside.txt TODO`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "select string ambiguous parameter", command: `Select-String -P TODO README.md`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "get content wait abbreviation", command: `Get-Content README.md -Wai`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "get content abbreviated outside path", command: `Get-Content -Pa ..\outside.txt`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "get content sensitive path", command: `Get-Content -Pa .env`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "get child item follow symlink", command: `Get-ChildItem -FollowS .`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "sed uppercase option", command: `sed -N '1,10p' README.md`, cwd: projectCWD, projectRoot: projectRoot},
+		{name: "sed sensitive path", command: `sed -n '1,10p' .env`, cwd: projectCWD, projectRoot: projectRoot},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := Evaluate(ActionInput{
+				ToolName:    "Bash",
+				ActionType:  "command",
+				Command:     tc.command,
+				CWD:         tc.cwd,
+				ProjectRoot: tc.projectRoot,
+			})
+			if tc.wantAllow {
+				if got.Decision != "allow" || !got.Silent {
+					t.Fatalf("read-only command %q must be silent allow, got %+v", tc.command, got)
+				}
+				return
+			}
+			if got.Decision == "allow" {
+				t.Fatalf("command %q must not be allowed, got %+v", tc.command, got)
+			}
+		})
+	}
+}
+
 func TestEvaluateDeniesSensitiveReads(t *testing.T) {
 	t.Parallel()
 	cases := []ActionInput{
@@ -63,6 +272,77 @@ func TestEvaluateDeniesSensitiveReads(t *testing.T) {
 		}
 		if strings.Contains(strings.ToLower(strings.Join(got.Signals, " ")), "credential") && strings.Contains(strings.ToLower(got.Reason), "credential") {
 			t.Fatalf("decision leaked too much detail: %+v", got)
+		}
+	}
+}
+
+func TestEvaluateAllowsOrdinaryWorkspaceFilesNamedLikeBrowserArtifacts(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		`src\history.ts`,
+		`docs\cookies.md`,
+		`internal\web data\reader.go`,
+		`testdata\login data.json`,
+	}
+	for _, target := range cases {
+		got := Evaluate(ActionInput{
+			ToolName:    "Read",
+			ActionType:  "read",
+			Target:      target,
+			CWD:         `X:\demo\AgentToolGate`,
+			ProjectRoot: `X:\demo\AgentToolGate`,
+		})
+		if got.Decision != "allow" || !got.Silent {
+			t.Fatalf("ordinary workspace path %q must remain allowed, got %+v", target, got)
+		}
+	}
+}
+
+func TestEvaluateAllowsProjectMetadataReadsButStillGuardsMutations(t *testing.T) {
+	t.Parallel()
+
+	const root = `X:\demo\AgentToolGate`
+	for _, target := range []string{
+		`AGENTS.md`,
+		`package.json`,
+		`package-lock.json`,
+		`.claude\settings.json`,
+		`.codex\hooks\agent-guard-pretool.py`,
+		`.agents\skills\review\SKILL.md`,
+		`.github\workflows\ci.yml`,
+	} {
+		readDecision := Evaluate(ActionInput{
+			ToolName:    "Read",
+			ActionType:  "read",
+			Target:      target,
+			CWD:         root,
+			ProjectRoot: root,
+		})
+		if readDecision.Decision != "allow" || !readDecision.Silent {
+			t.Fatalf("项目元数据读取 %q 应保持静默放行，got %+v", target, readDecision)
+		}
+
+		writeDecision := Evaluate(ActionInput{
+			ToolName:    "Write",
+			ActionType:  "write",
+			Target:      target,
+			CWD:         root,
+			ProjectRoot: root,
+		})
+		if writeDecision.Decision == "allow" || writeDecision.Silent {
+			t.Fatalf("项目元数据写入 %q 仍需确认或拒绝，got %+v", target, writeDecision)
+		}
+
+		deleteDecision := Evaluate(ActionInput{
+			ToolName:    "Delete",
+			ActionType:  "delete",
+			Target:      target,
+			CWD:         root,
+			ProjectRoot: root,
+		})
+		if deleteDecision.Decision == "allow" || deleteDecision.Silent {
+			t.Fatalf("项目元数据删除 %q 仍需确认或拒绝，got %+v", target, deleteDecision)
 		}
 	}
 }
@@ -94,6 +374,59 @@ func TestEvaluateDeniesPersistenceTargets(t *testing.T) {
 		if got.Decision != "deny" || got.Silent {
 			t.Fatalf("expected deny for %+v, got %+v", tc, got)
 		}
+	}
+}
+
+func TestEvaluateDeniesHookControlTamper(t *testing.T) {
+	t.Parallel()
+
+	got := Evaluate(ActionInput{
+		ToolName:       "Write",
+		ActionType:     "write",
+		Target:         `.tmp\agenttoolgate\hook-control.json`,
+		ContentPreview: `{"mode":"off"}`,
+		CWD:            `X:\demo\AgentToolGate`,
+		ProjectRoot:    `X:\demo\AgentToolGate`,
+	})
+	if got.Decision != "deny" || got.RiskLevel != "critical" || got.Category != "agent_self_tamper" {
+		t.Fatalf("hook control tamper must be denied as self-maintenance, got %+v", got)
+	}
+}
+
+func TestEvaluateDeniesKnownBrowserCredentialStores(t *testing.T) {
+	t.Parallel()
+
+	targets := []string{
+		`C:\Users\me\AppData\Local\BraveSoftware\Brave-Browser\User Data\Default\Login Data`,
+		`C:\Users\me\AppData\Local\Vivaldi\User Data\Default\Cookies`,
+		`C:\Users\me\AppData\Roaming\Opera Software\Opera Stable\History`,
+	}
+	for _, target := range targets {
+		got := Evaluate(ActionInput{
+			ToolName:    "Read",
+			ActionType:  "read",
+			Target:      target,
+			CWD:         `X:\demo\project`,
+			ProjectRoot: `X:\demo\project`,
+		})
+		if got.Decision != "deny" || got.RiskLevel != "high" {
+			t.Fatalf("browser credential path %q must be denied, got %+v", target, got)
+		}
+	}
+}
+
+func TestEvaluateDoesNotTreatGenericCmdServerAsSelfTamper(t *testing.T) {
+	t.Parallel()
+
+	got := Evaluate(ActionInput{
+		ToolName:    "Write",
+		ActionType:  "write",
+		Target:      `cmd\server\main.go`,
+		CWD:         `X:\demo\ordinary-project`,
+		ProjectRoot: `X:\demo\ordinary-project`,
+	})
+	if got.Decision != "allow" || got.RiskLevel != "low" {
+		t.Fatalf("ordinary project cmd/server write must remain allowed, got %+v", got)
 	}
 }
 

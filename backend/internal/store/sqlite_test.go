@@ -56,6 +56,11 @@ func TestSQLiteStoreToolCallExecutionInputClearsOnUpdate(t *testing.T) {
 	assertUpdateToolCallClearsExecutionInput(t, newTestSQLiteStore(t))
 }
 
+func TestSQLiteStoreToolCallTransitionIsCompareAndSwap(t *testing.T) {
+	t.Parallel()
+	assertToolCallTransitionIsCompareAndSwap(t, newTestSQLiteStore(t))
+}
+
 func newTestSQLiteStore(t *testing.T) Store {
 	t.Helper()
 	st, err := NewSQLiteStore(context.Background(), filepath.Join(t.TempDir(), "agenttoolgate.db"))

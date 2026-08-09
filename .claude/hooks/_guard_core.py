@@ -74,32 +74,81 @@ def is_probably_high_risk_target(target: str) -> bool:
     lowered = target.lower().strip()
     if not lowered:
         return False
+    parts = path_segments(lowered)
+    if parts:
+        filename = parts[-1]
+        if filename == ".env" or filename.startswith(".env."):
+            return True
+        if filename in {
+            ".npmrc",
+            "agents.md",
+            "bun.lockb",
+            "id_ed25519",
+            "id_rsa",
+            "microsoft.powershell_profile.ps1",
+            "package-lock.json",
+            "package.json",
+            "pnpm-lock.yaml",
+            "yarn.lock",
+        }:
+            return True
+        if any(
+            marker in filename
+            for marker in (
+                ".asc",
+                ".cer",
+                ".crt",
+                ".der",
+                ".key",
+                ".p12",
+                ".p7b",
+                ".p7c",
+                ".password",
+                ".pem",
+                ".pfx",
+                ".secret",
+                ".token",
+            )
+        ):
+            return True
     exact_files = (
-        ".env",
-        ".claude/settings.json",
-        ".codex/hooks.json",
+        ".tmp/agenttoolgate/hook-control.json",
         "configs/policies.yaml",
     )
     if any(path_matches_exact_file(lowered, item) for item in exact_files):
         return True
     dirs = (
         ".ssh",
+        ".aws",
+        ".azure",
+        ".kube",
         ".git/hooks",
-        ".claude/hooks",
-        ".codex/hooks",
-        "backend/cmd/server",
-        "cmd/server",
+        ".claude",
+        ".codex",
+        ".agents",
+        ".github/workflows",
+        "appdata/roaming/microsoft/windows/start menu/programs/startup",
+        "documents/powershell",
+        "documents/windowspowershell",
+        "appdata/local/google/chrome/user data",
+        "appdata/local/microsoft/edge/user data",
+        "appdata/local/bravesoftware/brave-browser/user data",
+        "appdata/local/vivaldi/user data",
+        "appdata/local/chromium/user data",
+        "appdata/roaming/opera software/opera stable",
+        "appdata/roaming/opera software/opera gx stable",
+        "appdata/roaming/mozilla/firefox/profiles",
+        ".config/google-chrome",
+        ".config/chromium",
+        ".config/bravesoftware/brave-browser",
+        ".config/vivaldi",
+        ".mozilla/firefox",
+        "library/application support/google/chrome",
+        "library/application support/microsoft edge",
+        "library/application support/bravesoftware/brave-browser",
+        "library/application support/vivaldi",
     )
     if any(path_matches_dir_or_descendant(lowered, item) for item in dirs):
-        return True
-    parts = path_segments(lowered)
-    sensitive_segments = (
-        "startup",
-        "credentials",
-        "secrets",
-        "taskschd",
-    )
-    if any(segment in parts for segment in sensitive_segments):
         return True
     sensitive_sequences = (
         ("windows", "system32", "config"),
@@ -108,6 +157,25 @@ def is_probably_high_risk_target(target: str) -> bool:
         ("windows", "system32", "tasks"),
     )
     return any(has_sequence(parts, list(sequence)) for sequence in sensitive_sequences)
+
+
+def is_project_metadata_read_target(target: str) -> bool:
+    parts = path_segments(target)
+    if not parts:
+        return False
+    if parts[-1] in {
+        "agents.md",
+        "bun.lockb",
+        "package-lock.json",
+        "package.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+    }:
+        return True
+    return any(
+        has_sequence(parts, path_segments(directory))
+        for directory in (".claude", ".codex", ".agents", ".github/workflows")
+    )
 
 
 def contains_hidden_script_features(content: str) -> bool:
@@ -169,12 +237,24 @@ def contains_hidden_script_features_in_decoded_base64(content: str) -> bool:
     return any(contains_hidden_script_features(decoded.lower()) for decoded in decoded_base64_payloads(content))
 
 
+def is_read_only_search_payload(payload: dict[str, object]) -> bool:
+    action = str(payload.get("actionType") or "").strip().lower()
+    tool = str(payload.get("tool") or "").strip().lower()
+    if action == "read" and tool in {"read", "grep", "glob"}:
+        return True
+    if action != "exec" or tool not in {"bash", "shell", "command", "powershell", "pwsh"}:
+        return False
+    content = str(payload.get("content") or "").lstrip().lower()
+    return any(content == name or content.startswith(name + " ") for name in ("rg", "grep", "select-string"))
+
+
 def is_high_risk_offline_target(payload: dict[str, object]) -> bool:
     target = str(payload.get("target") or "").strip()
     content = str(payload.get("content") or "").strip()
+    skip_hidden_script_scan = is_read_only_search_payload(payload)
     return (
         is_probably_high_risk_target(target)
         or is_probably_high_risk_target(content)
-        or contains_hidden_script_features(content)
-        or contains_hidden_script_features_in_decoded_base64(content)
+        or (not skip_hidden_script_scan and contains_hidden_script_features(content))
+        or (not skip_hidden_script_scan and contains_hidden_script_features_in_decoded_base64(content))
     )

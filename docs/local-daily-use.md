@@ -211,6 +211,16 @@ doctor 会显示：
 - DSN 密码
 - HTTP / MCP 上游敏感 header
 
+HTTP Connector 的 `allowedHosts` / `allowedMethods` 只能在后端环境配置的允许范围内继续缩小，不能通过 Console 扩大部署级上限。GitHub Connector 的 `apiBaseURL` 必须与后端环境配置一致，`allowedRepos` 也只能继续缩小。
+
+MCP Connector 使用 `headerSecretRefs` 时必须同时配置部署级 `MCP_ALLOWED_HOSTS`，例如：
+
+```powershell
+$env:MCP_ALLOWED_HOSTS = "127.0.0.1:8081"
+```
+
+Connector URL 必须命中该上限，且只能继续缩小范围。旧记录缺少对应 workspace Secret、后端 runtime env 或 allowlist 时同样 fail closed。MCP 重定向只允许协议、主机和有效端口均不变的同源跳转。
+
 ## Secret env valueRef 配置
 
 Secret 管理只保存 env 名，不保存真实密钥值。示例：
@@ -256,6 +266,8 @@ DATABASE_URL=postgres://agenttoolgate:agenttoolgate@127.0.0.1:5432/agenttoolgate
 - 旧客户端需要时才使用 SSE fallback：`http://127.0.0.1:8080/mcp/sse`。
 - local mode 带 `X-Workspace-Org-Id: local-org`。
 - 写操作命中 `approval_required` 时，到本地 Console 审批，再重试或看 Audit Logs。
+- 本地模式默认请求者和审批者是同一身份。需要职责分离时，在后端设置至少 24 个字符的 `AGT_LOCAL_REVIEWER_TOKEN`，审批时只在 Console 的“本地独立审批令牌”输入框临时填写；前端不会持久化该值。
+- 审批列表和批准/拒绝响应只返回脱敏摘要及稳定错误，不返回冻结执行参数、原始 Secret、URL 私密部分或底层 Connector 错误。批准后的二次重验证会缩小 TOCTOU 窗口，但不构成 Store 与外部 Connector 的跨系统原子事务。
 - AgentToolGate 是工具治理网关，不是操作系统级强制沙箱；真实危险动作仍要配合最小权限和系统级隔离。
 
 ## 日常检查
@@ -321,7 +333,7 @@ Codex 项目级 hook 可以桥接到 Go Guard Core：
 agenttoolgate.exe guard hook codex --input -
 ```
 
-如果需要覆盖二进制路径，可设置 `AGENTTOOLGATE_EXE`。Codex Hook Bridge 是手动 opt-in guardrail，不是 OS sandbox / OS enforcement boundary；不会自动修改用户级 `~/.codex/config.toml`。MVP 暂不做 approval ticket / `deny_with_ticket` / retry / remembered allow，Guard `ask` 会保守映射为 `deny`。
+如果需要覆盖二进制路径，可设置 `AGENTTOOLGATE_EXE`。Codex Hook Bridge 是手动 opt-in guardrail，不是 OS sandbox / OS enforcement boundary；不会自动修改用户级 `~/.codex/config.toml`。后端已支持一次性 `deny_with_ticket`、批准后精确重试和低/中风险 remembered allow；Codex 运行时仍没有完整 ask 交互，需要确认的动作会保守输出 deny，批准后由客户端重试。
 
 ## 备忘
 

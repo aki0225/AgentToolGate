@@ -33,11 +33,27 @@ var agentGuardExecWriteTargetPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(^|[\s]+)-(literalpath|filepath|path)[\s]+("[^"]+"|'[^']+'|[^\s;&|]+)`),
 }
 
+var agentGuardSensitiveContentPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(^|[^[:alnum:]_])["']?[[:alnum:]_-]*(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|authorization|cookie)["']?\s*[:=]`),
+	regexp.MustCompile(`(?i)\bbearer\s+[[:alnum:].~_+/=-]{8,}`),
+	regexp.MustCompile(`(?i)\b(gh[pousr]_[[:alnum:]_]{12,}|sk-[[:alnum:]_-]{12,})\b`),
+	regexp.MustCompile(`(?i)-----begin [^-]*private key-----`),
+}
+
+var agentGuardProjectCodeExecutionPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(^|[\s;&|])go\s+(test|vet)(\s|$)`),
+	regexp.MustCompile(`(?i)(^|[\s;&|])(npm|pnpm|yarn|bun)\s+(test|run\s+(build|test))(\s|$)`),
+}
+
 type agentGuardEvaluateRequest struct {
 	Adapter              string `json:"adapter"`
 	Tool                 string `json:"tool"`
 	ActionType           string `json:"actionType"`
 	Target               string `json:"target"`
+	WorkspaceRoot        string `json:"workspaceRoot,omitempty"`
+	WorkingDirectory     string `json:"workingDirectory,omitempty"`
+	GuardDecision        string `json:"guardDecision,omitempty"`
+	GuardRiskLevel       string `json:"guardRiskLevel,omitempty"`
 	IsScript             bool   `json:"isScript"`
 	ContentEncoding      string `json:"contentEncoding"`
 	Content              string `json:"content"`
@@ -120,12 +136,26 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 	}
 
 	normalizedTarget := normalizeAgentGuardTarget(req.Target)
+	guardDecision := strings.ToLower(strings.TrimSpace(req.GuardDecision))
+	switch guardDecision {
+	case "", "allow", "ask", "deny":
+	default:
+		return agentGuardDecisionResponse{}, badRequest("guardDecision must be allow, ask, or deny")
+	}
+	guardRiskLevel := strings.ToLower(strings.TrimSpace(req.GuardRiskLevel))
+	switch guardRiskLevel {
+	case "", "low", "medium", "high", "critical":
+	default:
+		return agentGuardDecisionResponse{}, badRequest("guardRiskLevel must be low, medium, high, or critical")
+	}
 	decodedContent, err := decodeAgentGuardContent(req.ContentEncoding, req.Content)
 	if err != nil {
 		return agentGuardDecisionResponse{}, err
 	}
-	targetResolution := a.resolveAgentGuardTarget(normalizedTarget)
-	targetCategory := classifyAgentGuardTargetCategoryWithResolution(normalizedTarget, targetResolution)
+	workspaceRoot := a.trustedAgentGuardWorkspaceRoot(req.WorkspaceRoot)
+	workingDirectory := normalizeAgentGuardTarget(req.WorkingDirectory)
+	targetResolution := a.resolveAgentGuardTargetWithinContext(normalizedTarget, workspaceRoot, workingDirectory)
+	targetCategory := classifyAgentGuardTargetCategoryWithWorkspace(normalizedTarget, workspaceRoot, targetResolution)
 	contentSensitive := containsSensitiveAgentGuardContent(decodedContent)
 	contentHash := hashAgentGuardPayload(decodedContent)
 	scriptHash := ""
@@ -133,6 +163,12 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 		scriptHash = contentHash
 	}
 	riskLevel := deriveAgentGuardRisk(req.ActionType, normalizedTarget, req.IsScript, decodedContent, targetResolution.ResolvedPath, targetResolution.ResolvedParentPath, targetResolution.ParentIdentity)
+	if guardRiskLevel != "" {
+		riskLevel = maxRiskLevel(riskLevel, guardRiskLevel)
+	}
+	if targetCategory == "workspace" && isAgentGuardProjectCodeExecution(req.ActionType, req.Target, decodedContent) {
+		targetCategory = "project_code_execution"
+	}
 	operationType := deriveAgentGuardOperationType(req.ActionType, riskLevel)
 	traceID := telemetry.TraceID(ctx)
 	if traceID == "" {
@@ -149,6 +185,10 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 		targetResolution.CanonicalTarget,
 		targetResolution.ResolvedFileIdentity,
 		targetResolution.ParentIdentity,
+		workspaceRoot,
+		workingDirectory,
+		guardDecision,
+		guardRiskLevel,
 		contentHash,
 		scriptHash,
 	}, "\x00"))
@@ -158,6 +198,10 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 		"tool":                 strings.TrimSpace(req.Tool),
 		"actionType":           strings.ToLower(strings.TrimSpace(req.ActionType)),
 		"target":               strings.TrimSpace(req.Target),
+		"workspaceRoot":        workspaceRoot,
+		"workingDirectory":     workingDirectory,
+		"guardDecision":        guardDecision,
+		"guardRiskLevel":       guardRiskLevel,
 		"isScript":             req.IsScript,
 		"contentEncoding":      strings.ToLower(strings.TrimSpace(req.ContentEncoding)),
 		"content":              decodedContent,
@@ -185,7 +229,19 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 		attribute.String("agent_guard.operation_type", operationType),
 		attribute.String("agent_guard.risk_level", riskLevel),
 	)
-	policyDecision, policyReason, policyRuleName := a.decideAgentGuardPolicy(reqCtx, operationType, riskLevel, req.ActionType, targetCategory, contentSensitive)
+	policyDecision, policyReason, policyRuleName := a.decideAgentGuardPolicy(reqCtx.User.Role, tool.Enabled, operationType, riskLevel, req.ActionType, targetCategory, contentSensitive)
+	switch guardDecision {
+	case "deny":
+		policyDecision = policyDeny
+		policyReason = "Guard Core denied this action"
+		policyRuleName = "guard-core-deny-floor"
+	case "ask":
+		if policyDecision == policyAllow {
+			policyDecision = policyRequireApproval
+			policyReason = "Guard Core requires confirmation"
+			policyRuleName = "guard-core-ask-floor"
+		}
+	}
 	approvalSpan.SetAttributes(attribute.String("policy.decision", policyDecision))
 	approvalSpan.End()
 	telemetry.RecordAgentGuardRuleOutcome(policyRuleName, "triggered")
@@ -194,6 +250,10 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 	if isAgentGuardStrictTargetCategory(targetCategory) && targetResolution.TargetExists && !targetResolution.TargetIdentityStable {
 		telemetry.RecordAgentGuardRuleOutcome(policyRuleName, "denied")
 		return a.recordAgentGuardDenied(ctx, reqCtx, tool, req, decisionPayloadJSON, inputRedactedJSON, traceID, requestID, "sensitive path without stable file identity", fingerprint, riskLevel, "", explanation)
+	}
+	if policyDecision == policyDeny {
+		telemetry.RecordAgentGuardRuleOutcome(policyRuleName, "denied")
+		return a.recordAgentGuardDenied(ctx, reqCtx, tool, req, decisionPayloadJSON, inputRedactedJSON, traceID, requestID, policyReason, fingerprint, riskLevel, "", explanation)
 	}
 
 	existingApproval, existingCall, found, err := a.lookupAgentGuardApproval(ctx, reqCtx.Workspace.ID, fingerprint)
@@ -252,9 +312,6 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 	case policyAllow:
 		telemetry.RecordAgentGuardRuleOutcome(policyRuleName, "allow")
 		return a.recordAgentGuardSuccess(ctx, reqCtx, tool, req, decisionPayloadJSON, inputRedactedJSON, traceID, requestID, policyReason, fingerprint, riskLevel, explanation)
-	case policyDeny:
-		telemetry.RecordAgentGuardRuleOutcome(policyRuleName, "denied")
-		return a.recordAgentGuardDenied(ctx, reqCtx, tool, req, decisionPayloadJSON, inputRedactedJSON, traceID, requestID, policyReason, fingerprint, riskLevel, "", explanation)
 	case policyRequireApproval:
 		telemetry.RecordAgentGuardRuleOutcome(policyRuleName, "approval_required")
 		return a.recordAgentGuardApproval(ctx, reqCtx, tool, req, decisionPayloadJSON, inputRedactedJSON, traceID, requestID, policyReason, fingerprint, riskLevel, explanation)
@@ -304,7 +361,7 @@ func (a *App) evaluateAgentGuardWithTicket(ctx context.Context, reqCtx RequestCo
 		if err != nil {
 			return agentGuardDecisionResponse{}, err
 		}
-		updatedCall, err := a.store.UpdateToolCall(ctx, reqCtx.Workspace.ID, call.ID, model.UpdateToolCallInput{
+		updatedCall, err := a.store.TransitionToolCall(ctx, reqCtx.Workspace.ID, call.ID, "approval_required", model.UpdateToolCallInput{
 			Status:             "success",
 			DurationMs:         0,
 			InputExecutionJSON: json.RawMessage(`{}`),
@@ -406,7 +463,19 @@ func (a *App) expireAgentGuardApprovalMemory(ctx context.Context, workspaceID st
 
 func (a *App) recordAgentGuardApproval(ctx context.Context, reqCtx RequestContext, tool model.Tool, req agentGuardEvaluateRequest, decisionPayloadJSON, inputRedactedJSON json.RawMessage, traceID, requestID, policyReason, fingerprint, riskLevel string, explanation *agentGuardExplanation) (agentGuardDecisionResponse, error) {
 	approvalSpanCtx, approvalSpan := telemetry.StartSpan(ctx, "agenttoolgate.approval.check", attribute.String("policy.decision", policyRequireApproval))
-	targetResolution := a.resolveAgentGuardTarget(normalizeAgentGuardTarget(req.Target))
+	frozenDecisionPayloadJSON, err := freezeApprovalRequesterRole(decisionPayloadJSON, reqCtx.User.Role)
+	if err != nil {
+		telemetry.RecordError(approvalSpan, err)
+		approvalSpan.End()
+		return agentGuardDecisionResponse{}, err
+	}
+	decisionPayloadJSON = frozenDecisionPayloadJSON
+	workspaceRoot := a.trustedAgentGuardWorkspaceRoot(req.WorkspaceRoot)
+	targetResolution := a.resolveAgentGuardTargetWithinContext(
+		normalizeAgentGuardTarget(req.Target),
+		workspaceRoot,
+		normalizeAgentGuardTarget(req.WorkingDirectory),
+	)
 	approval, err := a.store.CreateApprovalRequest(approvalSpanCtx, model.CreateApprovalRequestInput{
 		WorkspaceID:     reqCtx.Workspace.ID,
 		ToolKey:         tool.Key(),
@@ -579,7 +648,7 @@ func (a *App) lookupAgentGuardApproval(ctx context.Context, workspaceID, fingerp
 	return model.ApprovalRequest{}, model.ToolCall{}, false, nil
 }
 
-func (a *App) decideAgentGuardPolicy(reqCtx RequestContext, operationType, riskLevel, actionType, targetCategory string, contentSensitive bool) (string, string, string) {
+func (a *App) decideAgentGuardPolicy(userRole string, toolEnabled bool, operationType, riskLevel, actionType, targetCategory string, contentSensitive bool) (string, string, string) {
 	if a.policies == nil {
 		a.policies = policy.NewDefaultEngine()
 	}
@@ -587,13 +656,13 @@ func (a *App) decideAgentGuardPolicy(reqCtx RequestContext, operationType, riskL
 		ToolNamespace:    "agent_guard",
 		ToolName:         "evaluate",
 		OperationType:    operationType,
-		UserRole:         reqCtx.User.Role,
+		UserRole:         userRole,
 		RiskLevel:        riskLevel,
 		ActionType:       strings.ToLower(strings.TrimSpace(actionType)),
 		TargetCategory:   strings.ToLower(strings.TrimSpace(targetCategory)),
 		ContentSensitive: contentSensitive,
 		RequiresApproval: riskLevelRank(riskLevel) >= riskLevelRank("high") || strings.EqualFold(strings.TrimSpace(targetCategory), "sensitive") || contentSensitive,
-		ToolEnabled:      true,
+		ToolEnabled:      toolEnabled,
 		SupportedTool:    true,
 	})
 	return string(decision.Effect), agentGuardReason(decision.Reason, riskLevel, operationType), decision.RuleName
@@ -770,14 +839,28 @@ func containsSensitiveAgentGuardContent(content string) bool {
 	if content == "" {
 		return false
 	}
-	lower := strings.ToLower(content)
-	keywords := []string{"password", "secret", "token", "private key", "api_key", "access_key", "authorization", "cookie"}
-	for _, keyword := range keywords {
-		if strings.Contains(lower, keyword) {
+	for _, pattern := range agentGuardSensitiveContentPatterns {
+		if pattern.MatchString(content) {
 			return true
 		}
 	}
-	return strings.Contains(lower, "-----begin") || strings.Contains(lower, "base64")
+	return false
+}
+
+func isAgentGuardProjectCodeExecution(actionType, target, content string) bool {
+	switch strings.ToLower(strings.TrimSpace(actionType)) {
+	case "exec", "execute", "run":
+	default:
+		return false
+	}
+	for _, candidate := range []string{target, content} {
+		for _, pattern := range agentGuardProjectCodeExecutionPatterns {
+			if pattern.MatchString(candidate) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func containsHiddenScriptExecutionFeatures(content string) bool {
