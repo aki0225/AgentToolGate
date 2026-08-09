@@ -55,18 +55,21 @@ type hookControlDocument struct {
 }
 
 type hookAgentGuardRequest struct {
-	Adapter          string `json:"adapter"`
-	Tool             string `json:"tool"`
-	ActionType       string `json:"actionType"`
-	Target           string `json:"target"`
-	WorkspaceRoot    string `json:"workspaceRoot,omitempty"`
-	WorkingDirectory string `json:"workingDirectory,omitempty"`
-	GuardDecision    string `json:"guardDecision,omitempty"`
-	GuardRiskLevel   string `json:"guardRiskLevel,omitempty"`
-	IsScript         bool   `json:"isScript"`
-	ContentEncoding  string `json:"contentEncoding"`
-	Content          string `json:"content"`
-	TicketID         string `json:"ticketId,omitempty"`
+	Adapter          string   `json:"adapter"`
+	Tool             string   `json:"tool"`
+	ActionType       string   `json:"actionType"`
+	Target           string   `json:"target"`
+	Targets          []string `json:"targets,omitempty"`
+	NetworkMethod    string   `json:"networkMethod,omitempty"`
+	NetworkURL       string   `json:"networkUrl,omitempty"`
+	WorkspaceRoot    string   `json:"workspaceRoot,omitempty"`
+	WorkingDirectory string   `json:"workingDirectory,omitempty"`
+	GuardDecision    string   `json:"guardDecision,omitempty"`
+	GuardRiskLevel   string   `json:"guardRiskLevel,omitempty"`
+	IsScript         bool     `json:"isScript"`
+	ContentEncoding  string   `json:"contentEncoding"`
+	Content          string   `json:"content"`
+	TicketID         string   `json:"ticketId,omitempty"`
 }
 
 type hookAgentGuardResponse struct {
@@ -274,6 +277,12 @@ func runHookControlCLI(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 2
+		}
+		if mode != projectHookModeOff {
+			if _, err := guard.LoadProjectProtection(repoRoot); err != nil {
+				fmt.Fprintf(stderr, "项目保护策略无效：%v\n", err)
+				return 2
+			}
 		}
 		doc := hookControlDocument{
 			Mode:      mode,
@@ -623,13 +632,33 @@ func runGuardHook(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	localDecision := guard.Evaluate(action)
+	protection, protectionErr := guard.LoadProjectProtection(repoRoot)
+	if protectionErr != nil {
+		if hookMode == projectHookModeDryRun {
+			localDecision := guard.Decision{
+				Decision:  "deny",
+				RiskLevel: "high",
+				Signals:   []string{"project_protection_config_invalid"},
+			}
+			request := buildHookAgentGuardRequest(client, action, repoRoot, localDecision)
+			if err := recordHookDryRun(repoRoot, request, localDecision); err != nil {
+				fmt.Fprintln(stderr, "写入 hook dry-run 预览失败")
+				return 1
+			}
+			return 0
+		}
+		return emitHookDecision(client, hookAgentGuardResponse{
+			Decision: "deny",
+			Reason:   "project protection config invalid",
+		}, stdout, stderr)
+	}
+	localDecision := guard.EvaluateWithProjectProtection(action, protection)
 	request := buildHookAgentGuardRequest(client, action, repoRoot, localDecision)
-	if isHookFastPathRepoRead(action, repoRoot) {
+	if isHookFastPathRepoRead(action, repoRoot, localDecision) {
 		return 0
 	}
 	if hookMode == projectHookModeDryRun {
-		if err := recordHookDryRun(repoRoot, action, request); err != nil {
+		if err := recordHookDryRun(repoRoot, request, localDecision); err != nil {
 			fmt.Fprintln(stderr, "写入 hook dry-run 预览失败")
 			return 1
 		}
@@ -733,13 +762,14 @@ func sameHookPath(left, right string) bool {
 func buildHookAgentGuardRequest(client string, action guard.ActionInput, repoRoot string, localDecision guard.Decision) hookAgentGuardRequest {
 	actionType := strings.ToLower(strings.TrimSpace(action.ActionType))
 	target := strings.TrimSpace(action.Target)
+	targets := guard.CanonicalProjectTargets(action)
 	content := strings.TrimSpace(action.ContentPreview)
 	switch actionType {
 	case "command", "exec", "execute":
 		actionType = "exec"
 		content = strings.TrimSpace(action.Command)
-		if target == "" {
-			target = extractHookCommandTarget(content)
+		if target == "" && len(targets) > 0 {
+			target = targets[0]
 		}
 	case "network":
 		actionType = "read"
@@ -760,7 +790,10 @@ func buildHookAgentGuardRequest(client string, action guard.ActionInput, repoRoo
 		target = strings.TrimSpace(action.NetworkURL)
 	}
 	if target == "" {
-		target = strings.TrimSpace(action.ToolName)
+		target = strings.TrimSpace(action.Command)
+		if target == "" {
+			target = strings.TrimSpace(action.ToolName)
+		}
 	}
 	if content == "" && actionType == "exec" {
 		content = strings.TrimSpace(action.Command)
@@ -770,6 +803,9 @@ func buildHookAgentGuardRequest(client string, action guard.ActionInput, repoRoo
 		Tool:             strings.TrimSpace(action.ToolName),
 		ActionType:       actionType,
 		Target:           target,
+		Targets:          targets,
+		NetworkMethod:    strings.TrimSpace(action.NetworkMethod),
+		NetworkURL:       strings.TrimSpace(action.NetworkURL),
 		WorkspaceRoot:    strings.TrimSpace(repoRoot),
 		WorkingDirectory: strings.TrimSpace(action.CWD),
 		GuardDecision:    strings.ToLower(strings.TrimSpace(localDecision.Decision)),
@@ -780,7 +816,7 @@ func buildHookAgentGuardRequest(client string, action guard.ActionInput, repoRoo
 	}
 }
 
-func isHookFastPathRepoRead(action guard.ActionInput, repoRoot string) bool {
+func isHookFastPathRepoRead(action guard.ActionInput, repoRoot string, decision guard.Decision) bool {
 	actionType := strings.ToLower(strings.TrimSpace(action.ActionType))
 	toolName := strings.ToLower(strings.TrimSpace(action.ToolName))
 	if actionType != "read" || toolName != "read" {
@@ -794,7 +830,6 @@ func isHookFastPathRepoRead(action guard.ActionInput, repoRoot string) bool {
 	if strings.TrimSpace(candidate.CWD) == "" {
 		candidate.CWD = repoRoot
 	}
-	decision := guard.Evaluate(candidate)
 	return decision.Decision == "allow" && decision.RiskLevel == "low"
 }
 
@@ -832,112 +867,6 @@ func hookReadTargetWithinRepo(action guard.ActionInput, repoRoot string) bool {
 		return err == nil
 	}
 	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
-}
-
-func extractHookCommandTarget(command string) string {
-	if target := extractHookPowerShellTarget(command); target != "" {
-		return target
-	}
-	return strings.TrimSpace(command)
-}
-
-func extractHookPowerShellTarget(command string) string {
-	specs := []struct {
-		Name        string
-		TargetIndex int
-	}{
-		{Name: "set-content", TargetIndex: 0},
-		{Name: "add-content", TargetIndex: 0},
-		{Name: "out-file", TargetIndex: 0},
-		{Name: "new-item", TargetIndex: 0},
-		{Name: "copy-item", TargetIndex: 1},
-		{Name: "move-item", TargetIndex: 1},
-		{Name: "rename-item", TargetIndex: 1},
-	}
-	lowerCommand := strings.ToLower(command)
-	for _, spec := range specs {
-		offset := strings.Index(lowerCommand, spec.Name)
-		if offset < 0 {
-			continue
-		}
-		tokens := splitHookCommandTokens(command[offset+len(spec.Name):])
-		positionals := make([]string, 0, 2)
-		for index := 0; index < len(tokens); index++ {
-			token := tokens[index]
-			if token == ";" || token == "&" || token == "|" {
-				break
-			}
-			lowerToken := strings.ToLower(token)
-			if isHookTargetParameter(lowerToken) && index+1 < len(tokens) {
-				return tokens[index+1]
-			}
-			if strings.HasPrefix(token, "-") {
-				if hookParameterConsumesValue(lowerToken) && index+1 < len(tokens) {
-					index++
-				}
-				continue
-			}
-			positionals = append(positionals, token)
-		}
-		if len(positionals) > spec.TargetIndex {
-			return positionals[spec.TargetIndex]
-		}
-	}
-	return ""
-}
-
-func splitHookCommandTokens(value string) []string {
-	var tokens []string
-	var current strings.Builder
-	var quote rune
-	flush := func() {
-		if current.Len() == 0 {
-			return
-		}
-		tokens = append(tokens, current.String())
-		current.Reset()
-	}
-	for _, char := range value {
-		if quote != 0 {
-			if char == quote {
-				quote = 0
-				continue
-			}
-			current.WriteRune(char)
-			continue
-		}
-		switch char {
-		case '\'', '"':
-			quote = char
-		case ';', '&', '|':
-			flush()
-			tokens = append(tokens, string(char))
-		case ' ', '\t', '\r', '\n':
-			flush()
-		default:
-			current.WriteRune(char)
-		}
-	}
-	flush()
-	return tokens
-}
-
-func isHookTargetParameter(value string) bool {
-	switch value {
-	case "-path", "-literalpath", "-filepath", "-destination":
-		return true
-	default:
-		return false
-	}
-}
-
-func hookParameterConsumesValue(value string) bool {
-	switch value {
-	case "-credential", "-encoding", "-filter", "-include", "-exclude", "-itemtype", "-name", "-newname", "-stream", "-type", "-value":
-		return true
-	default:
-		return false
-	}
 }
 
 func isHookScriptTarget(value string) bool {
@@ -999,7 +928,7 @@ func callHookAgentGuard(payload hookAgentGuardRequest) (int, hookAgentGuardRespo
 }
 
 func hookHTTPTimeout() time.Duration {
-	const defaultTimeout = 200 * time.Millisecond
+	const defaultTimeout = time.Second
 	raw := strings.TrimSpace(os.Getenv("AGENTTOOLGATE_HOOK_TIMEOUT_MS"))
 	if raw == "" {
 		return defaultTimeout
@@ -1118,6 +1047,9 @@ func hookRequestDigest(payload hookAgentGuardRequest) string {
 		payload.Tool,
 		payload.ActionType,
 		payload.Target,
+		payload.Targets,
+		payload.NetworkMethod,
+		payload.NetworkURL,
 		payload.WorkspaceRoot,
 		payload.WorkingDirectory,
 		payload.GuardDecision,
@@ -1219,8 +1151,7 @@ func writeHookJSONFile(path string, value any) error {
 	return os.Rename(tempPath, path)
 }
 
-func recordHookDryRun(repoRoot string, action guard.ActionInput, request hookAgentGuardRequest) error {
-	decision := guard.Evaluate(action)
+func recordHookDryRun(repoRoot string, request hookAgentGuardRequest, decision guard.Decision) error {
 	record := map[string]any{
 		"workspace":       firstNonEmptyString(os.Getenv("AGENTTOOLGATE_WORKSPACE_ORG_ID"), os.Getenv("WORKSPACE_ORG_ID"), filepath.Base(repoRoot)),
 		"actor":           firstNonEmptyString(os.Getenv("AGENTTOOLGATE_ACTOR"), os.Getenv("USER"), os.Getenv("USERNAME")),

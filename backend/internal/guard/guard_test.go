@@ -22,6 +22,22 @@ func TestEvaluateAllowsCommonReadOnlyCommands(t *testing.T) {
 	}
 }
 
+func TestEvaluateDoesNotHidePrimaryTargetBehindAdditionalTargets(t *testing.T) {
+	t.Parallel()
+
+	got := Evaluate(ActionInput{
+		ToolName:    "apply_patch",
+		ActionType:  "write",
+		Target:      ".ssh/id_rsa",
+		Targets:     []string{"src/ui.go"},
+		CWD:         `X:\demo\project`,
+		ProjectRoot: `X:\demo\project`,
+	})
+	if got.Decision != "deny" || got.RiskLevel != "critical" {
+		t.Fatalf("primary sensitive target must remain visible, got %+v", got)
+	}
+}
+
 func TestEvaluateRequiresConfirmationForProjectCodeExecution(t *testing.T) {
 	t.Parallel()
 

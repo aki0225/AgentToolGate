@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"agenttoolgate/backend/internal/config"
+	"agenttoolgate/backend/internal/guard"
 	"agenttoolgate/backend/internal/model"
 	"agenttoolgate/backend/internal/policy"
 	"agenttoolgate/backend/internal/store"
@@ -637,7 +638,7 @@ func TestAgentGuardLowRiskApprovedFingerprintExpiresBeforeReuse(t *testing.T) {
 		ContentEncoding: "plain",
 		Content:         "Write-Host 'hello'",
 	}
-	fingerprint := agentGuardFingerprintForRequest(t, reqCtx, req)
+	fingerprint := agentGuardFingerprintForRequest(t, srv, reqCtx, req)
 	approval, err := st.CreateApprovalRequest(context.Background(), model.CreateApprovalRequestInput{
 		WorkspaceID:         workspace.ID,
 		ToolKey:             agentGuardEvaluateToolKey,
@@ -1421,7 +1422,7 @@ func TestAgentGuardExpiredTicketDeniesRetry(t *testing.T) {
 		Content:         "Write-Host 'secret-token'",
 	}
 
-	fingerprint := agentGuardFingerprintForRequest(t, reqCtx, req)
+	fingerprint := agentGuardFingerprintForRequest(t, srv, reqCtx, req)
 	approval, err := st.CreateApprovalRequest(context.Background(), model.CreateApprovalRequestInput{
 		WorkspaceID:         workspace.ID,
 		ToolKey:             agentGuardEvaluateToolKey,
@@ -1844,20 +1845,20 @@ print(json.dumps({
 			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 				t.Fatalf("decode timeout helper output: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
 			}
-			if got := result["default"]; got != 0.2 {
-				t.Fatalf("expected default timeout 0.2s, got %v", got)
+			if got := result["default"]; got != 1.0 {
+				t.Fatalf("expected default timeout 1s, got %v", got)
 			}
 			if got := result["override"]; got != 0.75 {
 				t.Fatalf("expected env override 0.75s, got %v", got)
 			}
-			if got := result["invalid"]; got != 0.2 {
-				t.Fatalf("expected invalid env to fall back to 0.2s, got %v", got)
+			if got := result["invalid"]; got != 1.0 {
+				t.Fatalf("expected invalid env to fall back to 1s, got %v", got)
 			}
-			if got := result["too_small"]; got != 0.2 {
-				t.Fatalf("expected too-small env to fall back to 0.2s, got %v", got)
+			if got := result["too_small"]; got != 1.0 {
+				t.Fatalf("expected too-small env to fall back to 1s, got %v", got)
 			}
-			if got := result["too_large"]; got != 0.2 {
-				t.Fatalf("expected too-large env to fall back to 0.2s, got %v", got)
+			if got := result["too_large"]; got != 1.0 {
+				t.Fatalf("expected too-large env to fall back to 1s, got %v", got)
 			}
 		})
 	}
@@ -1979,6 +1980,132 @@ func TestAgentGuardSensitivePathWithoutFileIdentityDenies(t *testing.T) {
 	}
 	if !matchesAgentGuardRuleMetric(metricsRec.Body.String(), "agent-guard-sensitive-target-requires-approval", "denied") {
 		t.Fatalf("expected denied rule metric for sensitive target, got %s", metricsRec.Body.String())
+	}
+}
+
+func TestAgentGuardAdditionalTargetIdentityChangeDoesNotConsumeApprovedTicket(t *testing.T) {
+	cases := []struct {
+		name          string
+		additional    string
+		targetExists  bool
+		identityField string
+	}{
+		{name: "file identity", additional: ".ssh/id_rsa", targetExists: true, identityField: "file"},
+		{name: "parent identity", additional: ".ssh/new_key", targetExists: false, identityField: "parent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, st, workspace := newGovernanceTestApp(t)
+			identity := "identity-a"
+			srv.agentGuardResolveTarget = func(raw string) agentGuardTargetResolution {
+				if strings.Contains(filepath.ToSlash(raw), "src/ui.go") {
+					return agentGuardTargetResolution{
+						CanonicalTarget:      normalizeAgentGuardTarget(raw),
+						ResolvedFileIdentity: "primary-file",
+						ParentIdentity:       "primary-parent",
+						TargetExists:         true,
+						TargetIdentityStable: true,
+					}
+				}
+				resolution := agentGuardTargetResolution{
+					CanonicalTarget:      normalizeAgentGuardTarget(raw),
+					ResolvedParentPath:   filepath.Dir(raw),
+					TargetExists:         tc.targetExists,
+					TargetIdentityStable: tc.targetExists,
+				}
+				if tc.identityField == "file" {
+					resolution.CanonicalTarget = "fileid:" + identity
+					resolution.ResolvedFileIdentity = identity
+					resolution.ParentIdentity = "stable-parent"
+				} else {
+					resolution.ParentIdentity = identity
+				}
+				return resolution
+			}
+			baseReq := agentGuardEvaluateRequest{
+				Adapter:         "codex",
+				Tool:            "Write",
+				ActionType:      "write",
+				Target:          "src/ui.go",
+				Targets:         []string{"src/ui.go", tc.additional},
+				GuardDecision:   "allow",
+				GuardRiskLevel:  "low",
+				ContentEncoding: "plain",
+				Content:         "same content",
+			}
+			first := postJSON(t, srv, "/api/agent-guard/evaluate", mustAgentGuardRequestBody(t, baseReq))
+			if first.Code != http.StatusOK {
+				t.Fatalf("expected governed response, got %d body=%s", first.Code, first.Body.String())
+			}
+			var initial agentGuardEvaluateResponse
+			decodeBody(t, first.Body.Bytes(), &initial)
+			if initial.Decision != "deny_with_ticket" || initial.ApprovalID == "" {
+				t.Fatalf("expected pending approval, got %+v", initial)
+			}
+			approve := postJSON(t, srv, "/api/approvals/"+initial.ApprovalID+"/approve", "")
+			if approve.Code != http.StatusOK {
+				t.Fatalf("approve ticket: %d body=%s", approve.Code, approve.Body.String())
+			}
+
+			identity = "identity-b"
+			retryReq := baseReq
+			retryReq.TicketID = initial.ApprovalID
+			retry := postJSON(t, srv, "/api/agent-guard/evaluate", mustAgentGuardRequestBody(t, retryReq))
+			if retry.Code != http.StatusOK {
+				t.Fatalf("expected governed retry, got %d body=%s", retry.Code, retry.Body.String())
+			}
+			var denied agentGuardEvaluateResponse
+			decodeBody(t, retry.Body.Bytes(), &denied)
+			if denied.Decision != "deny" || !strings.Contains(denied.Reason, "fingerprint mismatch") {
+				t.Fatalf("changed additional identity must not consume the old ticket, got %+v", denied)
+			}
+			approval, err := st.GetApprovalRequestByID(context.Background(), workspace.ID, initial.ApprovalID)
+			if err != nil {
+				t.Fatalf("get approval: %v", err)
+			}
+			if approval.Status != "approved" {
+				t.Fatalf("identity mismatch must leave approval unconsumed, got %+v", approval)
+			}
+		})
+	}
+}
+
+func TestAgentGuardStrictAdditionalTargetDoesNotRequirePrimaryIdentity(t *testing.T) {
+	srv, _, _ := newGovernanceTestApp(t)
+	srv.agentGuardResolveTarget = func(raw string) agentGuardTargetResolution {
+		if strings.Contains(filepath.ToSlash(raw), "src/ui.go") {
+			return agentGuardTargetResolution{
+				CanonicalTarget:      normalizeAgentGuardTarget(raw),
+				TargetExists:         true,
+				TargetIdentityStable: false,
+			}
+		}
+		return agentGuardTargetResolution{
+			CanonicalTarget:      "fileid:stable-sensitive-target",
+			ResolvedFileIdentity: "stable-sensitive-target",
+			ParentIdentity:       "stable-sensitive-parent",
+			TargetExists:         true,
+			TargetIdentityStable: true,
+		}
+	}
+	resp := postJSON(t, srv, "/api/agent-guard/evaluate", mustAgentGuardRequestBody(t, agentGuardEvaluateRequest{
+		Adapter:         "codex",
+		Tool:            "Write",
+		ActionType:      "write",
+		Target:          "src/ui.go",
+		Targets:         []string{"src/ui.go", ".ssh/id_rsa"},
+		GuardDecision:   "allow",
+		GuardRiskLevel:  "low",
+		ContentEncoding: "plain",
+		Content:         "same content",
+	}))
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected governed response, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	var response agentGuardEvaluateResponse
+	decodeBody(t, resp.Body.Bytes(), &response)
+	if response.Decision != "deny_with_ticket" || strings.Contains(strings.ToLower(response.Reason), "without stable file identity") {
+		t.Fatalf("ordinary primary identity must not be judged with the additional sensitive category, got %+v", response)
 	}
 }
 
@@ -2637,7 +2764,7 @@ func agentGuardRequestContext(t *testing.T, srv *App, st store.Store, workspace 
 	}
 }
 
-func agentGuardFingerprintForRequest(t *testing.T, reqCtx RequestContext, req agentGuardEvaluateRequest) string {
+func agentGuardFingerprintForRequest(t *testing.T, srv *App, reqCtx RequestContext, req agentGuardEvaluateRequest) string {
 	t.Helper()
 
 	normalizedTarget := normalizeAgentGuardTarget(req.Target)
@@ -2645,14 +2772,38 @@ func agentGuardFingerprintForRequest(t *testing.T, reqCtx RequestContext, req ag
 	if err != nil {
 		t.Fatalf("decode content: %v", err)
 	}
+	req.Targets = guard.CanonicalProjectTargets(guard.ActionInput{
+		ToolName:       req.Tool,
+		Targets:        req.Targets,
+		Command:        decodedContent,
+		ContentPreview: decodedContent,
+	})
 	contentHash := hashAgentGuardPayload(decodedContent)
 	scriptHash := ""
 	if req.IsScript {
 		scriptHash = contentHash
 	}
-	workspaceRoot := normalizeAgentGuardTarget(req.WorkspaceRoot)
+	workspaceRoot := srv.trustedAgentGuardWorkspaceRoot(req.WorkspaceRoot)
 	workingDirectory := normalizeAgentGuardTarget(req.WorkingDirectory)
-	resolution := (&App{}).resolveAgentGuardTargetWithinContext(normalizedTarget, workspaceRoot, workingDirectory)
+	projectFloor, _, err := srv.agentGuardProjectProtectionFloor(req, decodedContent, workingDirectory)
+	if err != nil {
+		t.Fatalf("evaluate project floor: %v", err)
+	}
+	resolution := srv.resolveAgentGuardTargetWithinContext(normalizedTarget, workspaceRoot, workingDirectory)
+	additionalTargetIdentityParts := make([]string, 0, len(req.Targets)*4)
+	for _, extraTarget := range req.Targets {
+		extraTarget = normalizeAgentGuardTarget(extraTarget)
+		if extraTarget == "" || agentGuardPathsEqual(extraTarget, normalizedTarget) {
+			continue
+		}
+		extraResolution := srv.resolveAgentGuardTargetWithinContext(extraTarget, workspaceRoot, workingDirectory)
+		additionalTargetIdentityParts = append(additionalTargetIdentityParts,
+			extraTarget,
+			extraResolution.CanonicalTarget,
+			extraResolution.ResolvedFileIdentity,
+			extraResolution.ParentIdentity,
+		)
+	}
 	return hashAgentGuardPayload(strings.Join([]string{
 		strings.ToLower(strings.TrimSpace(req.Adapter)),
 		reqCtx.Workspace.ID,
@@ -2667,6 +2818,14 @@ func agentGuardFingerprintForRequest(t *testing.T, reqCtx RequestContext, req ag
 		workingDirectory,
 		strings.ToLower(strings.TrimSpace(req.GuardDecision)),
 		strings.ToLower(strings.TrimSpace(req.GuardRiskLevel)),
+		strings.Join(req.Targets, "\x1f"),
+		strings.Join(additionalTargetIdentityParts, "\x1e"),
+		strings.ToUpper(strings.TrimSpace(req.NetworkMethod)),
+		strings.TrimSpace(req.NetworkURL),
+		projectFloor.Decision,
+		projectFloor.RiskLevel,
+		projectFloor.Category,
+		projectFloor.Reason,
 		contentHash,
 		scriptHash,
 	}, "\x00"))

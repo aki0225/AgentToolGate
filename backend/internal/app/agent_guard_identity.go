@@ -292,6 +292,7 @@ func isAgentGuardSelfTamperTarget(target string) bool {
 	exactFiles := []string{
 		`.claude/settings.json`,
 		`.codex/hooks.json`,
+		`.agenttoolgate/protected.json`,
 		`.tmp/agenttoolgate/hook-control.json`,
 		`configs/policies.yaml`,
 		`agenttoolgate.exe`,

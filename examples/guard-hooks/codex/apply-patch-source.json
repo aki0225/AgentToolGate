@@ -1,0 +1,14 @@
+{
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "turn_id": "turn-redacted",
+  "transcript_path": null,
+  "tool_name": "apply_patch",
+  "cwd": "X:\\demo\\project",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-redacted",
+  "permission_mode": "default",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Update File: src/service.go\n@@\n-oldValue := 1\n+newValue := 2\n*** End Patch\n"
+  },
+  "tool_use_id": "call-redacted"
+}

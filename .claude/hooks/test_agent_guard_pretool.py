@@ -37,6 +37,25 @@ CODEX_HOOK = load_hook_module(Path(__file__).parents[2] / ".codex" / "hooks" / "
 
 
 class OfflineGuardPrecisionTest(unittest.TestCase):
+    def write_project_protection(self, repo: Path, body: dict[str, Any] | str) -> None:
+        config_path = repo / ".agenttoolgate" / "protected.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(body, str):
+            config_path.write_text(body, encoding="utf-8")
+        else:
+            config_path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+
+    def test_default_hook_timeout_balances_local_latency(self) -> None:
+        original = os.environ.pop("AGENTTOOLGATE_HOOK_TIMEOUT_MS", None)
+        try:
+            for module in (HOOK, CODEX_HOOK):
+                with self.subTest(module=module.__name__):
+                    self.assertEqual(module.hook_timeout_seconds(), 1.0)
+                    self.assertEqual(module.go_cli_timeout_seconds(), 1.5)
+        finally:
+            if original is not None:
+                os.environ["AGENTTOOLGATE_HOOK_TIMEOUT_MS"] = original
+
     def set_hook_control(self, repo: Path, mode: str | None = None, raw: str | None = None) -> None:
         control_path = repo / ".tmp" / "agenttoolgate" / "hook-control.json"
         original = control_path.read_bytes() if control_path.exists() else None
@@ -218,6 +237,310 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
                             module.is_explicitly_low_risk_offline_action(str(repo), payload),
                             not high_risk or module.is_project_metadata_read_target(payload["target"]),
                         )
+
+    def test_http_request_fallback_maps_network_and_enforces_project_egress(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "egress": {
+                            "enabled": True,
+                            "allowedHosts": ["api.github.com"],
+                            "unlistedWrite": "deny",
+                        },
+                    },
+                },
+            )
+            for module in (HOOK, CODEX_HOOK):
+                with self.subTest(module=module.__name__):
+                    self.assertTrue(module.is_guarded_tool("http.request"))
+                    self.assertTrue(module.is_guarded_tool("network.request"))
+                    payload = module.build_agent_guard_request(
+                        module.detect_adapter(),
+                        {"cwd": str(repo)},
+                        "http.request",
+                        {
+                            "method": "POST",
+                            "url": "https://uploads.example.test/data",
+                            "body": {"message": "synthetic"},
+                        },
+                        str(repo),
+                    )
+                    self.assertEqual(payload["actionType"], "network")
+                    self.assertEqual(payload["target"], "https://uploads.example.test/data")
+                    self.assertEqual(payload["networkMethod"], "POST")
+                    self.assertEqual(payload["networkUrl"], "https://uploads.example.test/data")
+                    floor = module.project_protection_floor(str(repo), payload)
+                    self.assertIsNotNone(floor)
+                    self.assertEqual(floor["decision"], "deny")
+                    read_payload = module.build_agent_guard_request(
+                        module.detect_adapter(),
+                        {"cwd": str(repo)},
+                        "http.request",
+                        {"method": "GET", "url": "https://uploads.example.test/data"},
+                        str(repo),
+                    )
+                    self.assertIsNone(module.project_protection_floor(str(repo), read_payload))
+
+    def test_project_protection_merges_patch_targets_and_recognizes_shell_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [
+                            {"pattern": "src/core/**", "write": "deny"},
+                            {"pattern": "deploy/production/**", "delete": "deny"},
+                        ],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            patch_payload = {
+                "tool": "apply_patch",
+                "actionType": "read",
+                "target": "src/ui.go",
+                "targets": ["src/ui.go"],
+                "content": "*** Begin Patch\n*** Update File: src/ui.go\n*** Update File: src/core/algorithm.go\n*** End Patch\n",
+                "workingDirectory": str(repo),
+            }
+            delete_payload = {
+                "tool": "PowerShell",
+                "actionType": "exec",
+                "target": "deploy/production/app.yaml",
+                "content": "Remove-Item deploy/production/app.yaml",
+                "workingDirectory": str(repo),
+            }
+            write_payload = {
+                "tool": "PowerShell",
+                "actionType": "exec",
+                "target": "src/core/algorithm.go",
+                "content": "Set-Content src/core/algorithm.go changed",
+                "workingDirectory": str(repo),
+            }
+            for module in (HOOK, CODEX_HOOK):
+                with self.subTest(module=module.__name__, action="patch"):
+                    floor = module.project_protection_floor(str(repo), patch_payload)
+                    self.assertIsNotNone(floor)
+                    self.assertEqual(floor["decision"], "deny")
+                with self.subTest(module=module.__name__, action="delete"):
+                    floor = module.project_protection_floor(str(repo), delete_payload)
+                    self.assertIsNotNone(floor)
+                    self.assertEqual(floor["decision"], "deny")
+                with self.subTest(module=module.__name__, action="write"):
+                    floor = module.project_protection_floor(str(repo), write_payload)
+                    self.assertIsNotNone(floor)
+                    self.assertEqual(floor["decision"], "deny")
+
+    def test_project_protection_extracts_real_shell_read_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [
+                            {"pattern": "src/protected/**", "read": "deny"}
+                        ],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            cases = (
+                ("PowerShell", "Get-Content src/protected/config.json"),
+                ("Bash", "cat src/protected/config.json"),
+                ("PowerShell", "type src/protected/config.json"),
+                ("Bash", "more src/protected/config.json"),
+                ("Bash", "head -n 5 src/protected/config.json"),
+                ("Bash", "tail --lines 5 src/protected/config.json"),
+                ("Bash", "rg -n TODO src/protected"),
+                ("Bash", "grep -r TODO src/protected"),
+            )
+            for module in (HOOK, CODEX_HOOK):
+                for tool_name, command in cases:
+                    with self.subTest(module=module.__name__, command=command):
+                        tool_input = {"command": command}
+                        payload = module.build_agent_guard_request(
+                            module.detect_adapter(),
+                            {"cwd": str(repo)},
+                            tool_name,
+                            tool_input,
+                            str(repo),
+                        )
+                        self.assertNotIn("target", tool_input)
+                        floor = module.project_protection_floor(str(repo), payload)
+                        self.assertIsNotNone(floor)
+                        self.assertEqual(floor["decision"], "deny")
+
+    def test_project_protection_keeps_strictest_compound_shell_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [
+                            {"pattern": "src/core/first.txt", "write": "require_approval"},
+                            {"pattern": "src/core/second.txt", "write": "deny"},
+                            {"pattern": "deploy/production/first.yaml", "delete": "require_approval"},
+                            {"pattern": "deploy/production/second.yaml", "delete": "deny"},
+                        ],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            commands = (
+                "Set-Content src/core/first.txt one && Set-Content src/core/second.txt two",
+                "Set-Content src/core/first.txt one; Remove-Item deploy/production/second.yaml",
+                "Remove-Item deploy/production/first.yaml; Remove-Item deploy/production/second.yaml",
+            )
+            for module in (HOOK, CODEX_HOOK):
+                for command in commands:
+                    with self.subTest(module=module.__name__, command=command):
+                        tool_input = {"command": command}
+                        payload = module.build_agent_guard_request(
+                            module.detect_adapter(),
+                            {"cwd": str(repo)},
+                            "PowerShell",
+                            tool_input,
+                            str(repo),
+                        )
+                        self.assertNotIn("target", tool_input)
+                        floor = module.project_protection_floor(str(repo), payload)
+                        self.assertIsNotNone(floor)
+                        self.assertEqual(floor["decision"], "deny")
+
+    def test_project_protection_does_not_treat_search_syntax_as_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [
+                            {"pattern": "TODO", "read": "deny"},
+                            {"pattern": "--hidden", "read": "deny"},
+                            {"pattern": "src/protected/**", "read": "deny"},
+                        ],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            commands = (
+                "rg TODO docs",
+                "rg --hidden TODO docs",
+                "rg --glob '*.py' TODO docs",
+                "rg --mystery TODO src/protected",
+                "unknown-reader src/protected/config.json",
+            )
+            for module in (HOOK, CODEX_HOOK):
+                for command in commands:
+                    with self.subTest(module=module.__name__, command=command):
+                        payload = module.build_agent_guard_request(
+                            module.detect_adapter(),
+                            {"cwd": str(repo)},
+                            "Bash",
+                            {"command": command},
+                            str(repo),
+                        )
+                        self.assertIsNone(module.project_protection_floor(str(repo), payload))
+
+    def test_project_protection_uses_delete_rule_for_patch_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            cases = (
+                ("add uses write", "*** Add File: deploy/production/app.yaml", {"write": "deny"}, "deny"),
+                ("add does not use delete", "*** Add File: deploy/production/app.yaml", {"delete": "deny"}, None),
+                ("update uses write", "*** Update File: deploy/production/app.yaml", {"write": "deny"}, "deny"),
+                ("update does not use delete", "*** Update File: deploy/production/app.yaml", {"delete": "deny"}, None),
+                ("move uses write", "*** Move to: deploy/production/app.yaml", {"write": "deny"}, "deny"),
+                ("move does not use delete", "*** Move to: deploy/production/app.yaml", {"delete": "deny"}, None),
+                ("delete uses delete", "*** Delete File: deploy/production/app.yaml", {"delete": "deny"}, "deny"),
+                ("delete does not use write", "*** Delete File: deploy/production/app.yaml", {"write": "deny"}, None),
+            )
+            for name, line, effect, expected in cases:
+                self.write_project_protection(
+                    repo,
+                    {
+                        "version": 1,
+                        "localActionFirewall": {
+                            "enabled": True,
+                            "protectedPaths": [
+                                {"pattern": "deploy/production/**", **effect}
+                            ],
+                            "egress": {"enabled": False},
+                        },
+                    },
+                )
+                payload = {
+                    "tool": "apply_patch",
+                    "actionType": "write",
+                    "target": "deploy/production/app.yaml",
+                    "targets": ["deploy/production/app.yaml"],
+                    "content": f"*** Begin Patch\n{line}\n*** End Patch\n",
+                    "workingDirectory": str(repo),
+                }
+                for module in (HOOK, CODEX_HOOK):
+                    with self.subTest(name=name, module=module.__name__):
+                        floor = module.project_protection_floor(str(repo), payload)
+                        if expected is None:
+                            self.assertIsNone(floor)
+                        else:
+                            self.assertIsNotNone(floor)
+                            self.assertEqual(floor["decision"], expected)
+
+    def test_project_protection_keeps_strictest_mixed_patch_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [
+                            {"pattern": "src/core/**", "write": "require_approval"},
+                            {"pattern": "deploy/production/**", "delete": "deny"},
+                        ],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            for lines in (
+                (
+                    "*** Update File: src/core/algorithm.go\n"
+                    "*** Delete File: deploy/production/app.yaml"
+                ),
+                (
+                    "*** Delete File: deploy/production/app.yaml\n"
+                    "*** Update File: src/core/algorithm.go"
+                ),
+            ):
+                payload = {
+                    "tool": "apply_patch",
+                    "actionType": "write",
+                    "targets": ["src/core/algorithm.go", "deploy/production/app.yaml"],
+                    "content": f"*** Begin Patch\n{lines}\n*** End Patch\n",
+                    "workingDirectory": str(repo),
+                }
+                for module in (HOOK, CODEX_HOOK):
+                    with self.subTest(module=module.__name__, lines=lines):
+                        floor = module.project_protection_floor(str(repo), payload)
+                        self.assertIsNotNone(floor)
+                        self.assertEqual(floor["decision"], "deny")
 
     def test_powershell_positional_write_targets_are_extracted(self) -> None:
         cases = [
@@ -409,6 +732,7 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
         targets = [
             "examples/agent-demo/evidence/windows-startup-poisoning-output.txt",
             "docs/credentials-review-notes.md",
+            ".agenttoolgate/protected.json",
             r"C:\Users\me\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\run.ps1",
             ".ssh/authorized_keys",
             ".git/hooks/pre-commit",
@@ -445,11 +769,159 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
                     "codex",
                     {"cwd": os.getcwd()},
                     "apply_patch",
-                    {"content": patch},
+                    {"command": patch},
                 )
                 self.assertEqual(payload["actionType"], "write")
                 self.assertIn("Startup", payload["target"])
+                self.assertEqual(
+                    payload["targets"],
+                    ["Users/aki/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/run.ps1"],
+                )
                 self.assertTrue(module.is_high_risk_offline_target(payload))
+
+    def test_project_protection_floor_is_shared_by_claude_and_codex(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [
+                            {"pattern": "deploy/production/**", "write": "deny"}
+                        ],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            payload = {
+                "tool": "apply_patch",
+                "actionType": "write",
+                "target": "src/ui.go;deploy/production/app.yaml",
+                "targets": ["src/ui.go", "deploy/production/app.yaml"],
+                "content": "",
+                "workingDirectory": str(repo),
+            }
+            for module in (HOOK, CODEX_HOOK):
+                with self.subTest(module=module.__name__):
+                    floor = module.attach_python_guard_floor(str(repo), payload)
+                    self.assertEqual(floor["guardDecision"], "deny")
+                    self.assertEqual(floor["guardRiskLevel"], "high")
+
+    def test_project_protection_keeps_read_payload_text_read_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [
+                            {
+                                "pattern": "src/core/**",
+                                "read": "require_approval",
+                                "write": "deny",
+                                "delete": "deny",
+                            }
+                        ],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            payloads = [
+                {
+                    "tool": "Grep",
+                    "actionType": "read",
+                    "target": "docs",
+                    "content": "*** Begin Patch\n*** Update File: src/core/algorithm.go\n*** End Patch",
+                    "workingDirectory": str(repo),
+                },
+                {
+                    "tool": "Read",
+                    "actionType": "read",
+                    "target": "docs/commands.md",
+                    "content": "This guide explains how rm removes a file.",
+                    "workingDirectory": str(repo),
+                },
+                {
+                    "tool": "Grep",
+                    "actionType": "read",
+                    "target": "docs",
+                    "content": "rm src/core/algorithm.go",
+                    "workingDirectory": str(repo),
+                },
+                {
+                    "tool": "Write",
+                    "actionType": "write",
+                    "target": "docs/commands.md",
+                    "content": "rm src/core/algorithm.go",
+                    "workingDirectory": str(repo),
+                },
+            ]
+            for payload in payloads:
+                with self.subTest(payload=payload):
+                    for module in (HOOK, CODEX_HOOK):
+                        with self.subTest(module=module.__name__):
+                            self.assertIsNone(module.project_protection_floor(str(repo), payload))
+
+    def test_project_protection_recognizes_wrapped_delete_commands_without_prose_false_positive(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [
+                            {"pattern": "deploy/production/**", "delete": "deny"}
+                        ],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            for command in (
+                "sudo rm deploy/production/app.yaml",
+                "cmd /c del deploy/production/app.yaml",
+                "powershell -Command Remove-Item deploy/production/app.yaml",
+                "echo ok; rm deploy/production/app.yaml",
+            ):
+                with self.subTest(command=command):
+                    floor = HOOK.project_protection_floor(
+                        str(repo),
+                        {
+                            "tool": "shell",
+                            "actionType": "exec",
+                            "content": command,
+                            "workingDirectory": str(repo),
+                        },
+                    )
+                    self.assertIsNotNone(floor)
+                    self.assertEqual(floor["decision"], "deny")
+            self.assertIsNone(
+                HOOK.project_protection_floor(
+                    str(repo),
+                    {
+                        "tool": "shell",
+                        "actionType": "exec",
+                        "content": "the rm command deletes a file",
+                        "workingDirectory": str(repo),
+                    },
+                )
+            )
+            self.assertIsNone(
+                HOOK.project_protection_floor(
+                    str(repo),
+                    {
+                        "tool": "shell",
+                        "actionType": "exec",
+                        "content": 'echo "ok; rm deploy/production/app.yaml"',
+                        "workingDirectory": str(repo),
+                    },
+                )
+            )
 
     def test_missing_control_file_defaults_to_noop(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -86,7 +86,7 @@ Linux 下命令名是不带 `.exe` 的 `agenttoolgate`：
 `init codex` / `init claude` 会只生成对应客户端片段；`init all` 会同时生成：
 
 - `.agenttoolgate/config.json`：host、port、workspace、hook mode 等本项目偏好；
-- `.agenttoolgate/protected.json`：项目级保护策略占位和未来 Guard Core 扩展点；
+- `.agenttoolgate/protected.json`：项目级受保护路径与网络写入规则；
 - `.agenttoolgate/clients/`：Codex / Claude Code 可复制配置片段，其中 Codex TOML 带 `[mcp_servers.agenttoolgate]`，JSON snippets 不带无关 `note` 字段；
 - `AGENTTOOLGATE.md`：给 AI 客户端和人类读者看的项目安全说明。
 
@@ -108,6 +108,58 @@ agenttoolgate.exe up --dir <project> --port 8090
 ```
 
 `init` 默认不覆盖已有文件，重复执行会跳过用户已修改的文件。`up` 会读取 `.agenttoolgate/config.json`，写入 repo-local `.tmp/agenttoolgate/hook-control.json`，默认 hook mode 是 `dry-run`。这一步不会修改用户全局 Codex / Claude Code 配置、系统策略或注册表。
+
+## 配置项目内保护规则
+
+`.agenttoolgate/protected.json` 默认不包含路径规则，也不会改变普通项目行为。需要保护核心算法或生产配置时，可以添加 repo-relative 的精确路径或 `/**` 子树：
+
+```json
+{
+  "version": 1,
+  "projectRoot": "<repo>",
+  "localActionFirewall": {
+    "enabled": true,
+    "defaultMode": "dry-run",
+    "protectedPaths": [
+      {
+        "pattern": "src/core/**",
+        "read": "require_approval",
+        "write": "require_approval",
+        "delete": "deny",
+        "reason": "核心算法目录"
+      },
+      {
+        "pattern": "deploy/production/**",
+        "read": "require_approval",
+        "write": "deny",
+        "delete": "deny",
+        "reason": "生产配置目录"
+      }
+    ],
+    "egress": {
+      "enabled": true,
+      "allowedHosts": ["api.github.com", "*.example.test"],
+      "unlistedWrite": "deny"
+    },
+    "notes": []
+  }
+}
+```
+
+规则约束：
+
+- `pattern` 只接受仓库相对的精确路径或以 `/**` 结尾的子树，不接受绝对路径、`..`、任意 glob 或正则。
+- read / write / delete / exec 只支持 `require_approval` 和 `deny`。项目规则不能写 `allow`，因此不能放松内置 Guard Core。
+- 受保护路径命中后按 high risk 处理，不进入低/中风险 remembered allow；需要审批的动作每次都使用一次性 ticket。
+- `apply_patch` 会检查补丁中的每个目标：Add / Update / Move 使用 write 规则，Delete 使用 delete 规则；任一目标命中即对整个补丁采用最严格结果。
+- `egress.allowedHosts` 支持具体 host、`host:port` 或 `*.domain`。allowlist 不会把内置网络写入审批改成静默 allow；`unlistedWrite` 只会继续提升为审批或拒绝。
+- 文件里的 `projectRoot` 只是脱敏说明字段。可信项目根来自 `agenttoolgate up --dir ...` 或后端 `AGT_PROJECT_ROOT`，客户端 payload 不能覆盖。
+
+`dry-run` / `live` 启动前会严格校验该文件；无效 JSON、未知字段、绝对路径、遍历或非法 wildcard 会拒绝启动，不会写入 live control。运行中修改规则会在下一次 Hook/API 评估时生效；若改成无效配置，live 请求会 fail closed。`off` 仍然是完全 no-op，不读取规则、不干扰当前开发会话。
+
+`protected.json` 自身属于 self-tamper。日常调整规则时先运行 `agenttoolgate.exe hook control dry-run`，编辑完成后再运行 `agenttoolgate.exe hook control live`；两个启用命令都会先校验配置，`off` 始终可用于恢复开发。
+
+这不是数据血缘或 DLP：ATG 能看到某次“读取受保护路径”或“向某个 URL 写入”，但不能追踪先读后改名、编码、压缩、复制到模型上下文再外发的来源，也不能覆盖绕过 Hook 的 socket、子进程或第三方工具。
 
 Codex / Claude Code / ccswitch 用户只需要复制 `.agenttoolgate/clients/` 下的片段；Codex TOML 已包含 `[mcp_servers.agenttoolgate]`，Claude 示例默认使用 HTTP `/mcp` 和 `X-Workspace-Org-Id`。
 
@@ -304,6 +356,8 @@ DATABASE_URL=postgres://agenttoolgate:agenttoolgate@127.0.0.1:5432/agenttoolgate
 ```
 
 控制文件写在 `.tmp/agenttoolgate/hook-control.json`。缺失、损坏或无法解析时按 `off` 处理：hook 直接 no-op，不调用后端、不写 pending audit、不输出 hook JSON。`dry-run` 只写 `.tmp/agenttoolgate/hook-dry-run.jsonl` 的脱敏预览，不阻断；`live` 才执行真实拦截。`TRELLIS_HOOKS=0` 和 `TRELLIS_DISABLE_HOOKS=1` 仍是最高优先级硬关闭。
+
+`live` 请求后端的默认超时是 1000ms，Python Bridge 等待 Go CLI 的默认超时是 1500ms；如本机性能不同，可分别用 `AGENTTOOLGATE_HOOK_TIMEOUT_MS`（50–2000ms）和 `AGENTTOOLGATE_CLI_TIMEOUT_MS`（100–5000ms）覆盖。该设置不影响 `off` / `dry-run`。
 
 如果你已经确认 dry-run 结果，可以手动把 Claude Code PreToolUse hook 指向真实 Hook 输出入口：
 

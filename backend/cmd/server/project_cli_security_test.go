@@ -35,3 +35,28 @@ func TestPrepareProjectUpUsesResolvedDirectoryAsTrustedRoot(t *testing.T) {
 		t.Fatalf("trusted root must follow resolved --dir, got %q want %q", cfg.ProjectRoot, expected)
 	}
 }
+
+func TestPrepareProjectUpRejectsInvalidProjectProtectionBeforeLiveControl(t *testing.T) {
+	project := t.TempDir()
+	if _, err := writeProjectInitFiles(project, projectInitModeAll); err != nil {
+		t.Fatalf("init project: %v", err)
+	}
+	projectConfig := defaultProjectRunConfig(project)
+	projectConfig.HookMode = projectHookModeLive
+	rawConfig, err := json.Marshal(projectConfig)
+	if err != nil {
+		t.Fatalf("marshal project config: %v", err)
+	}
+	if err := os.WriteFile(projectConfigPath(project), append(rawConfig, '\n'), 0o600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+	if err := os.WriteFile(projectProtectedPath(project), []byte(`{"version":1,"localActionFirewall":{"enabled":true,"unknown":true}}`), 0o600); err != nil {
+		t.Fatalf("write invalid protected config: %v", err)
+	}
+
+	if _, _, _, _, _, err := prepareProjectUp(commandOptions{Command: "up", Dir: project}); err == nil {
+		t.Fatal("invalid project protection must reject up")
+	} else if _, statErr := os.Stat(projectHookControlPath(project)); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid config must not leave live hook control, got %v", statErr)
+	}
+}

@@ -86,6 +86,8 @@ flowchart TD
 
 Linux 用不带 `.exe` 的 `./agenttoolgate`，参数一样。`init` 只在项目里生成 `.agenttoolgate/` 配置和客户端片段，不碰全局的 Codex / Claude Code 配置，也不碰系统策略、注册表和 shell profile。hook 默认 `dry-run`，不会一上来就真阻断。
 
+`init` 同时生成 `.agenttoolgate/protected.json`。默认规则为空，不改变普通开发行为；你可以把核心算法、生产配置等 repo-relative 路径设置为“读取/修改需审批”或“直接拒绝”，也可以对 Hook 可见的网络写入增加项目级 host allowlist。规则只会收紧 Guard Core，不会把原本需要审批的动作改成静默放行。配置示例与边界见 [本地日常使用指南](docs/local-daily-use.md#配置项目内保护规则)。
+
 也可以从源码构建单二进制（需要 Go 1.26+ 与 Node.js 20+）：
 
 ```powershell
@@ -127,6 +129,7 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 
 - **工具治理网关**：`database.query`、`github.*`、`http.request`、`mcp_<connector>.<tool>` 在执行前过 workspace policy、审批、限流、ATG 管理的 Connector Secret 运行时注入、脱敏审计和 OTel trace。
 - **本地动作防火墙**：Claude / Codex 要写 Startup、`.ssh`、`.env`、`.git/hooks` 或 ATG 自身的 hook/config，或者脚本里出现 `ExecutionPolicy Bypass`、`WindowStyle Hidden`、encoded payload 这类特征时，先进 guard 评估。
+- **项目内保护规则**：`.agenttoolgate/protected.json` 可为核心目录配置 read / write / delete / exec 的 `require_approval` 或 `deny`，并对未列出的网络写入目标继续收紧。
 
 拦的是这类后果：
 
@@ -139,6 +142,7 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 
 - 提示词注入、幻觉、恶意上下文本身，ATG 不拦——它只管工具调用落地那一刻。
 - 不做 OS 级 enforcement：Claude Code 侧可以保留 ask/confirm 心智，但它仍然只是 hook guardrail。
+- 不做数据血缘或污点追踪：规则能约束“读取哪个路径”和“写到哪个 host”，不能证明先前读出的源码不会被改名、编码或通过绕过 Hook 的进程外传。
 
 ## 已知限制
 

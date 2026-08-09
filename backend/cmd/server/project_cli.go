@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"agenttoolgate/backend/internal/config"
+	"agenttoolgate/backend/internal/guard"
 )
 
 const (
@@ -102,6 +103,11 @@ func prepareProjectUp(opts commandOptions) (config.Config, bool, string, string,
 		return config.Config{}, false, "", "", "", err
 	}
 	projectCfg.ProjectRoot = root
+	if projectCfg.HookMode != projectHookModeOff {
+		if _, err := guard.LoadProjectProtection(root); err != nil {
+			return config.Config{}, false, "", "", "", fmt.Errorf("项目保护策略无效：%w", err)
+		}
+	}
 
 	cfg := config.Load()
 	applyProjectRunConfig(&cfg, projectCfg)
@@ -133,7 +139,11 @@ func resolveProjectRoot(dir string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("目标路径不是目录：%s", abs)
 	}
-	return abs, nil
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("解析项目目录失败：%w", err)
+	}
+	return resolved, nil
 }
 
 func loadProjectRunConfig(root string) (projectRunConfig, bool, string, error) {
@@ -434,10 +444,25 @@ func renderProjectConfigFile(cfg projectRunConfig) string {
 }
 
 func renderProjectProtectedFile(cfg projectRunConfig) string {
+	type protectedPath struct {
+		Pattern string `json:"pattern"`
+		Read    string `json:"read,omitempty"`
+		Write   string `json:"write,omitempty"`
+		Delete  string `json:"delete,omitempty"`
+		Exec    string `json:"exec,omitempty"`
+		Reason  string `json:"reason,omitempty"`
+	}
+	type egress struct {
+		Enabled       bool     `json:"enabled"`
+		AllowedHosts  []string `json:"allowedHosts"`
+		UnlistedWrite string   `json:"unlistedWrite"`
+	}
 	type firewall struct {
-		Enabled     bool     `json:"enabled"`
-		DefaultMode string   `json:"defaultMode"`
-		Notes       []string `json:"notes"`
+		Enabled        bool            `json:"enabled"`
+		DefaultMode    string          `json:"defaultMode"`
+		ProtectedPaths []protectedPath `json:"protectedPaths"`
+		Egress         egress          `json:"egress"`
+		Notes          []string        `json:"notes"`
 	}
 	doc := struct {
 		Version             int                 `json:"version"`
@@ -453,11 +478,18 @@ func renderProjectProtectedFile(cfg projectRunConfig) string {
 			OrgID: cfg.Workspace.OrgID,
 		},
 		LocalActionFirewall: firewall{
-			Enabled:     true,
-			DefaultMode: projectHookModeDryRun,
+			Enabled:        true,
+			DefaultMode:    projectHookModeDryRun,
+			ProtectedPaths: []protectedPath{},
+			Egress: egress{
+				Enabled:       false,
+				AllowedHosts:  []string{},
+				UnlistedWrite: "require_approval",
+			},
 			Notes: []string{
 				"项目级保护文件只保存安全元数据，不存放敏感凭据、密钥明文或连接串密码。",
-				"后续可以作为 Guard Core 的项目上下文输入或扩展点。",
+				"protectedPaths 仅支持仓库内相对路径；规则只能要求审批或拒绝，不能放松 Guard Core。",
+				"egress 只治理 Hook 可见的网络写入，不提供完整数据血缘或 OS 网络隔离。",
 			},
 		},
 	}
@@ -477,7 +509,7 @@ func renderProjectReadmeFile(cfg projectRunConfig) string {
 	b.WriteString("本目录由 `" + commandName + " init` 生成，用于记录项目级安全偏好与客户端接入片段。\n\n")
 	b.WriteString("## 文件说明\n\n")
 	b.WriteString("- `config.json`：本项目的本地运行偏好，包含 host、port、workspace 与 hook mode。\n")
-	b.WriteString("- `protected.json`：项目级保护策略占位文件，未来可接入更细的 Guard Core 项目上下文。\n")
+	b.WriteString("- `protected.json`：项目级受保护路径和外发规则；只允许收紧 Guard Core。\n")
 	b.WriteString("- `clients/`：Codex / Claude Code 可复制的配置片段。\n")
 	b.WriteString("- `AGENTTOOLGATE.md`：给 AI 客户端和人类读者的最小安全提示。\n\n")
 	b.WriteString("`clients/*.json` 根部只保留客户端可消费字段；复制说明只写在本文档，避免把无关 `note` 字段带进客户端配置。\n\n")
@@ -489,7 +521,8 @@ func renderProjectReadmeFile(cfg projectRunConfig) string {
 	b.WriteString("## 使用方式\n\n")
 	b.WriteString("1. 运行 `" + commandName + " up` 启动本项目的本地防火墙。\n")
 	b.WriteString("2. 需要切换模式时，编辑 `config.json` 中的 `hookMode`。\n")
-	b.WriteString("3. 不要在这些文件里写入敏感凭据、密钥明文或连接串密码。\n")
+	b.WriteString("3. 需要保护核心目录时，在 `protected.json` 的 `protectedPaths` 中添加仓库相对路径规则。\n")
+	b.WriteString("4. 不要在这些文件里写入敏感凭据、密钥明文或连接串密码。\n")
 	return b.String()
 }
 
@@ -595,7 +628,7 @@ func renderClaudeSettingsSnippet(cfg projectRunConfig) string {
 	return mustJSONLine(doc)
 }
 
-const localActionHookMatcher = "^(Bash|Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|command|powershell|pwsh|apply_patch|mcp__.*)$"
+const localActionHookMatcher = "^(Bash|Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|command|powershell|pwsh|apply_patch|http[.]request|network[.]request|mcp__.*)$"
 
 func mustJSONLine(v any) string {
 	var buf bytes.Buffer

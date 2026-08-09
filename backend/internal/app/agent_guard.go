@@ -9,12 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
+	"agenttoolgate/backend/internal/guard"
 	"agenttoolgate/backend/internal/model"
 	"agenttoolgate/backend/internal/policy"
 	"agenttoolgate/backend/internal/store"
@@ -46,20 +48,23 @@ var agentGuardProjectCodeExecutionPatterns = []*regexp.Regexp{
 }
 
 type agentGuardEvaluateRequest struct {
-	Adapter              string `json:"adapter"`
-	Tool                 string `json:"tool"`
-	ActionType           string `json:"actionType"`
-	Target               string `json:"target"`
-	WorkspaceRoot        string `json:"workspaceRoot,omitempty"`
-	WorkingDirectory     string `json:"workingDirectory,omitempty"`
-	GuardDecision        string `json:"guardDecision,omitempty"`
-	GuardRiskLevel       string `json:"guardRiskLevel,omitempty"`
-	IsScript             bool   `json:"isScript"`
-	ContentEncoding      string `json:"contentEncoding"`
-	Content              string `json:"content"`
-	TicketID             string `json:"ticketId,omitempty"`
-	ResolvedFileIdentity string `json:"resolvedFileIdentity,omitempty"`
-	ParentIdentity       string `json:"parentIdentity,omitempty"`
+	Adapter              string   `json:"adapter"`
+	Tool                 string   `json:"tool"`
+	ActionType           string   `json:"actionType"`
+	Target               string   `json:"target"`
+	Targets              []string `json:"targets,omitempty"`
+	NetworkMethod        string   `json:"networkMethod,omitempty"`
+	NetworkURL           string   `json:"networkUrl,omitempty"`
+	WorkspaceRoot        string   `json:"workspaceRoot,omitempty"`
+	WorkingDirectory     string   `json:"workingDirectory,omitempty"`
+	GuardDecision        string   `json:"guardDecision,omitempty"`
+	GuardRiskLevel       string   `json:"guardRiskLevel,omitempty"`
+	IsScript             bool     `json:"isScript"`
+	ContentEncoding      string   `json:"contentEncoding"`
+	Content              string   `json:"content"`
+	TicketID             string   `json:"ticketId,omitempty"`
+	ResolvedFileIdentity string   `json:"resolvedFileIdentity,omitempty"`
+	ParentIdentity       string   `json:"parentIdentity,omitempty"`
 }
 
 type agentGuardDecisionResponse struct {
@@ -152,10 +157,21 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 	if err != nil {
 		return agentGuardDecisionResponse{}, err
 	}
+	req.Targets = guard.CanonicalProjectTargets(guard.ActionInput{
+		ToolName:       req.Tool,
+		Targets:        req.Targets,
+		Command:        decodedContent,
+		ContentPreview: decodedContent,
+	})
 	workspaceRoot := a.trustedAgentGuardWorkspaceRoot(req.WorkspaceRoot)
 	workingDirectory := normalizeAgentGuardTarget(req.WorkingDirectory)
+	projectFloor, projectFloorMatched, err := a.agentGuardProjectProtectionFloor(req, decodedContent, workingDirectory)
+	if err != nil {
+		return agentGuardDecisionResponse{}, err
+	}
 	targetResolution := a.resolveAgentGuardTargetWithinContext(normalizedTarget, workspaceRoot, workingDirectory)
-	targetCategory := classifyAgentGuardTargetCategoryWithWorkspace(normalizedTarget, workspaceRoot, targetResolution)
+	primaryTargetCategory := classifyAgentGuardTargetCategoryWithWorkspace(normalizedTarget, workspaceRoot, targetResolution)
+	targetCategory := primaryTargetCategory
 	contentSensitive := containsSensitiveAgentGuardContent(decodedContent)
 	contentHash := hashAgentGuardPayload(decodedContent)
 	scriptHash := ""
@@ -163,8 +179,43 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 		scriptHash = contentHash
 	}
 	riskLevel := deriveAgentGuardRisk(req.ActionType, normalizedTarget, req.IsScript, decodedContent, targetResolution.ResolvedPath, targetResolution.ResolvedParentPath, targetResolution.ParentIdentity)
+	additionalTargetIdentityParts := make([]string, 0, len(req.Targets)*4)
+	strictAdditionalTargetIdentityUnstable := false
+	for _, extraTarget := range req.Targets {
+		extraTarget = normalizeAgentGuardTarget(extraTarget)
+		if extraTarget == "" || agentGuardPathsEqual(extraTarget, normalizedTarget) {
+			continue
+		}
+		extraResolution := a.resolveAgentGuardTargetWithinContext(extraTarget, workspaceRoot, workingDirectory)
+		additionalTargetIdentityParts = append(additionalTargetIdentityParts,
+			extraTarget,
+			extraResolution.CanonicalTarget,
+			extraResolution.ResolvedFileIdentity,
+			extraResolution.ParentIdentity,
+		)
+		riskLevel = maxRiskLevel(riskLevel, deriveAgentGuardRisk(
+			req.ActionType,
+			extraTarget,
+			req.IsScript,
+			decodedContent,
+			extraResolution.ResolvedPath,
+			extraResolution.ResolvedParentPath,
+			extraResolution.ParentIdentity,
+		))
+		extraCategory := classifyAgentGuardTargetCategoryWithWorkspace(extraTarget, workspaceRoot, extraResolution)
+		if isAgentGuardStrictTargetCategory(extraCategory) && extraResolution.TargetExists && !extraResolution.TargetIdentityStable {
+			strictAdditionalTargetIdentityUnstable = true
+		}
+		targetCategory = maxAgentGuardTargetCategory(
+			targetCategory,
+			extraCategory,
+		)
+	}
 	if guardRiskLevel != "" {
 		riskLevel = maxRiskLevel(riskLevel, guardRiskLevel)
+	}
+	if projectFloorMatched {
+		riskLevel = maxRiskLevel(riskLevel, projectFloor.RiskLevel)
 	}
 	if targetCategory == "workspace" && isAgentGuardProjectCodeExecution(req.ActionType, req.Target, decodedContent) {
 		targetCategory = "project_code_execution"
@@ -189,6 +240,14 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 		workingDirectory,
 		guardDecision,
 		guardRiskLevel,
+		strings.Join(req.Targets, "\x1f"),
+		strings.Join(additionalTargetIdentityParts, "\x1e"),
+		strings.ToUpper(strings.TrimSpace(req.NetworkMethod)),
+		strings.TrimSpace(req.NetworkURL),
+		projectFloor.Decision,
+		projectFloor.RiskLevel,
+		projectFloor.Category,
+		projectFloor.Reason,
 		contentHash,
 		scriptHash,
 	}, "\x00"))
@@ -198,6 +257,9 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 		"tool":                 strings.TrimSpace(req.Tool),
 		"actionType":           strings.ToLower(strings.TrimSpace(req.ActionType)),
 		"target":               strings.TrimSpace(req.Target),
+		"targets":              append([]string(nil), req.Targets...),
+		"networkMethod":        strings.ToUpper(strings.TrimSpace(req.NetworkMethod)),
+		"networkUrl":           strings.TrimSpace(req.NetworkURL),
 		"workspaceRoot":        workspaceRoot,
 		"workingDirectory":     workingDirectory,
 		"guardDecision":        guardDecision,
@@ -242,12 +304,26 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 			policyRuleName = "guard-core-ask-floor"
 		}
 	}
+	if projectFloorMatched {
+		switch projectFloor.Decision {
+		case "deny":
+			policyDecision = policyDeny
+			policyReason = projectFloor.Reason
+			policyRuleName = projectFloor.Category
+		case "ask":
+			if policyDecision != policyDeny {
+				policyDecision = policyRequireApproval
+				policyReason = projectFloor.Reason
+				policyRuleName = projectFloor.Category
+			}
+		}
+	}
 	approvalSpan.SetAttributes(attribute.String("policy.decision", policyDecision))
 	approvalSpan.End()
 	telemetry.RecordAgentGuardRuleOutcome(policyRuleName, "triggered")
 	explanation := buildAgentGuardExplanation(targetCategory, riskLevel, policyRuleName, normalizedTarget, targetResolution, req.ContentEncoding, req.Content, decodedContent)
 
-	if isAgentGuardStrictTargetCategory(targetCategory) && targetResolution.TargetExists && !targetResolution.TargetIdentityStable {
+	if strictAdditionalTargetIdentityUnstable || (isAgentGuardStrictTargetCategory(primaryTargetCategory) && targetResolution.TargetExists && !targetResolution.TargetIdentityStable) {
 		telemetry.RecordAgentGuardRuleOutcome(policyRuleName, "denied")
 		return a.recordAgentGuardDenied(ctx, reqCtx, tool, req, decisionPayloadJSON, inputRedactedJSON, traceID, requestID, "sensitive path without stable file identity", fingerprint, riskLevel, "", explanation)
 	}
@@ -318,6 +394,72 @@ func (a *App) evaluateAgentGuard(ctx context.Context, reqCtx RequestContext, req
 	default:
 		return agentGuardDecisionResponse{}, fmt.Errorf("unsupported agent guard decision %q", policyDecision)
 	}
+}
+
+func (a *App) agentGuardProjectProtectionFloor(req agentGuardEvaluateRequest, decodedContent, workingDirectory string) (guard.Decision, bool, error) {
+	declaredNetworkURL, declaredNetwork := parseAgentGuardHTTPURL(req.NetworkURL)
+	targetNetworkURL, targetNetwork := parseAgentGuardHTTPURL(req.Target)
+	if strings.TrimSpace(req.NetworkURL) != "" && !declaredNetwork {
+		return guard.Decision{}, false, badRequest("networkUrl must be a valid http or https URL")
+	}
+	if declaredNetwork && targetNetwork && declaredNetworkURL != targetNetworkURL {
+		return guard.Decision{}, false, badRequest("networkUrl must match target")
+	}
+
+	trustedRoot := normalizeAgentGuardTarget(a.cfg.ProjectRoot)
+	if trustedRoot == "" {
+		return guard.Decision{}, false, nil
+	}
+	protection, err := guard.LoadProjectProtection(trustedRoot)
+	if err != nil {
+		return guard.Decision{}, false, errors.New("project protection config invalid")
+	}
+	if !protection.Enabled {
+		return guard.Decision{}, false, nil
+	}
+	cwd := normalizeAgentGuardTarget(workingDirectory)
+	if cwd == "" || !agentGuardPathWithinRoot(cwd, trustedRoot) {
+		cwd = trustedRoot
+	}
+	action := guard.ActionInput{
+		Client:         strings.TrimSpace(req.Adapter),
+		ToolName:       strings.TrimSpace(req.Tool),
+		ActionType:     strings.TrimSpace(req.ActionType),
+		CWD:            cwd,
+		ProjectRoot:    trustedRoot,
+		Command:        decodedContent,
+		Target:         strings.TrimSpace(req.Target),
+		Targets:        append([]string(nil), req.Targets...),
+		ContentPreview: decodedContent,
+		NetworkMethod:  strings.TrimSpace(req.NetworkMethod),
+		NetworkURL:     strings.TrimSpace(req.NetworkURL),
+	}
+	if declaredNetwork {
+		action.NetworkURL = declaredNetworkURL
+	} else if targetNetwork {
+		action.NetworkURL = targetNetworkURL
+	} else {
+		action.NetworkURL = ""
+	}
+	if action.NetworkURL != "" {
+		if action.NetworkMethod == "" {
+			action.NetworkMethod = http.MethodPost
+		}
+	}
+	decision, matched := guard.EvaluateProjectProtection(action, protection)
+	return decision, matched, nil
+}
+
+func parseAgentGuardHTTPURL(value string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", false
+	}
+	return parsed.String(), true
 }
 
 func (a *App) evaluateAgentGuardWithTicket(ctx context.Context, reqCtx RequestContext, tool model.Tool, req agentGuardEvaluateRequest, decisionPayloadJSON, inputRedactedJSON json.RawMessage, policyDecision, policyReason, policyRuleName, traceID, requestID string, existingApproval model.ApprovalRequest, existingCall model.ToolCall, found bool, fingerprint, riskLevel string, explanation *agentGuardExplanation) (agentGuardDecisionResponse, error) {
@@ -705,6 +847,27 @@ func isAgentGuardStrictTargetCategory(targetCategory string) bool {
 	default:
 		return false
 	}
+}
+
+func maxAgentGuardTargetCategory(current, candidate string) string {
+	rank := func(value string) int {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "self_tamper":
+			return 4
+		case "sensitive":
+			return 3
+		case "external":
+			return 2
+		case "project_code_execution":
+			return 1
+		default:
+			return 0
+		}
+	}
+	if rank(candidate) > rank(current) {
+		return candidate
+	}
+	return current
 }
 
 func approvalIsExpiredAt(now time.Time, approval model.ApprovalRequest) bool {

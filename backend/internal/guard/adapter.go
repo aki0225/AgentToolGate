@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 )
 
@@ -172,26 +173,98 @@ func decodeHookPayload(data []byte) (map[string]any, error) {
 
 func populateActionFromPayload(action *ActionInput, payload map[string]any) {
 	toolInput := firstMap(payload, "tool_input", "toolInput", "input", "args", "arguments", "params")
-	maps := []map[string]any{payload}
+	inputFirst := make([]map[string]any, 0, 2)
 	if toolInput != nil {
-		maps = append(maps, toolInput)
+		inputFirst = append(inputFirst, toolInput)
 	}
+	inputFirst = append(inputFirst, payload)
 	envelope := []map[string]any{payload}
+	toolMaps := []map[string]any{payload}
+	if toolInput != nil {
+		toolMaps = append(toolMaps, toolInput)
+	}
 
-	action.ToolName = firstStringFromMaps(maps, "tool_name", "toolName", "tool", "name")
-	action.ActionType = firstStringFromMaps(maps, "action_type", "actionType", "action", "kind", "type")
+	action.ToolName = firstStringFromMaps(toolMaps, "tool_name", "toolName", "tool", "name")
+	explicitActionType := firstStringFromMaps(envelope, "action_type", "actionType")
 	action.CWD = firstStringFromMaps(envelope, "cwd", "working_directory", "workingDirectory", "workdir")
 	action.ProjectRoot = firstStringFromMaps(envelope, "project_root", "projectRoot", "workspace_root", "workspaceRoot", "repo_root", "repoRoot")
-	action.Command = firstStringFromMaps(maps, "command", "cmd", "shell_command", "shellCommand", "script")
-	action.Target = firstStringFromMaps(maps, "target", "path", "file_path", "filePath", "filename", "file", "pattern", "glob")
-	action.ContentPreview = firstStringFromMaps(maps, "content_preview", "contentPreview", "content", "body", "text", "new_string", "newString", "diff", "patch", "input")
-	action.NetworkMethod = firstStringFromMaps(maps, "network_method", "networkMethod", "method", "http_method", "httpMethod")
-	action.NetworkURL = firstStringFromMaps(maps, "network_url", "networkUrl", "url", "uri", "endpoint")
+	action.Command = firstStringFromMaps(inputFirst, "command", "cmd", "shell_command", "shellCommand", "script")
+	action.Target = firstStringFromMaps(inputFirst, "target", "path", "file_path", "filePath", "filename", "file", "pattern", "glob")
+	action.ContentPreview = firstStringFromMaps(inputFirst, "content_preview", "contentPreview", "content", "body", "text", "new_string", "newString", "diff", "patch", "input")
+	action.NetworkMethod = firstStringFromMaps(inputFirst, "network_method", "networkMethod", "method", "http_method", "httpMethod")
+	action.NetworkURL = firstStringFromMaps(inputFirst, "network_url", "networkUrl", "url", "uri", "endpoint")
 
-	// Claude/Codex 的 payload 字段并不稳定；adapter 只做保守归一化，真正风险判断交给 Guard Core。
-	if action.ActionType == "" || lowerTrim(action.ActionType) == "pre_tool_use" {
-		action.ActionType = inferActionType(*action)
+	if isApplyPatchTool(action.ToolName) {
+		normalizeApplyPatchAction(action)
+		return
 	}
+	if explicitActionType != "" && lowerTrim(explicitActionType) != "pre_tool_use" {
+		action.ActionType = explicitActionType
+		return
+	}
+	if inferredAction := inferActionType(*action); inferredAction != "unknown" {
+		action.ActionType = inferredAction
+		return
+	}
+	action.ActionType = firstStringFromMaps(envelope, "action", "kind", "type")
+}
+
+func normalizeApplyPatchAction(action *ActionInput) {
+	action.ActionType = "write"
+	patch := action.ContentPreview
+	if !strings.Contains(patch, "*** Begin Patch") && strings.Contains(action.Command, "*** Begin Patch") {
+		patch = action.Command
+		action.ContentPreview = patch
+	}
+	if !strings.Contains(patch, "*** Begin Patch") && strings.Contains(action.Target, "*** Begin Patch") {
+		patch = action.Target
+		action.ContentPreview = patch
+	}
+	if targets := extractPatchTargets(patch); len(targets) > 0 {
+		action.Targets = append([]string(nil), targets...)
+		action.Target = strings.Join(targets, ";")
+	}
+}
+
+func isApplyPatchTool(toolName string) bool {
+	switch lowerTrim(toolName) {
+	case "apply_patch", "applypatch":
+		return true
+	default:
+		return false
+	}
+}
+
+func extractPatchTargets(patch string) []string {
+	const (
+		addPrefix    = "*** Add File: "
+		deletePrefix = "*** Delete File: "
+		updatePrefix = "*** Update File: "
+		movePrefix   = "*** Move to: "
+	)
+	var targets []string
+	seen := make(map[string]struct{})
+	for _, line := range strings.Split(strings.ReplaceAll(patch, "\r\n", "\n"), "\n") {
+		for _, prefix := range []string{addPrefix, deletePrefix, updatePrefix, movePrefix} {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			target := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			if target == "" {
+				break
+			}
+			key := target
+			if runtime.GOOS == "windows" {
+				key = strings.ToLower(target)
+			}
+			if _, exists := seen[key]; !exists {
+				seen[key] = struct{}{}
+				targets = append(targets, target)
+			}
+			break
+		}
+	}
+	return targets
 }
 
 func inferActionType(action ActionInput) string {

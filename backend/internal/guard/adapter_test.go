@@ -41,6 +41,66 @@ func TestAdaptCodexPayloadMapsShellCommand(t *testing.T) {
 	}
 }
 
+func TestAdaptCodexPayloadPrefersApplyPatchSemanticsOverEnvelopeType(t *testing.T) {
+	payload := readGuardFixture(t, "codex", "apply-patch-source.json")
+	action, err := AdaptCodexPayload(payload)
+	if err != nil {
+		t.Fatalf("adapt codex apply_patch payload: %v", err)
+	}
+	if action.ToolName != "apply_patch" || action.ActionType != "write" {
+		t.Fatalf("apply_patch must normalize as write, got %+v", action)
+	}
+	if action.Target != "src/service.go" {
+		t.Fatalf("apply_patch target must be extracted from patch, got %q", action.Target)
+	}
+	if !strings.Contains(action.ContentPreview, "*** Update File: src/service.go") {
+		t.Fatalf("apply_patch content must preserve the patch preview, got %q", action.ContentPreview)
+	}
+}
+
+func TestAdaptCodexPayloadExtractsEveryApplyPatchTarget(t *testing.T) {
+	payload := []byte(`{
+		"type":"exec",
+		"tool_name":"apply_patch",
+		"tool_input":{
+			"command":"*** Begin Patch\n*** Update File: src/a.go\n*** Add File: docs/a.md\n*** Move to: docs/b.md\n*** End Patch\n"
+		}
+	}`)
+	action, err := AdaptCodexPayload(payload)
+	if err != nil {
+		t.Fatalf("adapt codex multi-target patch: %v", err)
+	}
+	if action.ActionType != "write" || action.Target != "src/a.go;docs/a.md;docs/b.md" {
+		t.Fatalf("unexpected multi-target patch action: %+v", action)
+	}
+	wantTargets := []string{"src/a.go", "docs/a.md", "docs/b.md"}
+	if len(action.Targets) != len(wantTargets) {
+		t.Fatalf("unexpected patch target count: %+v", action.Targets)
+	}
+	for index, want := range wantTargets {
+		if action.Targets[index] != want {
+			t.Fatalf("unexpected patch target at %d: got %q want %q", index, action.Targets[index], want)
+		}
+	}
+}
+
+func TestAdaptPayloadDoesNotTrustNestedActionType(t *testing.T) {
+	payload := []byte(`{
+		"tool_name":"Read",
+		"tool_input":{
+			"action_type":"write",
+			"path":"README.md"
+		}
+	}`)
+	action, err := AdaptCodexPayload(payload)
+	if err != nil {
+		t.Fatalf("adapt codex nested action type: %v", err)
+	}
+	if action.ActionType != "read" {
+		t.Fatalf("nested business parameters must not override tool semantics, got %+v", action)
+	}
+}
+
 func TestAdaptPayloadOnlyTrustsEnvelopeWorkingContext(t *testing.T) {
 	payload := []byte(`{
 		"cwd":"E:\\repo-a\\nested",

@@ -22,8 +22,8 @@ import ssl
 from pathlib import Path
 from typing import Any
 
-DEFAULT_HOOK_TIMEOUT_SECONDS = 0.2
-DEFAULT_GO_CLI_TIMEOUT_SECONDS = 1.0
+DEFAULT_HOOK_TIMEOUT_SECONDS = 1.0
+DEFAULT_GO_CLI_TIMEOUT_SECONDS = 1.5
 MIN_HOOK_TIMEOUT_MS = 50
 MAX_HOOK_TIMEOUT_MS = 2000
 MIN_GO_CLI_TIMEOUT_MS = 100
@@ -142,6 +142,8 @@ def is_guarded_tool(tool_name: str) -> bool:
         "powershell",
         "pwsh",
         "apply_patch",
+        "http.request",
+        "network.request",
     }
 
 
@@ -261,19 +263,23 @@ if _HOOK_DIR not in sys.path:
 
 try:
     from _guard_core import (
+        ProjectProtectionError,
         contains_hidden_script_features,
         is_high_risk_offline_target,
         is_project_metadata_read_target,
         is_probably_high_risk_target,
         is_probably_script_target,
+        project_protection_floor,
     )
 except ImportError:  # pragma: no cover - 兼容直接复制单文件调试的场景。
     from ._guard_core import (  # type: ignore[no-redef]
+        ProjectProtectionError,
         contains_hidden_script_features,
         is_high_risk_offline_target,
         is_project_metadata_read_target,
         is_probably_high_risk_target,
         is_probably_script_target,
+        project_protection_floor,
     )
 
 
@@ -302,7 +308,7 @@ def read_script_file_content(target: str, cwd: str) -> str:
     return ""
 
 
-def extract_patch_targets(patch_text: str) -> str:
+def extract_patch_targets(patch_text: str) -> list[str]:
     targets: list[str] = []
     for raw_line in patch_text.splitlines():
         line = raw_line.strip()
@@ -315,7 +321,7 @@ def extract_patch_targets(patch_text: str) -> str:
             target = line[len("*** Move to: ") :].strip()
             if target:
                 targets.append(target)
-    return ";".join(targets)
+    return targets
 
 
 def build_agent_guard_request(
@@ -328,6 +334,9 @@ def build_agent_guard_request(
     normalized_name = tool_name.lower().strip()
     action_type = "read"
     target = ""
+    targets: list[str] = []
+    network_method = ""
+    network_url = ""
     content = ""
     cwd = first_non_empty(input_data.get("cwd")) or os.getcwd()
 
@@ -382,8 +391,30 @@ def build_agent_guard_request(
             tool_input.get("patch"),
         )
         if normalized_name == "apply_patch":
-            content = content or first_non_empty(tool_input.get("input"), tool_input.get("diff"))
-            target = target or extract_patch_targets(content)
+            content = content or first_non_empty(tool_input.get("command"), tool_input.get("input"), tool_input.get("diff"))
+            targets = extract_patch_targets(content)
+            target = target or ";".join(targets)
+        if not content:
+            content = json.dumps(tool_input, ensure_ascii=False, separators=(",", ":"))
+    elif normalized_name in {"http.request", "network.request"}:
+        action_type = "network"
+        network_method = first_non_empty(
+            tool_input.get("method"),
+            tool_input.get("http_method"),
+            tool_input.get("httpMethod"),
+        )
+        network_url = first_non_empty(
+            tool_input.get("url"),
+            tool_input.get("uri"),
+            tool_input.get("endpoint"),
+            tool_input.get("target"),
+        )
+        target = network_url
+        content = first_non_empty(
+            tool_input.get("body"),
+            tool_input.get("content"),
+            tool_input.get("text"),
+        )
         if not content:
             content = json.dumps(tool_input, ensure_ascii=False, separators=(",", ":"))
     elif normalized_name.startswith("mcp__"):
@@ -416,6 +447,9 @@ def build_agent_guard_request(
         "tool": tool_name,
         "actionType": action_type,
         "target": target,
+        "targets": targets,
+        "networkMethod": network_method,
+        "networkUrl": network_url,
         "workspaceRoot": first_non_empty(
             workspace_root,
             input_data.get("project_root"),
@@ -532,11 +566,16 @@ def redact_preview_target(value: Any) -> str:
 
 
 def hook_request_digest(payload: dict[str, Any]) -> str:
+    raw_targets = payload.get("targets")
+    targets = [get_text(item) for item in raw_targets] if isinstance(raw_targets, list) else []
     fields = [
         get_text(payload.get("adapter")),
         get_text(payload.get("tool")),
         get_text(payload.get("actionType")),
         get_text(payload.get("target")),
+        targets,
+        get_text(payload.get("networkMethod")).upper(),
+        get_text(payload.get("networkUrl")),
         get_text(payload.get("workspaceRoot")),
         get_text(payload.get("workingDirectory")),
         get_text(payload.get("guardDecision")),
@@ -640,6 +679,16 @@ def record_local_hook_dry_run(repo_root: str, payload: dict[str, Any]) -> None:
         preview_path = repo_local_hook_dry_run_path(repo_root)
         preview_path.parent.mkdir(parents=True, exist_ok=True)
         high_risk = is_high_risk_offline_target(payload)
+        signals = hook_preview_signals(payload)
+        try:
+            project_floor = project_protection_floor(repo_root, payload)
+        except ProjectProtectionError:
+            project_floor = None
+            high_risk = True
+            signals.append("project_protection_config_invalid")
+        if project_floor is not None:
+            high_risk = True
+            signals.append("project_protection_rule")
         workspace = get_text(os.environ.get("AGENTTOOLGATE_WORKSPACE_ORG_ID") or os.environ.get("WORKSPACE_ORG_ID"))
         if not workspace:
             workspace = Path(repo_root).name
@@ -653,7 +702,7 @@ def record_local_hook_dry_run(repo_root: str, payload: dict[str, Any]) -> None:
             "mode": "dry-run",
             "riskLevel": "high" if high_risk else "low",
             "decisionPreview": "would_block_in_live" if high_risk else "would_allow_in_live",
-            "signals": hook_preview_signals(payload),
+            "signals": signals,
             "time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         }
         with preview_path.open("a", encoding="utf-8") as handle:
@@ -1220,6 +1269,11 @@ def split_read_only_command_tokens(command: str) -> list[str] | None:
 
 
 def is_explicitly_low_risk_offline_action(repo_root: str, payload: dict[str, Any]) -> bool:
+    try:
+        if project_protection_floor(repo_root, payload) is not None:
+            return False
+    except ProjectProtectionError:
+        return False
     action = get_text(payload.get("actionType")).lower()
     tool = get_text(payload.get("tool")).lower()
     target = get_text(payload.get("target"))
@@ -1238,6 +1292,11 @@ def is_explicitly_low_risk_offline_action(repo_root: str, payload: dict[str, Any
 
 
 def is_fast_path_repo_read(repo_root: str, payload: dict[str, Any]) -> bool:
+    try:
+        if project_protection_floor(repo_root, payload) is not None:
+            return False
+    except ProjectProtectionError:
+        return False
     return (
         get_text(payload.get("actionType")).lower() == "read"
         and get_text(payload.get("tool")).lower() == "read"
@@ -1264,6 +1323,17 @@ def attach_python_guard_floor(repo_root: str, payload: dict[str, Any]) -> dict[s
     else:
         request["guardDecision"] = "ask"
         request["guardRiskLevel"] = "medium"
+    try:
+        project_floor = project_protection_floor(repo_root, payload)
+    except ProjectProtectionError:
+        request["guardDecision"] = "deny"
+        request["guardRiskLevel"] = "high"
+        return request
+    if project_floor is not None:
+        current = get_text(request.get("guardDecision"))
+        if project_floor["decision"] == "deny" or current == "allow":
+            request["guardDecision"] = project_floor["decision"]
+        request["guardRiskLevel"] = "high"
     return request
 
 

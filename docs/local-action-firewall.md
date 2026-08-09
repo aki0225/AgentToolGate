@@ -16,12 +16,54 @@ AI coding agent 可能被诱导执行完全不经过 MCP 的动作：
 
 本地动作防火墙把这些动作在落地前带入同一套风险模型。
 
+## 项目内保护规则
+
+`agenttoolgate init` 会生成 `.agenttoolgate/protected.json`。空规则保持日常开发低噪音；项目可以把核心目录和生产配置提升为 high-risk approval 或 deny：
+
+```json
+{
+  "version": 1,
+  "localActionFirewall": {
+    "enabled": true,
+    "protectedPaths": [
+      {
+        "pattern": "src/core/**",
+        "read": "require_approval",
+        "write": "require_approval",
+        "delete": "deny",
+        "reason": "核心算法目录"
+      }
+    ],
+    "egress": {
+      "enabled": true,
+      "allowedHosts": ["api.github.com"],
+      "unlistedWrite": "deny"
+    }
+  }
+}
+```
+
+路径只支持 repo-relative exact / subtree，不支持任意 glob、正则、绝对路径或 `..`。规则效果只有 `require_approval` 和 `deny`，多条规则以及多目标 patch 始终取最严格结果。`.agenttoolgate/protected.json` 自身也属于 self-tamper 目标。
+
+调整规则时先切到 `dry-run`，编辑完成后再切回 `live`。两个启用命令都会校验配置；`off` 不读取规则，始终可用于恢复开发。
+
+项目规则在三个位置形成 floor：
+
+- Go Hook 在调用后端前评估，普通 repo 写入仍可 no-op，受保护动作不能被后端旧的 allow 降级。
+- `/api/agent-guard/evaluate` 使用后端可信 `AGT_PROJECT_ROOT` 重新加载规则，客户端伪造 workspace root 不能绕过。
+- Go CLI 不可用时，Claude / Codex Python Hook 使用同一份最小 matcher；损坏配置在 live 下保守拒绝。
+
+网络规则只检查 Hook payload 能明确暴露的目标 host。允许 host 仍要服从内置网络写入审批、HTTP/MCP 部署级 allowlist 和 Connector 约束；项目配置只能继续缩小范围。
+
+`/api/agent-guard/evaluate` 评估的是官方 Hook 提交的声明式动作描述，不是 OS 行为证明。若不受信任的进程同时伪造 tool/action/target 并绕过 Hook 自行执行，ATG 无法把这类请求升级成真正的 enforcement boundary。
+
 ## 它不解决什么问题
 
 它不负责：
 
 - 阻止提示词注入进入模型上下文。
 - 证明所有本地动作路径都被覆盖。
+- 追踪受保护文件内容的后续数据血缘、变量传播、编码、压缩或跨工具复制。
 - 消除 hook 检查和真实执行之间的 TOCTOU。
 - 替代 OS 文件权限、sandbox profile 或网络隔离。
 - 保证第三方客户端 hook 协议长期不变。
@@ -70,6 +112,8 @@ hook payload 会被规范化为本地动作：
 - target：规范化路径或逻辑目标
 - content：脚本或文件内容，进入 audit 前脱敏
 - optional file identity / parent identity
+
+项目规则评估 `apply_patch` 时，Add / Update / Move 按 write 处理，Delete 按 delete 处理，并对所有目标采用最严格结果。
 
 风险由落点和内容共同驱动，不是简单地“所有 write 都危险”。
 
@@ -160,4 +204,5 @@ ticket TTL 是 10 分钟，并且只能消费一次。审批后，带相同 tick
 - PreToolUse 校验到真实执行之间存在 TOCTOU。
 - 路径规范化能降低绕过风险，但不能替代所有平台上的 OS-level file identity enforcement。
 - 后端离线或配置错误时，敏感落点必须保守处理。
+- 项目规则依赖 Hook/API 能看到真实目标；绕过 Hook 的进程、socket 和第三方工具不在覆盖范围内。
 - Dry-run evidence 必须保持脱敏；raw target URL、token、Authorization、approval id 和完整 fingerprint 不应提交到仓库。

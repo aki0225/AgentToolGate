@@ -32,6 +32,14 @@ HOOK = load_hook_module()
 
 
 class CodexHookBridgeTest(unittest.TestCase):
+    def write_project_protection(self, repo: Path, body: dict[str, Any] | str) -> None:
+        config_path = repo / ".agenttoolgate" / "protected.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(body, str):
+            config_path.write_text(body, encoding="utf-8")
+        else:
+            config_path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+
     def set_hook_control(self, repo: Path, mode: str | None = None, raw: str | None = None) -> None:
         control_path = repo / ".tmp" / "agenttoolgate" / "hook-control.json"
         original = control_path.read_bytes() if control_path.exists() else None
@@ -101,6 +109,119 @@ class CodexHookBridgeTest(unittest.TestCase):
                         HOOK.is_explicitly_low_risk_offline_action(str(repo), payload),
                         not high_risk or HOOK.is_project_metadata_read_target(payload["target"]),
                     )
+
+    def test_canonical_apply_patch_command_extracts_every_target(self) -> None:
+        patch = """*** Begin Patch
+*** Update File: src/ui.go
+*** Update File: src/core/algorithm.go
+*** End Patch
+"""
+        payload = HOOK.build_agent_guard_request(
+            "codex",
+            {"cwd": os.getcwd()},
+            "apply_patch",
+            {"command": patch},
+        )
+        self.assertEqual(payload["actionType"], "write")
+        self.assertEqual(payload["targets"], ["src/ui.go", "src/core/algorithm.go"])
+        self.assertEqual(payload["content"], patch.strip())
+
+    def test_project_protection_tightens_python_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [
+                            {"pattern": "src/core/**", "read": "require_approval", "write": "deny"}
+                        ],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            read_payload = {
+                "tool": "Read",
+                "actionType": "read",
+                "target": "src/core/algorithm.go",
+                "workingDirectory": str(repo),
+            }
+            floor = HOOK.attach_python_guard_floor(str(repo), read_payload)
+            self.assertEqual(floor["guardDecision"], "ask")
+            self.assertEqual(floor["guardRiskLevel"], "high")
+            self.assertFalse(HOOK.is_explicitly_low_risk_offline_action(str(repo), read_payload))
+
+            write_payload = dict(read_payload, tool="Write", actionType="write")
+            floor = HOOK.attach_python_guard_floor(str(repo), write_payload)
+            self.assertEqual(floor["guardDecision"], "deny")
+
+    def test_project_protection_parses_real_shell_payload_without_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [
+                            {"pattern": "src/protected/**", "read": "deny"},
+                            {"pattern": "src/core/first.txt", "write": "require_approval"},
+                            {"pattern": "deploy/production/app.yaml", "delete": "deny"},
+                        ],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            cases = (
+                ("Bash", "rg -n TODO src/protected", "deny"),
+                (
+                    "PowerShell",
+                    "Set-Content src/core/first.txt one; Remove-Item deploy/production/app.yaml",
+                    "deny",
+                ),
+            )
+            for tool_name, command, expected in cases:
+                with self.subTest(command=command):
+                    tool_input = {"command": command}
+                    payload = HOOK.build_agent_guard_request(
+                        "codex",
+                        {"cwd": str(repo)},
+                        tool_name,
+                        tool_input,
+                        str(repo),
+                    )
+                    self.assertNotIn("target", tool_input)
+                    floor = HOOK.project_protection_floor(str(repo), payload)
+                    self.assertIsNotNone(floor)
+                    self.assertEqual(floor["decision"], expected)
+
+            unknown_payload = HOOK.build_agent_guard_request(
+                "codex",
+                {"cwd": str(repo)},
+                "Bash",
+                {"command": "rg --mystery TODO src/protected"},
+                str(repo),
+            )
+            self.assertIsNone(HOOK.project_protection_floor(str(repo), unknown_payload))
+
+    def test_invalid_project_protection_denies_python_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(repo, '{"version":1,"localActionFirewall":{"enabled":true,"unknown":true}}')
+            floor = HOOK.attach_python_guard_floor(
+                str(repo),
+                {
+                    "tool": "Read",
+                    "actionType": "read",
+                    "target": "README.md",
+                    "workingDirectory": str(repo),
+                },
+            )
+            self.assertEqual(floor["guardDecision"], "deny")
+            self.assertEqual(floor["guardRiskLevel"], "high")
 
     def test_powershell_positional_write_targets_are_extracted(self) -> None:
         cases = [

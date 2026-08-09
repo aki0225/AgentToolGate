@@ -450,6 +450,9 @@ func newGovernanceTestAppWithConfig(t *testing.T, overrides config.Config) (*App
 		srv.cfg.PolicyConfigPath = overrides.PolicyConfigPath
 		srv.reloadPolicyEngine()
 	}
+	if overrides.ProjectRoot != "" {
+		srv.cfg.ProjectRoot = overrides.ProjectRoot
+	}
 	return srv, st, workspace
 }
 

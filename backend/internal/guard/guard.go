@@ -13,16 +13,17 @@ import (
 )
 
 type ActionInput struct {
-	Client         string `json:"client"`
-	ToolName       string `json:"toolName"`
-	ActionType     string `json:"actionType"`
-	CWD            string `json:"cwd"`
-	ProjectRoot    string `json:"projectRoot"`
-	Command        string `json:"command"`
-	Target         string `json:"target"`
-	ContentPreview string `json:"contentPreview"`
-	NetworkMethod  string `json:"networkMethod"`
-	NetworkURL     string `json:"networkUrl"`
+	Client         string   `json:"client"`
+	ToolName       string   `json:"toolName"`
+	ActionType     string   `json:"actionType"`
+	CWD            string   `json:"cwd"`
+	ProjectRoot    string   `json:"projectRoot"`
+	Command        string   `json:"command"`
+	Target         string   `json:"target"`
+	ContentPreview string   `json:"contentPreview"`
+	NetworkMethod  string   `json:"networkMethod"`
+	NetworkURL     string   `json:"networkUrl"`
+	Targets        []string `json:"targets,omitempty"`
 }
 
 type Decision struct {
@@ -35,6 +36,40 @@ type Decision struct {
 }
 
 func Evaluate(input ActionInput) Decision {
+	targets := make([]string, 0, len(input.Targets)+1)
+	targets = appendGuardTarget(targets, input.Target)
+	for _, target := range input.Targets {
+		targets = appendGuardTarget(targets, target)
+	}
+	if len(targets) > 0 {
+		result := Decision{}
+		for _, target := range targets {
+			candidate := input
+			candidate.Target = target
+			candidate.Targets = nil
+			result = stricterGuardDecision(result, evaluateAction(candidate))
+		}
+		if result.Decision != "" {
+			return result
+		}
+	}
+	return evaluateAction(input)
+}
+
+func appendGuardTarget(targets []string, target string) []string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return targets
+	}
+	for _, existing := range targets {
+		if existing == target {
+			return targets
+		}
+	}
+	return append(targets, target)
+}
+
+func evaluateAction(input ActionInput) Decision {
 	cwd := normalizePathCandidate(input.CWD)
 	projectRoot := normalizePathCandidate(input.ProjectRoot)
 	target := normalizePathCandidate(resolveTarget(input.Target, cwd, projectRoot))
@@ -85,6 +120,46 @@ func Evaluate(input ActionInput) Decision {
 	}
 
 	return newDecision("ask", "medium", false, "需要确认", "unknown_action", "unknown", "需要人工确认")
+}
+
+func stricterGuardDecision(base, candidate Decision) Decision {
+	baseDecisionRank := guardDecisionRank(base.Decision)
+	candidateDecisionRank := guardDecisionRank(candidate.Decision)
+	if candidateDecisionRank > baseDecisionRank {
+		return candidate
+	}
+	if candidateDecisionRank == baseDecisionRank && guardRiskRank(candidate.RiskLevel) >= guardRiskRank(base.RiskLevel) {
+		return candidate
+	}
+	return base
+}
+
+func guardDecisionRank(decision string) int {
+	switch lowerTrim(decision) {
+	case "deny":
+		return 3
+	case "ask":
+		return 2
+	case "allow":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func guardRiskRank(riskLevel string) int {
+	switch lowerTrim(riskLevel) {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	default:
+		return 0
+	}
 }
 
 func detectLowRiskAllow(command, toolName, actionType, target, cwd, projectRoot, workspaceRoot string) (Decision, bool) {
@@ -1322,6 +1397,9 @@ func isSensitiveConfigPath(target string) bool {
 	if containsAny(lower, "/.env", "/.env.local", "/.npmrc") {
 		return true
 	}
+	if strings.HasSuffix(lower, "/.agenttoolgate/protected.json") {
+		return true
+	}
 	if strings.HasSuffix(lower, "/package.json") || strings.HasSuffix(lower, "/package-lock.json") || strings.HasSuffix(lower, "/pnpm-lock.yaml") || strings.HasSuffix(lower, "/yarn.lock") || strings.HasSuffix(lower, "/bun.lockb") {
 		return true
 	}
@@ -1347,6 +1425,7 @@ func isHardSelfTamperPath(target string) bool {
 func isSoftSelfTamperPath(target string) bool {
 	lower := lowerTrim(target)
 	return containsAny(lower, "/.claude/", "/.codex/", "/.agents/", "/.github/workflows/") ||
+		strings.HasSuffix(lower, "/.agenttoolgate/protected.json") ||
 		strings.HasSuffix(lower, "/package.json") ||
 		strings.HasSuffix(lower, "/package-lock.json") ||
 		strings.HasSuffix(lower, "/pnpm-lock.yaml") ||
