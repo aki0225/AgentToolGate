@@ -1,0 +1,45 @@
+{
+  "$schema": "./schema/client-acceptance-artifact.schema.json",
+  "schemaVersion": "v1",
+  "artifactType": "client_hook_events",
+  "runId": "codex-windows-20260809-0ee86ef",
+  "events": [
+    {
+      "id": "event-01",
+      "time": "2026-08-09T02:08:01.958774Z",
+      "toolName": "Bash",
+      "action": "benign.git-status",
+      "decision": "no-op",
+      "exitCode": 0,
+      "commandExecuted": true
+    },
+    {
+      "id": "event-02",
+      "time": "2026-08-09T02:08:18.886800Z",
+      "toolName": "mcp__agenttoolgate__mock_echo",
+      "action": "mcp.mock-echo",
+      "decision": "no-op",
+      "exitCode": 0,
+      "commandExecuted": true
+    },
+    {
+      "id": "event-03",
+      "time": "2026-08-09T02:08:22.196300Z",
+      "toolName": "Bash",
+      "action": "read.ripgrep",
+      "decision": "no-op",
+      "exitCode": 0,
+      "commandExecuted": true
+    },
+    {
+      "id": "event-04",
+      "time": "2026-08-09T02:08:32.966224Z",
+      "toolName": "Bash",
+      "action": "dangerous.write-ssh-key",
+      "target": ".ssh/id_rsa",
+      "decision": "deny",
+      "exitCode": 0,
+      "commandExecuted": false
+    }
+  ]
+}

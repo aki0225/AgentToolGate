@@ -1,0 +1,132 @@
+{
+  "$schema": "./schema/client-acceptance-artifact.schema.json",
+  "schemaVersion": "v1",
+  "artifactType": "client_acceptance_manifest",
+  "runId": "dual-client-windows-20260809-0ee86ef",
+  "bundleId": "dual-client-windows-20260809-0ee86ef",
+  "status": "passed",
+  "sourceCommit": "0ee86ef7864fd64ff4987f1d19dcdbd8d0affb88",
+  "stage5aComplete": true,
+  "runs": {
+    "codex": {
+      "runId": "codex-windows-20260809-0ee86ef",
+      "functionalChainPassed": true,
+      "mediaAcceptanceComplete": true
+    },
+    "claude": {
+      "runId": "claude-windows-20260809-0ee86ef",
+      "functionalChainPassed": true,
+      "mediaAcceptanceComplete": true
+    }
+  },
+  "videos": {
+    "codex": {
+      "kind": "synchronized_sanitized_client_capture",
+      "durationSeconds": 64.08,
+      "width": 1280,
+      "height": 720,
+      "rawDesktopCapture": false,
+      "postRunTranscriptReplay": false
+    },
+    "claude": {
+      "kind": "synchronized_sanitized_client_capture",
+      "durationSeconds": 64.014,
+      "width": 1280,
+      "height": 720,
+      "rawDesktopCapture": false,
+      "postRunTranscriptReplay": false
+    }
+  },
+  "files": [
+    {
+      "path": ".gitattributes",
+      "sizeBytes": 68,
+      "sha256": "f3a1c5ebd42d0db938c5a96227edfb85e29412812f8ac9ed542dded0a897f701",
+      "mediaType": "text/plain"
+    },
+    {
+      "path": "README.md",
+      "sizeBytes": 5018,
+      "sha256": "071d35ebf4acb78351c56e9f7ddab0610b4e20962aec82928178e2719468633e",
+      "mediaType": "text/markdown; charset=utf-8"
+    },
+    {
+      "path": "schema/client-acceptance-artifact.schema.json",
+      "sizeBytes": 20217,
+      "sha256": "ea973417cc8ae9f484441e1abc118fbead3f70e7f497b0e43928e1fb7215413b",
+      "mediaType": "application/schema+json"
+    },
+    {
+      "path": "codex-windows.transcript.txt",
+      "sizeBytes": 2058,
+      "sha256": "40421b6498ac8578a2498ab9390fecb44c3569ce1c12260764754fc8839b1d7b",
+      "mediaType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "codex-windows.run-metadata.json",
+      "sizeBytes": 2114,
+      "sha256": "0047f9011719c79788300ef53d22d518e9939f42f6d96820e48d1894d844b774",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "codex-windows.audit.json",
+      "sizeBytes": 1331,
+      "sha256": "794ee0162e0df1cb9d9b57b7c3a88e8a042f24320626bf87a77e0933a8c9a820",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "codex-windows.hook-events.json",
+      "sizeBytes": 1140,
+      "sha256": "07152b82e7eab5884bea9ed6f3af7a073f2ee55e8ace179f750d499a7cbe88b8",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "codex-windows.postconditions.json",
+      "sizeBytes": 893,
+      "sha256": "b738c8276f9acaa6b1f2f989d70e8a3b6e2265d748d9bebb6f30c2cac7b18b40",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "codex-windows.webm",
+      "sizeBytes": 3042774,
+      "sha256": "f7593350b0c0c4721910702faf48627b9a51bc3067b62b8f5b0e319bca108f1b",
+      "mediaType": "video/webm"
+    },
+    {
+      "path": "claude-windows.transcript.txt",
+      "sizeBytes": 2086,
+      "sha256": "96df108fb1df89be99798b7518b5243c12b5ef8e364287922595014093378ebb",
+      "mediaType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "claude-windows.run-metadata.json",
+      "sizeBytes": 1990,
+      "sha256": "0891109f30dc36c470b57744f3617fba977e0c0936728beb93929fc69b675801",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "claude-windows.audit.json",
+      "sizeBytes": 2575,
+      "sha256": "3d6823a863a8226c3bbd3b134b95860483a973dad59842710817256e1c6d9616",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "claude-windows.hook-events.json",
+      "sizeBytes": 914,
+      "sha256": "6d34cd2bb61e19e4609a5878772979ffa99edc8911982fcec885aad6ee83d98a",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "claude-windows.postconditions.json",
+      "sizeBytes": 959,
+      "sha256": "d2605724cd0119125e86de3e7099b7d17b3e206d3ceec2b8686ed2a99893503f",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "claude-windows.webm",
+      "sizeBytes": 752830,
+      "sha256": "a94ce6a84423d238a42419627109b7309682a6d578784ac1aeee52e2586f2745",
+      "mediaType": "video/webm"
+    }
+  ]
+}

@@ -210,23 +210,40 @@ failed/skipped 计数与 results 一致，报告完整且敏感扫描无命中�
 
 ### 阶段 5：真实客户端与 v0.2.0
 
+阶段 5A 已实现：
+
+- Codex CLI `0.146.0` 和 Claude Code `2.1.220` 已在
+  `0ee86ef7864fd64ff4987f1d19dcdbd8d0affb88` 上完成 disposable repo 真实
+  功能链验收。
+- 两个客户端均完成 `git status`、ATG MCP `mock.echo`、hostile synthetic output
+  读取和仓库内 `.ssh/id_rsa` 写入尝试。
+- Codex Hook 对高危写入返回 `deny`，Claude Hook 返回 `ask`；独立检查确认两个运行
+  均没有产生目标文件或目录，残留客户端进程为 `0`。
+- 两个客户端均保存约 64 秒的 `1280×720` 同步脱敏录屏，不再使用事后 transcript
+  回放完成媒体验收。
+- 公开 transcript、metadata、Audit、Hook、postconditions、WebM 和 manifest 位于
+  `evaluation/client-acceptance/`。
+- Release workflow 已能构建 Windows / Linux evaluator 附件，但还没有候选标签下载
+  物的独立核验结果。
+
 尚未实现：
 
-- disposable repo 中的真实 Codex / Claude Code 验收。
-- evaluator Release 附件。
 - `v0.2.0-rc1` 和 `v0.2.0`。
 
-## 5. 下一步只做阶段 5A
+## 5. 下一步只做阶段 5B
 
-阶段 5A 先完成 disposable repository 中的真实 Codex 与 Claude Code 验收，不同时创建
-Release tag：
+阶段 5B 先提交并推送 Stage 5A 证据，确认 CI 后运行同一候选提交的 Windows / Linux
+full evaluation，再创建 `v0.2.0-rc1`：
 
-1. 固定客户端版本、ATG commit、Windows 版本和 hook mode。
-2. 只使用 synthetic README、tool output、Secret 和仓库内敏感落点，不接触真实系统目录。
-3. 每个客户端至少验证一个良性动作和一个高危动作，保存脱敏终端记录与对应 Audit。
-4. 保存 60～90 秒脱敏录屏；不把未运行、timeout 或非确定结果写成通过。
-5. 验证 disposable repo 未产生高危目标、无残留进程、证据无本机绝对路径或真实凭据。
-6. 独立提交 Stage 5A 证据，再进入评估器 Release 附件和 `v0.2.0-rc1`。
+1. 独立复算 `evaluation/client-acceptance/manifest.json`，严格解析全部 JSON，播放两段
+   WebM 到结束，并执行敏感信息扫描。
+2. 提交并推送 Stage 5A 证据，确认普通 CI 绿色。
+3. 对同一候选提交运行 GitHub Actions Windows / Linux full evaluation。
+4. 用核验后的 Artifact 刷新 `evaluation/published/agent-safety-proof.json`、README 和
+   Pages，确保汇总值只来自公开快照。
+5. 创建 `v0.2.0-rc1`，下载并核验 Windows / Linux 产品包、两个 evaluator 包和
+   `SHA256SUMS`。
+6. 候选验收通过后再创建 `v0.2.0`，不覆盖 `v0.1.0` 或其他历史标签。
 
 ## 6. 恢复步骤
 
@@ -244,11 +261,11 @@ Get-Content docs/agent-safety-evaluation-proof-pack-plan.md
 - 没有残留 `agenttoolgate` / `atg-eval` 进程。
 - 不读取或提交 `.tmp/` 中的历史运行产物。
 
-然后只创建阶段 5A 的真实客户端验收提交。
+然后只创建阶段 5B 的候选发布验证提交。
 
 ## 7. 禁止顺带修改
 
-阶段 5A 不要顺带修改：
+阶段 5B 不要顺带修改：
 
 - `.codex/hooks/**`
 - `.claude/hooks/**`

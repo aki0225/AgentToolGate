@@ -1,0 +1,864 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aki0225/AgentToolGate/evaluation/client-acceptance/schema/client-acceptance-artifact.schema.json",
+  "title": "AgentToolGate real client acceptance artifacts",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/runMetadata"
+    },
+    {
+      "$ref": "#/$defs/clientAudit"
+    },
+    {
+      "$ref": "#/$defs/hookEvents"
+    },
+    {
+      "$ref": "#/$defs/postconditions"
+    },
+    {
+      "$ref": "#/$defs/manifest"
+    }
+  ],
+  "$defs": {
+    "runCore": {
+      "type": "object",
+      "required": [
+        "$schema",
+        "schemaVersion",
+        "artifactType",
+        "runId"
+      ],
+      "properties": {
+        "$schema": {
+          "const": "./schema/client-acceptance-artifact.schema.json"
+        },
+        "schemaVersion": {
+          "const": "v1"
+        },
+        "artifactType": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
+        }
+      }
+    },
+    "agentToolGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "commit",
+        "buildTime"
+      ],
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "buildTime": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "hookMode": {
+          "const": "live"
+        }
+      }
+    },
+    "client": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "workingDirectory",
+        "isolatedHome"
+      ],
+      "properties": {
+        "name": {
+          "enum": [
+            "codex-cli",
+            "claude-code"
+          ]
+        },
+        "version": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "workingDirectory": {
+          "const": "<disposable-repo>"
+        },
+        "isolatedHome": {
+          "type": "string",
+          "pattern": "^<repo-ignored-[a-z-]+>$"
+        }
+      }
+    },
+    "authentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "temporaryCopyCreated",
+        "temporaryCopyRemovedAfterRun",
+        "processEnvironmentClearedAfterExit",
+        "persistedToRepository",
+        "includedInEvidence",
+        "providerIdentityIncluded"
+      ],
+      "properties": {
+        "method": {
+          "enum": [
+            "isolated_home_temporary_copy",
+            "process_environment"
+          ]
+        },
+        "temporaryCopyCreated": {
+          "type": "boolean"
+        },
+        "temporaryCopyRemovedAfterRun": {
+          "type": "boolean"
+        },
+        "processEnvironmentClearedAfterExit": {
+          "type": "boolean"
+        },
+        "persistedToRepository": {
+          "const": false
+        },
+        "includedInEvidence": {
+          "const": false
+        },
+        "providerIdentityIncluded": {
+          "const": false
+        }
+      }
+    },
+    "video": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "durationSeconds",
+        "width",
+        "height",
+        "rawDesktopCapture",
+        "postRunTranscriptReplay"
+      ],
+      "properties": {
+        "kind": {
+          "const": "synchronized_sanitized_client_capture"
+        },
+        "durationSeconds": {
+          "type": "number",
+          "minimum": 60,
+          "maximum": 90
+        },
+        "width": {
+          "const": 1280
+        },
+        "height": {
+          "const": 720
+        },
+        "rawDesktopCapture": {
+          "const": false
+        },
+        "postRunTranscriptReplay": {
+          "const": false
+        }
+      }
+    },
+    "runMetadata": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/runCore"
+        },
+        {
+          "type": "object",
+          "required": [
+            "startedAt",
+            "completedAt",
+            "durationSeconds",
+            "client",
+            "invocation",
+            "hookEnvironment",
+            "agentToolGate",
+            "authentication",
+            "expectedNetworkBoundary",
+            "video",
+            "postRunProcessCheck"
+          ],
+          "properties": {
+            "artifactType": {
+              "const": "client_run_metadata"
+            },
+            "startedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "completedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "durationSeconds": {
+              "type": "number",
+              "minimum": 0
+            },
+            "client": {
+              "$ref": "#/$defs/client"
+            },
+            "invocation": {
+              "type": "object",
+              "required": [
+                "mode",
+                "prompt"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "non-interactive"
+                },
+                "subcommand": {
+                  "type": "string"
+                },
+                "flags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "outputFormat": {
+                  "type": "string"
+                },
+                "permissionMode": {
+                  "type": "string"
+                },
+                "prompt": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "hookEnvironment": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mode",
+                "atgUrl",
+                "workspaceOrgId",
+                "hookTimeoutMs",
+                "cliTimeoutMs",
+                "pythonBytecodeDisabled"
+              ],
+              "properties": {
+                "mode": {
+                  "const": "live"
+                },
+                "atgUrl": {
+                  "const": "<loopback-atg>"
+                },
+                "workspaceOrgId": {
+                  "const": "local-org"
+                },
+                "hookTimeoutMs": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "cliTimeoutMs": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "pythonBytecodeDisabled": {
+                  "const": true
+                }
+              }
+            },
+            "agentToolGate": {
+              "$ref": "#/$defs/agentToolGate"
+            },
+            "authentication": {
+              "$ref": "#/$defs/authentication"
+            },
+            "expectedNetworkBoundary": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "allowedDestinations",
+                "networkCapturePerformed"
+              ],
+              "properties": {
+                "allowedDestinations": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "networkCapturePerformed": {
+                  "const": false
+                }
+              }
+            },
+            "video": {
+              "$ref": "#/$defs/video"
+            },
+            "postRunProcessCheck": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "scope",
+                "resultCount"
+              ],
+              "properties": {
+                "scope": {
+                  "type": "string"
+                },
+                "resultCount": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "mcpToolCall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "createdAt",
+        "toolKey",
+        "status",
+        "policyDecision",
+        "riskLevel",
+        "inputRedactedJson"
+      ],
+      "properties": {
+        "id": {
+          "pattern": "^call-[0-9]{2}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "hookEvent": {
+          "pattern": "^event-[0-9]{2}$"
+        },
+        "toolKey": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "policyDecision": {
+          "type": "string"
+        },
+        "riskLevel": {
+          "type": "string"
+        },
+        "inputRedactedJson": {
+          "type": "object"
+        }
+      }
+    },
+    "guardAuditEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "createdAt",
+        "hookEvent",
+        "action",
+        "status",
+        "policyDecision",
+        "riskLevel",
+        "targetCategory",
+        "matchedRule"
+      ],
+      "properties": {
+        "id": {
+          "pattern": "^audit-[0-9]{2}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "hookEvent": {
+          "pattern": "^event-[0-9]{2}$"
+        },
+        "action": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "policyDecision": {
+          "type": "string"
+        },
+        "riskLevel": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "targetCategory": {
+          "type": "string"
+        },
+        "matchedRule": {
+          "type": "string"
+        },
+        "approvalTicket": {
+          "pattern": "^approval-[0-9]{2}$"
+        },
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "localAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hookEvent",
+        "tool",
+        "target",
+        "decision",
+        "commandExecuted",
+        "sideEffectPrevented",
+        "evidenceSource"
+      ],
+      "properties": {
+        "hookEvent": {
+          "pattern": "^event-[0-9]{2}$"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "ask",
+            "deny"
+          ]
+        },
+        "approvalTicket": {
+          "pattern": "^approval-[0-9]{2}$"
+        },
+        "commandExecuted": {
+          "const": false
+        },
+        "sideEffectPrevented": {
+          "const": true
+        },
+        "evidenceSource": {
+          "type": "string"
+        }
+      }
+    },
+    "auditPostconditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "syntheticSshFileExists",
+        "syntheticSshDirectoryExists",
+        "residualClientProcessCount"
+      ],
+      "properties": {
+        "syntheticSshFileExists": {
+          "const": false
+        },
+        "syntheticSshDirectoryExists": {
+          "const": false
+        },
+        "residualClientProcessCount": {
+          "const": 0
+        }
+      }
+    },
+    "clientAudit": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/runCore"
+        },
+        {
+          "type": "object",
+          "required": [
+            "client",
+            "agentToolGate",
+            "mcpToolCalls",
+            "guardAuditEvents",
+            "localAction",
+            "postconditions",
+            "functionalResult",
+            "mediaAcceptance"
+          ],
+          "properties": {
+            "artifactType": {
+              "const": "client_audit"
+            },
+            "client": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "version",
+                "permissionMode"
+              ],
+              "properties": {
+                "name": {
+                  "enum": [
+                    "codex-cli",
+                    "claude-code"
+                  ]
+                },
+                "version": {
+                  "type": "string"
+                },
+                "permissionMode": {
+                  "type": "string"
+                }
+              }
+            },
+            "agentToolGate": {
+              "$ref": "#/$defs/agentToolGate"
+            },
+            "mcpToolCalls": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/mcpToolCall"
+              }
+            },
+            "guardAuditEvents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/guardAuditEvent"
+              }
+            },
+            "localAction": {
+              "$ref": "#/$defs/localAction"
+            },
+            "postconditions": {
+              "$ref": "#/$defs/auditPostconditions"
+            },
+            "functionalResult": {
+              "const": "passed"
+            },
+            "mediaAcceptance": {
+              "const": "synchronized_sanitized_capture_complete"
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "hookEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "time",
+        "toolName",
+        "action",
+        "decision",
+        "exitCode",
+        "commandExecuted"
+      ],
+      "properties": {
+        "id": {
+          "pattern": "^event-[0-9]{2}$"
+        },
+        "time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "toolName": {
+          "type": "string"
+        },
+        "action": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "allow",
+            "ask",
+            "deny",
+            "no-op"
+          ]
+        },
+        "approvalTicket": {
+          "pattern": "^approval-[0-9]{2}$"
+        },
+        "exitCode": {
+          "type": "integer"
+        },
+        "commandExecuted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "hookEvents": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/runCore"
+        },
+        {
+          "type": "object",
+          "required": [
+            "events"
+          ],
+          "properties": {
+            "artifactType": {
+              "const": "client_hook_events"
+            },
+            "events": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/hookEvent"
+              }
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "postconditionCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "output"
+      ],
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "output": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "postconditions": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/runCore"
+        },
+        {
+          "type": "object",
+          "required": [
+            "checkedAt",
+            "checks",
+            "residualProcessCheck",
+            "clientExitCode",
+            "timedOut",
+            "dangerousSideEffectObserved"
+          ],
+          "properties": {
+            "artifactType": {
+              "const": "client_postconditions"
+            },
+            "checkedAt": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "checks": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "$ref": "#/$defs/postconditionCheck"
+              }
+            },
+            "residualProcessCheck": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "scope",
+                "count"
+              ],
+              "properties": {
+                "scope": {
+                  "type": "string"
+                },
+                "count": {
+                  "const": 0
+                }
+              }
+            },
+            "clientExitCode": {
+              "const": 0
+            },
+            "timedOut": {
+              "const": false
+            },
+            "dangerousSideEffectObserved": {
+              "const": false
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "manifestFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sizeBytes",
+        "sha256",
+        "mediaType"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "mediaType": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "manifestRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "functionalChainPassed",
+        "mediaAcceptanceComplete"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "functionalChainPassed": {
+          "const": true
+        },
+        "mediaAcceptanceComplete": {
+          "const": true
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "$schema",
+        "schemaVersion",
+        "artifactType",
+        "runId",
+        "bundleId",
+        "status",
+        "sourceCommit",
+        "stage5aComplete",
+        "runs",
+        "videos",
+        "files"
+      ],
+      "properties": {
+        "$schema": {
+          "const": "./schema/client-acceptance-artifact.schema.json"
+        },
+        "schemaVersion": {
+          "const": "v1"
+        },
+        "artifactType": {
+          "const": "client_acceptance_manifest"
+        },
+        "runId": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "bundleId": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$"
+        },
+        "status": {
+          "const": "passed"
+        },
+        "sourceCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "stage5aComplete": {
+          "const": true
+        },
+        "runs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "codex",
+            "claude"
+          ],
+          "properties": {
+            "codex": {
+              "$ref": "#/$defs/manifestRun"
+            },
+            "claude": {
+              "$ref": "#/$defs/manifestRun"
+            }
+          }
+        },
+        "videos": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "codex",
+            "claude"
+          ],
+          "properties": {
+            "codex": {
+              "$ref": "#/$defs/video"
+            },
+            "claude": {
+              "$ref": "#/$defs/video"
+            }
+          }
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/manifestFile"
+          }
+        }
+      }
+    }
+  }
+}
