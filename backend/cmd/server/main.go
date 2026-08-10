@@ -215,9 +215,11 @@ func startServer(cfg config.Config, openBrowser bool, stdout, stderr io.Writer, 
 		go openDefaultBrowser(logger, listenURL)
 	}
 
+	serveFailures := make(chan error, 1)
 	go func() {
 		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			logger.Error("server failed", "error", err)
+			serveFailures <- err
 			cancel()
 		}
 	}()
@@ -226,7 +228,10 @@ func startServer(cfg config.Config, openBrowser bool, stdout, stderr io.Writer, 
 		if err := onStarted(); err != nil {
 			logger.Error("post-start hook failed", "error", err)
 			if onFailure != nil {
-				_ = onFailure()
+				if rollbackErr := onFailure(); rollbackErr != nil {
+					logger.Error("post-start rollback failed", "error", rollbackErr)
+					fmt.Fprintln(stderr, "hook control rollback failed:", rollbackErr)
+				}
 			}
 			fmt.Fprintln(stderr, err)
 			cancel()
@@ -239,6 +244,18 @@ func startServer(cfg config.Config, openBrowser bool, stdout, stderr io.Writer, 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	_ = server.Shutdown(shutdownCtx)
+	select {
+	case err := <-serveFailures:
+		if onFailure != nil {
+			if rollbackErr := onFailure(); rollbackErr != nil {
+				logger.Error("server failure rollback failed", "error", rollbackErr)
+				fmt.Fprintln(stderr, "hook control rollback failed:", rollbackErr)
+			}
+		}
+		fmt.Fprintln(stderr, "server failed:", err)
+		return 1
+	default:
+	}
 	return 0
 }
 
@@ -269,7 +286,11 @@ func runHookControlCLI(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "hook control status 不接受额外参数")
 			return 2
 		}
-		doc := readHookControlDocument(repoRoot)
+		doc, err := readHookControlDocument(repoRoot)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
 		printHookControlStatus(stdout, repoRoot, doc)
 		return 0
 	case "off", "dry-run", "live":
@@ -357,21 +378,43 @@ func hookControlPath(repoRoot string) string {
 	return filepath.Join(repoRoot, ".tmp", "agenttoolgate", "hook-control.json")
 }
 
-func readHookControlDocument(repoRoot string) hookControlDocument {
+func readHookControlDocument(repoRoot string) (hookControlDocument, error) {
 	raw, err := os.ReadFile(hookControlPath(repoRoot))
 	if err != nil {
-		return hookControlDocument{Mode: "off"}
+		if os.IsNotExist(err) {
+			return hookControlDocument{Mode: projectHookModeOff}, nil
+		}
+		return hookControlDocument{}, errors.New("hook control invalid")
 	}
+	if err := rejectDuplicateJSONFields(raw); err != nil {
+		return hookControlDocument{}, errors.New("hook control invalid")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return hookControlDocument{}, errors.New("hook control invalid")
+	}
+	for field := range fields {
+		switch field {
+		case "mode", "updatedAt", "reason":
+		default:
+			return hookControlDocument{}, errors.New("hook control invalid")
+		}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
 	var doc hookControlDocument
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return hookControlDocument{Mode: "off"}
+	if err := decoder.Decode(&doc); err != nil {
+		return hookControlDocument{}, errors.New("hook control invalid")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return hookControlDocument{}, errors.New("hook control invalid")
 	}
 	doc.Mode = strings.ToLower(strings.TrimSpace(doc.Mode))
 	switch doc.Mode {
 	case "off", "dry-run", "live":
-		return doc
+		return doc, nil
 	default:
-		return hookControlDocument{Mode: "off"}
+		return hookControlDocument{}, errors.New("hook control invalid")
 	}
 }
 
@@ -627,7 +670,14 @@ func runGuardHook(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	action = bindHookActionToRepo(action, repoRoot)
-	hookMode := readHookControlDocument(repoRoot).Mode
+	control, controlErr := readHookControlDocument(repoRoot)
+	if controlErr != nil {
+		return emitHookDecision(client, hookAgentGuardResponse{
+			Decision: "deny",
+			Reason:   "hook control invalid",
+		}, stdout, stderr)
+	}
+	hookMode := control.Mode
 	if hookMode == projectHookModeOff {
 		return 0
 	}

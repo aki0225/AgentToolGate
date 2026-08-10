@@ -218,6 +218,20 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
                 self.assertTrue(module.is_guarded_tool("Read"))
                 self.assertTrue(module.is_guarded_tool("Grep"))
                 self.assertTrue(module.is_guarded_tool("Glob"))
+                self.assertTrue(module.is_guarded_tool("shell_command"))
+                self.assertTrue(module.is_guarded_tool("sh"))
+
+    def test_shell_command_and_sh_searches_skip_hidden_script_detection(self) -> None:
+        for module in (HOOK, CODEX_HOOK):
+            for tool_name in ("shell_command", "sh"):
+                with self.subTest(module=module.__name__, tool=tool_name):
+                    payload = {
+                        "tool": tool_name,
+                        "actionType": "exec",
+                        "target": "docs",
+                        "content": 'rg "executionpolicy bypass" docs',
+                    }
+                    self.assertFalse(module.is_high_risk_offline_target(payload))
 
     def test_claude_tool_input_supports_go_adapter_aliases(self) -> None:
         for key in ("args", "arguments", "params", "input"):
@@ -519,6 +533,42 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
                             self.assertIsNotNone(floor)
                             self.assertEqual(floor["decision"], expected)
 
+    def test_project_protection_uses_delete_rule_for_patch_move_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            patch = (
+                "*** Begin Patch\n"
+                "*** Update File: src/core/algorithm.py\n"
+                "*** Move to: docs/algorithm.py\n"
+                "*** End Patch\n"
+            )
+            for effect, expected in (({"delete": "deny"}, "deny"), ({"write": "deny"}, None)):
+                self.write_project_protection(
+                    repo,
+                    {
+                        "version": 1,
+                        "localActionFirewall": {
+                            "enabled": True,
+                            "protectedPaths": [{"pattern": "src/core/**", **effect}],
+                            "egress": {"enabled": False},
+                        },
+                    },
+                )
+                payload = {
+                    "tool": "apply_patch",
+                    "actionType": "write",
+                    "content": patch,
+                    "workingDirectory": str(repo),
+                }
+                for module in (HOOK, CODEX_HOOK):
+                    with self.subTest(module=module.__name__, effect=effect):
+                        floor = module.project_protection_floor(str(repo), payload)
+                        if expected is None:
+                            self.assertIsNone(floor)
+                        else:
+                            self.assertIsNotNone(floor)
+                            self.assertEqual(floor["decision"], expected)
+
     def test_project_protection_keeps_strictest_mixed_patch_operation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
@@ -576,6 +626,353 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
                     )
                     self.assertEqual(payload["target"], expected)
                     self.assertTrue(module.is_high_risk_offline_target(payload))
+
+    def test_project_protection_maps_extended_shell_operations(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [
+                            {
+                                "pattern": "src/core/**",
+                                "read": "deny",
+                                "write": "deny",
+                                "delete": "deny",
+                                "exec": "deny",
+                            }
+                        ],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            commands = (
+                "echo ok\nrm src/core/algorithm.py",
+                "Select-String -Pattern TODO -Path src/core/algorithm.py",
+                "Select-String TODO src/core/algorithm.py",
+                "Select-String -Pattern TODO src/core/algorithm.py",
+                "sls TODO src/core/algorithm.py",
+                "echo generated > src/core/generated.py",
+                "echo generated >> src/core/generated.py",
+                "echo generated >| src/core/generated.py",
+                "echo generated | tee src/core/generated.py",
+                "Get-Content input.txt | Tee-Object -FilePath src/core/generated.py",
+                "truncate -s 0 src/core/generated.py",
+                "python src/core/tool.py",
+                "py -3 bootstrap.py src/core/tool.py",
+                "python3.12 bootstrap.py src/core/tool.py",
+                "./src/core/tool.sh",
+                "mv src/core/algorithm.py docs/algorithm.py",
+            )
+            for module in (HOOK, CODEX_HOOK):
+                for command in commands:
+                    with self.subTest(module=module.__name__, command=command):
+                        payload = module.build_agent_guard_request(
+                            module.detect_adapter(),
+                            {"cwd": str(repo)},
+                            "Bash",
+                            {"command": command},
+                            str(repo),
+                        )
+                        floor = module.project_protection_floor(str(repo), payload)
+                        self.assertIsNotNone(floor)
+                        self.assertEqual(floor["decision"], "deny")
+                for tool_name in ("shell_command", "sh"):
+                    with self.subTest(module=module.__name__, tool_name=tool_name):
+                        payload = module.build_agent_guard_request(
+                            module.detect_adapter(),
+                            {"cwd": str(repo)},
+                            tool_name,
+                            {"command": "cat src/core/algorithm.py"},
+                            str(repo),
+                        )
+                        self.assertEqual(payload["actionType"], "exec")
+                        floor = module.project_protection_floor(str(repo), payload)
+                        self.assertIsNotNone(floor)
+                        self.assertEqual(floor["decision"], "deny")
+
+    def test_project_protection_accepts_static_absolute_glob_and_path_lists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            protected = repo / "src" / "protected" / "config.json"
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [{"pattern": "src/protected/**", "read": "deny"}],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            commands = (
+                f'Get-Content "{protected}"',
+                "Get-Content docs/readme.md,src/protected/config.json",
+                "Get-Content src/protected/*.json",
+            )
+            for module in (HOOK, CODEX_HOOK):
+                for command in commands:
+                    with self.subTest(module=module.__name__, command=command):
+                        payload = {
+                            "tool": "powershell",
+                            "actionType": "exec",
+                            "content": command,
+                            "workingDirectory": str(repo),
+                        }
+                        floor = module.project_protection_floor(str(repo), payload)
+                        self.assertIsNotNone(floor)
+                        self.assertEqual(floor["decision"], "deny")
+
+    def test_project_protection_ignores_quoted_redirection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [{"pattern": "src/core/**", "write": "deny"}],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            payload = {
+                "tool": "shell",
+                "actionType": "exec",
+                "content": 'echo "> src/core/generated.py"',
+                "workingDirectory": str(repo),
+            }
+            for module in (HOOK, CODEX_HOOK):
+                with self.subTest(module=module.__name__):
+                    self.assertIsNone(module.project_protection_floor(str(repo), payload))
+                    escaped_payload = dict(payload, content=r"echo \> src/core/generated.py")
+                    self.assertIsNone(module.project_protection_floor(str(repo), escaped_payload))
+
+    def test_project_protection_keeps_commands_after_escaped_quotes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [{"pattern": "src/core/**", "delete": "deny"}],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            commands = (
+                r'printf "x\""; rm src/core/algorithm.py',
+                r'printf "x\\"; rm src/core/algorithm.py',
+                'Write-Output "x`""; Remove-Item src/core/algorithm.py',
+                'Write-Output "x``"; Remove-Item src/core/algorithm.py',
+            )
+            for module in (HOOK, CODEX_HOOK):
+                for command in commands:
+                    with self.subTest(module=module.__name__, command=command):
+                        payload = {
+                            "tool": "shell",
+                            "actionType": "exec",
+                            "content": command,
+                            "workingDirectory": str(repo),
+                        }
+                        floor = module.project_protection_floor(str(repo), payload)
+                        self.assertIsNotNone(floor)
+                        self.assertEqual(floor["decision"], "deny")
+
+    def test_project_protection_classifies_copy_move_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            cases = (
+                ("Copy-Item -Destination deploy/production/app.py -Path docs/app.py", "deploy/production/**", "write", True),
+                ("Copy-Item -Destination docs/app.py -Path src/core/app.py", "src/core/**", "read", True),
+                ("Move-Item -Destination docs/app.py -Path src/core/app.py", "src/core/**", "delete", True),
+                ("Move-Item -Path docs/app.py -Destination deploy/production/app.py", "deploy/production/**", "write", True),
+                ("cp -Destination deploy/production/app.py -Path docs/app.py", "deploy/production/**", "write", True),
+                ("mv -Destination docs/app.py -Path src/core/app.py", "src/core/**", "delete", True),
+                ("Rename-Item -NewName replacement.py -Path src/core/algorithm.py", "src/core/replacement.py", "write", True),
+                ("truncate --reference src/core/reference.py docs/output.py", "src/core/reference.py", "read", True),
+                ("truncate -rsrc/core/reference.py docs/output.py", "src/core/reference.py", "read", True),
+                ("truncate --reference src/core/reference.py docs/output.py", "src/core/reference.py", "write", False),
+            )
+            for module in (HOOK, CODEX_HOOK):
+                for command, pattern, operation, expected in cases:
+                    with self.subTest(module=module.__name__, command=command, operation=operation):
+                        self.write_project_protection(
+                            repo,
+                            {
+                                "version": 1,
+                                "localActionFirewall": {
+                                    "enabled": True,
+                                    "protectedPaths": [{"pattern": pattern, operation: "deny"}],
+                                    "egress": {"enabled": False},
+                                },
+                            },
+                        )
+                        payload = {
+                            "tool": "shell",
+                            "actionType": "exec",
+                            "content": command,
+                            "workingDirectory": str(repo),
+                        }
+                        floor = module.project_protection_floor(str(repo), payload)
+                        self.assertEqual(floor is not None, expected)
+
+    def test_project_protection_covers_network_output_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [{"pattern": "deploy/production/**", "write": "deny"}],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            commands = (
+                "curl -o deploy/production/app.yaml https://api.github.com/data",
+                "curl -so deploy/production/app.yaml https://api.github.com/data",
+                "curl -c deploy/production/cookies.txt https://api.github.com/data",
+                "curl -Ddeploy/production/headers.txt https://api.github.com/data",
+                "Invoke-WebRequest -Uri https://api.github.com/data -OutF deploy/production/app.yaml",
+                "iwr https://api.github.com/data -OutFile:deploy/production/app.yaml",
+            )
+            for module in (HOOK, CODEX_HOOK):
+                for command in commands:
+                    with self.subTest(module=module.__name__, command=command):
+                        payload = {
+                            "tool": "shell",
+                            "actionType": "exec",
+                            "content": command,
+                            "workingDirectory": str(repo),
+                        }
+                        floor = module.project_protection_floor(str(repo), payload)
+                        self.assertIsNotNone(floor)
+                        self.assertEqual(floor["decision"], "deny")
+
+    def test_project_protection_covers_static_network_input_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [{"pattern": "src/core/**", "read": "deny"}],
+                        "egress": {
+                            "enabled": True,
+                            "allowedHosts": ["api.github.com"],
+                            "unlistedWrite": "deny",
+                        },
+                    },
+                },
+            )
+            commands = (
+                "curl -T src/core/archive.bin https://api.github.com/upload",
+                "curl --upload-file=src/core/archive.bin https://api.github.com/upload",
+                "curl -d @src/core/payload.json https://api.github.com/upload",
+                "curl --data-binary @src/core/payload.json https://api.github.com/upload",
+                "curl -F file=@src/core/payload.json https://api.github.com/upload",
+                "Invoke-RestMethod -InFile src/core/payload.json -Method Post -Uri https://api.github.com/upload",
+                "curl -d @- https://api.github.com/upload < src/core/payload.json",
+            )
+            for module in (HOOK, CODEX_HOOK):
+                for command in commands:
+                    with self.subTest(module=module.__name__, command=command):
+                        payload = {
+                            "tool": "shell",
+                            "actionType": "exec",
+                            "content": command,
+                            "workingDirectory": str(repo),
+                        }
+                        floor = module.project_protection_floor(str(repo), payload)
+                        self.assertIsNotNone(floor)
+                        self.assertEqual(floor["decision"], "deny")
+                        self.assertEqual(floor["reason"], "project protected path")
+
+    def test_project_protection_covers_static_shell_egress_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [],
+                        "egress": {
+                            "enabled": True,
+                            "allowedHosts": ["api.github.com"],
+                            "unlistedWrite": "deny",
+                        },
+                    },
+                },
+            )
+            writes = (
+                "curl -X POST https://uploads.example.test/data",
+                "curl -iXPOST https://uploads.example.test/data",
+                "curl --data synthetic https://uploads.example.test/data",
+                "curl --data-ascii synthetic https://uploads.example.test/data",
+                "curl --form-string message=synthetic https://uploads.example.test/data",
+                "curl --json '{\"message\":\"synthetic\"}' https://uploads.example.test/data",
+                "curl -dsynthetic -X GET https://uploads.example.test/data",
+                "curl -sdsynthetic https://uploads.example.test/data",
+                "curl -sFmessage=synthetic https://uploads.example.test/data",
+                "curl -sTpayload.txt https://uploads.example.test/data",
+                "curl -d synthetic uploads.example.test/data",
+                "curl -i -X POST https://uploads.example.test/data",
+                "Invoke-RestMethod -Method Post -Uri https://uploads.example.test/data",
+                "Invoke-RestMethod -Me Post -Uri https://uploads.example.test/data",
+                "Invoke-RestMethod -Method:Get -Body:synthetic -Uri:https://uploads.example.test/data",
+                "Invoke-RestMethod https://uploads.example.test/data -Body synthetic",
+                "powershell -Command Invoke-RestMethod -Method Post -Uri https://uploads.example.test/data",
+            )
+            allowed = (
+                "curl https://uploads.example.test/data",
+                "curl -I https://uploads.example.test/data",
+                "curl -i https://uploads.example.test/data",
+                "curl -f https://uploads.example.test/data",
+                "curl -x https://proxy.example.test https://uploads.example.test/data",
+                "curl -m 5 https://uploads.example.test/data",
+                "curl --connect-timeout 5 https://uploads.example.test/data",
+                'curl -H "Referer: https://docs.example.test" https://uploads.example.test/data',
+                "curl -d synthetic https://api.github.com/data --next https://uploads.example.test/data",
+                "Invoke-RestMethod -Method Get -Uri https://uploads.example.test/data",
+                "curl -X POST https://api.github.com/repos/example/project/issues",
+                "curl -m 5 -d synthetic https://api.github.com/data",
+                "curl --connect-timeout 5 -d synthetic https://api.github.com/data",
+            )
+            for module in (HOOK, CODEX_HOOK):
+                for command in writes:
+                    with self.subTest(module=module.__name__, command=command):
+                        payload = {
+                            "tool": "shell",
+                            "actionType": "exec",
+                            "content": command,
+                            "workingDirectory": str(repo),
+                        }
+                        floor = module.project_protection_floor(str(repo), payload)
+                        self.assertIsNotNone(floor)
+                        self.assertEqual(floor["decision"], "deny")
+                for command in allowed:
+                    with self.subTest(module=module.__name__, command=command):
+                        payload = {
+                            "tool": "shell",
+                            "actionType": "exec",
+                            "content": command,
+                            "workingDirectory": str(repo),
+                        }
+                        self.assertIsNone(module.project_protection_floor(str(repo), payload))
 
     def test_request_includes_workspace_root_and_ticket_digest_binds_it(self) -> None:
         for module in (HOOK, CODEX_HOOK):
@@ -712,6 +1109,8 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             "internal/secrets/parser.go",
             "docs/credentials/guide.md",
             "examples/startup/readme.md",
+            ".agenttoolgate/clients/claude-hook.json",
+            ".tmp/agenttoolgate/hook-dry-run.jsonl",
             r"C:\Windows\System32\taskschd\job.txt",
             "cmd/server/main.go",
         ]
@@ -726,6 +1125,7 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             ".env",
             ".env.production",
             ".npmrc",
+            ".agenttoolgate/config.json",
             ".tmp/agenttoolgate/hook-control.json",
             ".claude/settings.local.json",
             ".codex/config.toml",
@@ -745,10 +1145,56 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             with self.subTest(target=target):
                 self.assertTrue(HOOK.is_probably_high_risk_target(target))
 
+    def test_agenttoolgate_control_directories_are_mutation_sensitive(self) -> None:
+        read_targets = (
+            ".agenttoolgate/clients/claude-hook.json",
+            ".tmp/agenttoolgate/hook-dry-run.jsonl",
+        )
+        mutation_payloads = (
+            {
+                "tool": "Write",
+                "actionType": "write",
+                "target": ".agenttoolgate/clients/claude-hook.json",
+                "content": "{}",
+            },
+            {
+                "tool": "shell",
+                "actionType": "exec",
+                "target": ".tmp/agenttoolgate",
+                "content": "rm -rf .tmp/agenttoolgate",
+            },
+            {
+                "tool": "shell",
+                "actionType": "exec",
+                "target": ".agenttoolgate",
+                "content": "mv .agenttoolgate docs/agenttoolgate-backup",
+            },
+        )
+        for module in (HOOK, CODEX_HOOK):
+            for target in read_targets:
+                with self.subTest(module=module.__name__, target=target, operation="read"):
+                    payload = {"tool": "Read", "actionType": "read", "target": target, "content": ""}
+                    self.assertFalse(module.is_high_risk_offline_target(payload))
+            for command in (
+                "cat .agenttoolgate/clients/claude-hook.json",
+                "Get-Content .tmp/agenttoolgate/hook-dry-run.jsonl",
+            ):
+                with self.subTest(module=module.__name__, command=command, operation="shell-read"):
+                    payload = {"tool": "shell", "actionType": "exec", "target": command, "content": command}
+                    self.assertFalse(module.is_high_risk_offline_target(payload))
+            for payload in mutation_payloads:
+                with self.subTest(module=module.__name__, payload=payload):
+                    self.assertTrue(module.is_high_risk_offline_target(payload))
+            for target in (".agenttoolgate/config.json", ".tmp/agenttoolgate/hook-control.json"):
+                with self.subTest(module=module.__name__, target=target, operation="strict-read"):
+                    payload = {"tool": "Read", "actionType": "read", "target": target, "content": ""}
+                    self.assertTrue(module.is_high_risk_offline_target(payload))
+
     def test_claude_and_codex_share_offline_risk_core(self) -> None:
         targets = [
             "examples/agent-demo/evidence/windows-startup-poisoning-output.txt",
             "docs/credentials-review-notes.md",
+            ".agenttoolgate/config.json",
             ".agenttoolgate/protected.json",
             r"C:\Users\me\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\run.ps1",
             ".ssh/authorized_keys",
@@ -951,17 +1397,27 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             )
             self.assertEqual(raw, "")
 
-    def test_invalid_control_file_defaults_to_noop(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            repo = Path(temp_dir)
-            (repo / ".git").mkdir()
-            self.set_hook_control(repo, raw="{bad json")
-            raw = self.invoke_raw(
-                {"tool_name": "Write", "tool_input": {"path": ".env", "content": "TOKEN=x"}, "cwd": str(repo)},
-                post_json=lambda *_args, **_kwargs: self.fail("损坏控制文件时不应调用后端"),
-                enable_live=False,
-            )
-            self.assertEqual(raw, "")
+    def test_invalid_control_file_fails_closed(self) -> None:
+        for control in (
+            "{bad json",
+            '{"mode":"preview"}',
+            '{"mode":"live","mode":"off"}',
+            '{"mode":"live","unknown":true}',
+            '{"mode":true}',
+            '[{"mode":"live"}]',
+        ):
+            with self.subTest(control=control), tempfile.TemporaryDirectory() as temp_dir:
+                repo = Path(temp_dir)
+                (repo / ".git").mkdir()
+                self.set_hook_control(repo, raw=control)
+                raw = self.invoke_raw(
+                    {"tool_name": "Write", "tool_input": {"path": ".env", "content": "TOKEN=x"}, "cwd": str(repo)},
+                    post_json=lambda *_args, **_kwargs: self.fail("损坏控制文件时不应调用后端"),
+                    enable_live=False,
+                )
+                decision = json.loads(raw)["hookSpecificOutput"]
+                self.assertEqual(decision["permissionDecision"], "deny")
+                self.assertIn("hook control invalid", decision["permissionDecisionReason"])
 
     def test_dry_run_records_preview_without_blocking_or_calling_backend(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

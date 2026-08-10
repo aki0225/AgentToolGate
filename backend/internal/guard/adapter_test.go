@@ -84,6 +84,69 @@ func TestAdaptCodexPayloadExtractsEveryApplyPatchTarget(t *testing.T) {
 	}
 }
 
+func TestEvaluateAdaptedPayloadDetectsApplyPatchTargetAfterLongBody(t *testing.T) {
+	patch := "*** Begin Patch\n" + strings.Repeat("+safe filler\n", 256) +
+		"*** Update File: .ssh/id_rsa\n@@\n-old\n+new\n*** End Patch\n"
+	payload, err := json.Marshal(map[string]any{
+		"cwd":          `X:\demo\AgentToolGate`,
+		"project_root": `X:\demo\AgentToolGate`,
+		"tool_name":    "apply_patch",
+		"tool_input": map[string]any{
+			"command": patch,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal long apply_patch payload: %v", err)
+	}
+
+	action, err := AdaptCodexPayload(payload)
+	if err != nil {
+		t.Fatalf("adapt long apply_patch payload: %v", err)
+	}
+	if action.Target != ".ssh/id_rsa" || !strings.Contains(action.ContentPreview, "*** Update File: .ssh/id_rsa") {
+		t.Fatalf("long apply_patch must preserve and extract trailing target, got %+v", action)
+	}
+
+	result, err := EvaluateAdaptedPayload(AdapterInput{Client: "codex", Payload: payload})
+	if err != nil {
+		t.Fatalf("evaluate long apply_patch payload: %v", err)
+	}
+	if result.Decision != "deny" || !result.WouldBlock {
+		t.Fatalf("trailing sensitive patch target must be denied, got %+v", result)
+	}
+}
+
+func TestEvaluateAdaptedPayloadDetectsSensitiveCommandAfterLongPrefix(t *testing.T) {
+	command := "git status" + strings.Repeat(" ", 2048) + `; Get-Content C:\Users\me\.ssh\id_rsa`
+	payload, err := json.Marshal(map[string]any{
+		"cwd":          `X:\demo\AgentToolGate`,
+		"project_root": `X:\demo\AgentToolGate`,
+		"tool_name":    "shell",
+		"tool_input": map[string]any{
+			"command": command,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal long command payload: %v", err)
+	}
+
+	action, err := AdaptCodexPayload(payload)
+	if err != nil {
+		t.Fatalf("adapt long command payload: %v", err)
+	}
+	if action.Command != command {
+		t.Fatalf("long command must remain complete: got %d bytes, want %d", len(action.Command), len(command))
+	}
+
+	result, err := EvaluateAdaptedPayload(AdapterInput{Client: "codex", Payload: payload})
+	if err != nil {
+		t.Fatalf("evaluate long command payload: %v", err)
+	}
+	if result.Decision != "deny" || !result.WouldBlock {
+		t.Fatalf("trailing sensitive command target must be denied, got %+v", result)
+	}
+}
+
 func TestAdaptPayloadDoesNotTrustNestedActionType(t *testing.T) {
 	payload := []byte(`{
 		"tool_name":"Read",

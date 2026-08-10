@@ -197,19 +197,21 @@ func EvaluateProjectProtection(input ActionInput, protection ProjectProtection) 
 		}
 	}
 
-	if protection.Egress.Enabled && isProjectNetworkWrite(input) {
-		host := projectNetworkHost(input.NetworkURL)
-		if host == "" || !projectHostAllowed(host, protection.Egress.AllowedHosts) {
-			candidate := projectProtectionDecision(
-				protection.Egress.UnlistedWrite,
-				"项目外发规则要求确认",
-				"project_egress",
-			)
-			if !matched {
-				result = candidate
-				matched = true
-			} else {
-				result = stricterGuardDecision(result, candidate)
+	if protection.Egress.Enabled {
+		for _, networkURL := range projectNetworkWriteURLs(input) {
+			host := projectNetworkHost(networkURL)
+			if host == "" || !projectHostAllowed(host, protection.Egress.AllowedHosts) {
+				candidate := projectProtectionDecision(
+					protection.Egress.UnlistedWrite,
+					"项目外发规则要求确认",
+					"project_egress",
+				)
+				if !matched {
+					result = candidate
+					matched = true
+				} else {
+					result = stricterGuardDecision(result, candidate)
+				}
 			}
 		}
 	}
@@ -494,9 +496,30 @@ func extractPatchTargetOperations(patch string) []projectTargetOperation {
 		{prefix: "*** Delete File: ", operation: "delete"},
 	}
 	var operations []projectTargetOperation
+	lastUpdateTarget := ""
 	for _, rawLine := range strings.Split(strings.ReplaceAll(patch, "\r\n", "\n"), "\n") {
 		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, "*** Update File: ") {
+			target := strings.TrimSpace(strings.TrimPrefix(line, "*** Update File: "))
+			operations = appendProjectTargetOperation(operations, projectTargetOperation{Target: target, Operation: "write"})
+			lastUpdateTarget = target
+			continue
+		}
+		if strings.HasPrefix(line, "*** Move to: ") {
+			target := strings.TrimSpace(strings.TrimPrefix(line, "*** Move to: "))
+			if lastUpdateTarget != "" {
+				operations = removeProjectTargetOperation(operations, lastUpdateTarget, "write")
+				operations = appendProjectTargetOperation(operations, projectTargetOperation{Target: lastUpdateTarget, Operation: "delete"})
+			}
+			operations = appendProjectTargetOperation(operations, projectTargetOperation{Target: target, Operation: "write"})
+			lastUpdateTarget = ""
+			continue
+		}
+		lastUpdateTarget = ""
 		for _, candidate := range prefixOperations {
+			if candidate.prefix == "*** Update File: " || candidate.prefix == "*** Move to: " {
+				continue
+			}
 			if !strings.HasPrefix(line, candidate.prefix) {
 				continue
 			}
@@ -508,6 +531,18 @@ func extractPatchTargetOperations(patch string) []projectTargetOperation {
 		}
 	}
 	return operations
+}
+
+func removeProjectTargetOperation(operations []projectTargetOperation, target, operation string) []projectTargetOperation {
+	filtered := operations[:0]
+	for _, candidate := range operations {
+		if candidate.Operation == operation &&
+			(candidate.Target == target || (runtime.GOOS == "windows" && strings.EqualFold(candidate.Target, target))) {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered
 }
 
 func appendProjectTargetOperation(operations []projectTargetOperation, candidate projectTargetOperation) []projectTargetOperation {
@@ -546,7 +581,7 @@ func isProjectShellInput(input ActionInput) bool {
 	action := lowerTrim(input.ActionType)
 	tool := lowerTrim(input.ToolName)
 	return action == "command" || action == "exec" || action == "execute" ||
-		tool == "shell" || tool == "powershell" || tool == "pwsh" ||
+		tool == "shell" || tool == "shell_command" || tool == "powershell" || tool == "pwsh" ||
 		tool == "bash" || tool == "sh" || tool == "cmd"
 }
 
@@ -607,11 +642,75 @@ func projectDeleteCommandTargets(command string) ([]string, bool) {
 func projectCommandTargetOperations(command string) []projectTargetOperation {
 	var operations []projectTargetOperation
 	for _, tokens := range splitProjectCommandSegments(command) {
+		for _, operation := range projectRedirectionTargetOperations(tokens) {
+			operations = appendProjectTargetOperation(operations, operation)
+		}
 		for _, operation := range parseProjectCommandTargetOperations(tokens, 0) {
 			operations = appendProjectTargetOperation(operations, operation)
 		}
 	}
 	return operations
+}
+
+func projectRedirectionTargetOperations(tokens []string) []projectTargetOperation {
+	var operations []projectTargetOperation
+	for index, token := range tokens {
+		if index+1 >= len(tokens) {
+			continue
+		}
+		target := strings.TrimSpace(tokens[index+1])
+		if target == "" || target == ">" || target == "<" {
+			continue
+		}
+		operation := ""
+		switch {
+		case strings.Trim(token, ">") == "" && token != "":
+			operation = "write"
+		case token == "<":
+			operation = "read"
+		}
+		if operation != "" {
+			operations = appendProjectTargetOperation(operations, projectTargetOperation{
+				Target:    target,
+				Operation: operation,
+			})
+		}
+	}
+	return operations
+}
+
+func stripProjectRedirections(tokens []string) []string {
+	result := make([]string, 0, len(tokens))
+	for index := 0; index < len(tokens); index++ {
+		token := tokens[index]
+		if isProjectFileDescriptor(token) && index+1 < len(tokens) && isProjectRedirectionToken(tokens[index+1]) {
+			continue
+		}
+		if isProjectRedirectionToken(token) {
+			if index+1 < len(tokens) {
+				index++
+			}
+			continue
+		}
+		result = append(result, token)
+	}
+	return result
+}
+
+func isProjectFileDescriptor(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isProjectRedirectionToken(value string) bool {
+	return value == "<" || strings.Trim(value, ">") == "" && value != "" || strings.HasPrefix(value, "<<")
 }
 
 func splitProjectCommandSegments(value string) [][]string {
@@ -634,8 +733,17 @@ func splitProjectCommandSegments(value string) [][]string {
 		segments = append(segments, current)
 		current = nil
 	}
-	for _, char := range value {
+	runes := []rune(value)
+	for index := 0; index < len(runes); index++ {
+		char := runes[index]
 		if quote != 0 {
+			if quote == '"' && index+1 < len(runes) &&
+				((char == '\\' && (runes[index+1] == '\\' || runes[index+1] == quote)) ||
+					(char == '`' && (runes[index+1] == '`' || runes[index+1] == quote))) {
+				token.WriteRune(runes[index+1])
+				index++
+				continue
+			}
 			if char == quote {
 				quote = 0
 				continue
@@ -643,12 +751,49 @@ func splitProjectCommandSegments(value string) [][]string {
 			token.WriteRune(char)
 			continue
 		}
+		if (char == '\\' || char == '`' || char == '^') && index+1 < len(runes) {
+			next := runes[index+1]
+			if next == '\r' || next == '\n' {
+				index++
+				if next == '\r' && index+1 < len(runes) && runes[index+1] == '\n' {
+					index++
+				}
+				continue
+			}
+			if strings.ContainsRune("'\";|&><", next) {
+				token.WriteRune(char)
+				token.WriteRune(next)
+				index++
+				continue
+			}
+		}
 		switch char {
 		case '\'', '"':
 			quote = char
 		case ';', '&', '|':
 			flushSegment()
-		case ' ', '\t', '\r', '\n':
+		case '>':
+			flushToken()
+			count := 1
+			for index+count < len(runes) && runes[index+count] == '>' {
+				count++
+			}
+			current = append(current, strings.Repeat(">", count))
+			index += count - 1
+			if count == 1 && index+1 < len(runes) && runes[index+1] == '|' {
+				index++
+			}
+		case '<':
+			flushToken()
+			count := 1
+			for index+count < len(runes) && runes[index+count] == '<' {
+				count++
+			}
+			current = append(current, strings.Repeat("<", count))
+			index += count - 1
+		case '\r', '\n':
+			flushSegment()
+		case ' ', '\t':
 			flushToken()
 		default:
 			token.WriteRune(char)
@@ -659,6 +804,7 @@ func splitProjectCommandSegments(value string) [][]string {
 }
 
 func parseProjectCommandTargetOperations(tokens []string, depth int) []projectTargetOperation {
+	tokens = stripProjectRedirections(tokens)
 	if len(tokens) == 0 || depth > 2 {
 		return nil
 	}
@@ -682,7 +828,7 @@ func parseProjectCommandTargetOperations(tokens []string, depth int) []projectTa
 	if index >= len(tokens) {
 		return nil
 	}
-	executable := strings.TrimSuffix(strings.ToLower(tokens[index]), ".exe")
+	executable := projectCommandName(tokens[index])
 	switch executable {
 	case "cmd":
 		index++
@@ -721,17 +867,127 @@ func parseProjectCommandTargetOperations(tokens []string, depth int) []projectTa
 		return projectOperationsForTargets(extractProjectPositionalTargets(tokens[index+1:], valueOptions), "read")
 	case "rg", "grep":
 		return projectOperationsForTargets(extractProjectSearchTargets(executable, tokens[index+1:]), "read")
+	case "select-string", "sls":
+		return projectOperationsForTargets(extractProjectSelectStringTargets(tokens[index+1:]), "read")
 	case "set-content", "add-content", "out-file", "new-item":
 		return projectOperationsForTargets(extractProjectPowerShellPathTargets(tokens[index+1:], nil, 1), "write")
-	case "touch", "mkdir":
+	case "tee-object":
+		return projectOperationsForTargets(extractProjectPowerShellPathTargets(tokens[index+1:], teeObjectParameterSpecs, 1), "write")
+	case "touch", "mkdir", "tee":
 		return projectOperationsForTargets(extractProjectPositionalTargets(tokens[index+1:], nil), "write")
+	case "truncate":
+		return projectTruncateOperations(tokens[index+1:])
+	case "curl":
+		operations := projectOperationsForTargets(extractProjectCurlInputTargets(tokens[index+1:]), "read")
+		for _, operation := range projectOperationsForTargets(extractProjectCurlOutputTargets(tokens[index+1:]), "write") {
+			operations = appendProjectTargetOperation(operations, operation)
+		}
+		return operations
+	case "invoke-restmethod", "invoke-webrequest", "irm", "iwr":
+		operations := projectOperationsForTargets(extractProjectPowerShellInputTargets(tokens[index+1:]), "read")
+		for _, operation := range projectOperationsForTargets(extractProjectPowerShellOutputTargets(tokens[index+1:]), "write") {
+			operations = appendProjectTargetOperation(operations, operation)
+		}
+		return operations
 	case "copy-item", "cp", "copy":
-		return projectCopyMoveOperations(tokens[index+1:], false)
+		return projectCopyMoveOperations(executable, tokens[index+1:], false)
 	case "move-item", "rename-item", "mv", "move", "ren", "rename":
-		return projectCopyMoveOperations(tokens[index+1:], true)
+		return projectCopyMoveOperations(executable, tokens[index+1:], true)
 	default:
+		if isProjectScriptPath(tokens[index]) {
+			return []projectTargetOperation{{Target: tokens[index], Operation: "exec"}}
+		}
+		if isProjectScriptInterpreter(executable) {
+			var operations []projectTargetOperation
+			for _, target := range tokens[index+1:] {
+				if isProjectScriptPath(target) {
+					operations = appendProjectTargetOperation(operations, projectTargetOperation{Target: target, Operation: "exec"})
+				}
+			}
+			return operations
+		}
 		return nil
 	}
+}
+
+func isProjectScriptInterpreter(executable string) bool {
+	switch executable {
+	case "python", "python3", "py", "pypy", "pypy3", "node", "nodejs", "deno", "bun", "ruby", "perl", "php":
+		return true
+	default:
+		if !strings.HasPrefix(executable, "python") || len(executable) == len("python") {
+			return false
+		}
+		for _, char := range executable[len("python"):] {
+			if (char < '0' || char > '9') && char != '.' {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+func projectCommandName(value string) string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(value), "\\", "/")
+	return strings.TrimSuffix(strings.ToLower(path.Base(normalized)), ".exe")
+}
+
+func isProjectScriptPath(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	for _, suffix := range []string{".ps1", ".psm1", ".vbs", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".py", ".sh", ".bash", ".bat", ".cmd", ".pl", ".rb", ".php"} {
+		if strings.HasSuffix(value, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractProjectSelectStringTargets(args []string) []string {
+	var targets []string
+	patternProvided := false
+	for index := 0; index < len(args); index++ {
+		arg := strings.TrimSpace(args[index])
+		if strings.HasPrefix(arg, "-") {
+			spec, inlineValue, hasInlineValue, resolution := resolvePowerShellParameter(arg, selectStringParameterSpecs)
+			if resolution != powerShellParameterResolved {
+				return nil
+			}
+			value := inlineValue
+			if spec.kind != powerShellSwitch && !hasInlineValue {
+				index++
+				if index >= len(args) {
+					return nil
+				}
+				value = args[index]
+			}
+			switch spec.kind {
+			case powerShellForbidden:
+				return nil
+			case powerShellSwitch:
+				if hasInlineValue {
+					return nil
+				}
+			case powerShellPath:
+				targets = appendProjectArgumentTargets(targets, value)
+			case powerShellPattern:
+				if strings.TrimSpace(value) == "" {
+					return nil
+				}
+				patternProvided = true
+			case powerShellValue:
+				if strings.TrimSpace(value) == "" {
+					return nil
+				}
+			}
+			continue
+		}
+		if !patternProvided {
+			patternProvided = true
+		} else {
+			targets = appendProjectArgumentTargets(targets, arg)
+		}
+	}
+	return targets
 }
 
 func parseNestedProjectCommandTargetOperations(tokens []string, depth int) []projectTargetOperation {
@@ -920,26 +1176,237 @@ func extractProjectSearchTargets(name string, args []string) []string {
 	return targets
 }
 
-func projectCopyMoveOperations(args []string, move bool) []projectTargetOperation {
-	targets := extractProjectPositionalTargets(args, nil)
-	if len(targets) < 2 {
+func projectCopyMoveOperations(executable string, args []string, move bool) []projectTargetOperation {
+	var sources []string
+	destination := ""
+	if executable == "copy-item" || executable == "move-item" || executable == "rename-item" ||
+		((executable == "cp" || executable == "mv") && projectUsesPowerShellCopyMoveSyntax(args)) {
+		sources, destination = extractProjectPowerShellCopyMoveTargets(args)
+	} else {
+		sources, destination = extractProjectPositionalCopyMoveTargets(args)
+	}
+	if len(sources) == 0 || destination == "" {
 		return nil
+	}
+	if (executable == "rename-item" || executable == "ren") && len(sources) == 1 {
+		destination = projectRenameDestination(sources[0], destination)
 	}
 	var operations []projectTargetOperation
 	sourceOperation := "read"
 	if move {
 		sourceOperation = "delete"
 	}
-	for _, source := range targets[:len(targets)-1] {
+	for _, source := range sources {
 		operations = appendProjectTargetOperation(operations, projectTargetOperation{
 			Target:    source,
 			Operation: sourceOperation,
 		})
 	}
 	return appendProjectTargetOperation(operations, projectTargetOperation{
-		Target:    targets[len(targets)-1],
+		Target:    destination,
 		Operation: "write",
 	})
+}
+
+func projectUsesPowerShellCopyMoveSyntax(args []string) bool {
+	for _, arg := range args {
+		spec, _, _, resolution := resolvePowerShellParameter(strings.TrimSpace(arg), projectCopyMoveParameterSpecs)
+		if resolution != powerShellParameterResolved {
+			continue
+		}
+		switch spec.name {
+		case "path", "literalpath", "destination", "newname":
+			return true
+		}
+	}
+	return false
+}
+
+func projectRenameDestination(source, destination string) string {
+	normalizedDestination := strings.ReplaceAll(strings.TrimSpace(destination), "\\", "/")
+	if normalizedDestination == "" || path.IsAbs(normalizedDestination) || strings.Contains(normalizedDestination, "/") {
+		return destination
+	}
+	normalizedSource := strings.ReplaceAll(strings.TrimSpace(source), "\\", "/")
+	directory := path.Dir(normalizedSource)
+	if directory == "." || directory == "" {
+		return normalizedDestination
+	}
+	return path.Join(directory, normalizedDestination)
+}
+
+var projectCopyMoveParameterSpecs = []powerShellParameterSpec{
+	{name: "confirm", kind: powerShellSwitch},
+	{name: "container", kind: powerShellSwitch},
+	{name: "credential", kind: powerShellValue},
+	{name: "debug", kind: powerShellSwitch},
+	{name: "destination", kind: powerShellValue},
+	{name: "erroraction", kind: powerShellValue},
+	{name: "errorvariable", kind: powerShellValue},
+	{name: "exclude", kind: powerShellValue},
+	{name: "filter", kind: powerShellValue},
+	{name: "force", kind: powerShellSwitch},
+	{name: "fromsession", kind: powerShellValue},
+	{name: "include", kind: powerShellValue},
+	{name: "informationaction", kind: powerShellValue},
+	{name: "informationvariable", kind: powerShellValue},
+	{name: "literalpath", kind: powerShellPath},
+	{name: "newname", kind: powerShellValue},
+	{name: "outbuffer", kind: powerShellValue},
+	{name: "outvariable", kind: powerShellValue},
+	{name: "passthru", kind: powerShellSwitch},
+	{name: "path", kind: powerShellPath},
+	{name: "pipelinevariable", kind: powerShellValue},
+	{name: "progressaction", kind: powerShellValue},
+	{name: "recurse", kind: powerShellSwitch},
+	{name: "tosession", kind: powerShellValue},
+	{name: "verbose", kind: powerShellSwitch},
+	{name: "warningaction", kind: powerShellValue},
+	{name: "warningvariable", kind: powerShellValue},
+	{name: "whatif", kind: powerShellSwitch},
+}
+
+func extractProjectPowerShellCopyMoveTargets(args []string) ([]string, string) {
+	var sources []string
+	var positionals []string
+	destination := ""
+	for index := 0; index < len(args); index++ {
+		arg := strings.TrimSpace(args[index])
+		if arg == "" {
+			continue
+		}
+		if !strings.HasPrefix(arg, "-") {
+			positionals = appendProjectArgumentTargets(positionals, arg)
+			continue
+		}
+		spec, inlineValue, hasInlineValue, resolution := resolvePowerShellParameter(arg, projectCopyMoveParameterSpecs)
+		if resolution != powerShellParameterResolved {
+			return nil, ""
+		}
+		value := inlineValue
+		if spec.kind != powerShellSwitch && !hasInlineValue {
+			index++
+			if index >= len(args) {
+				return nil, ""
+			}
+			value = args[index]
+		}
+		if spec.kind == powerShellSwitch {
+			if hasInlineValue {
+				return nil, ""
+			}
+			continue
+		}
+		switch spec.name {
+		case "path", "literalpath":
+			sources = appendProjectArgumentTargets(sources, value)
+		case "destination", "newname":
+			destination = strings.TrimSpace(value)
+		}
+	}
+	if len(sources) == 0 {
+		if destination == "" && len(positionals) >= 2 {
+			destination = positionals[len(positionals)-1]
+			positionals = positionals[:len(positionals)-1]
+		}
+		sources = append(sources, positionals...)
+	} else if destination == "" && len(positionals) > 0 {
+		destination = positionals[len(positionals)-1]
+	} else {
+		sources = append(sources, positionals...)
+	}
+	return sources, destination
+}
+
+var teeObjectParameterSpecs = []powerShellParameterSpec{
+	{name: "append", kind: powerShellSwitch},
+	{name: "debug", kind: powerShellSwitch},
+	{name: "erroraction", kind: powerShellValue},
+	{name: "errorvariable", kind: powerShellValue},
+	{name: "filepath", kind: powerShellPath},
+	{name: "informationaction", kind: powerShellValue},
+	{name: "informationvariable", kind: powerShellValue},
+	{name: "inputobject", kind: powerShellValue},
+	{name: "noclobber", kind: powerShellSwitch},
+	{name: "outbuffer", kind: powerShellValue},
+	{name: "outvariable", kind: powerShellValue},
+	{name: "pipelinevariable", kind: powerShellValue},
+	{name: "progressaction", kind: powerShellValue},
+	{name: "variable", kind: powerShellValue},
+	{name: "verbose", kind: powerShellSwitch},
+	{name: "warningaction", kind: powerShellValue},
+	{name: "warningvariable", kind: powerShellValue},
+}
+
+func projectTruncateOperations(args []string) []projectTargetOperation {
+	var operations []projectTargetOperation
+	for index := 0; index < len(args); index++ {
+		arg := strings.TrimSpace(args[index])
+		lowerArg := strings.ToLower(arg)
+		switch lowerArg {
+		case "-s", "--size":
+			index++
+			if index >= len(args) {
+				return nil
+			}
+		case "-r", "--reference":
+			index++
+			if index >= len(args) {
+				return nil
+			}
+			operations = appendProjectTargetOperation(operations, projectTargetOperation{Target: args[index], Operation: "read"})
+		default:
+			if strings.HasPrefix(lowerArg, "--reference=") {
+				operations = appendProjectTargetOperation(operations, projectTargetOperation{Target: arg[len("--reference="):], Operation: "read"})
+				continue
+			}
+			if strings.HasPrefix(lowerArg, "-r") && len(arg) > 2 {
+				operations = appendProjectTargetOperation(operations, projectTargetOperation{Target: arg[2:], Operation: "read"})
+				continue
+			}
+			if strings.HasPrefix(arg, "-") {
+				continue
+			}
+			operations = appendProjectTargetOperation(operations, projectTargetOperation{Target: arg, Operation: "write"})
+		}
+	}
+	return operations
+}
+
+func extractProjectPositionalCopyMoveTargets(args []string) ([]string, string) {
+	var targets []string
+	destination := ""
+	for index := 0; index < len(args); index++ {
+		arg := strings.TrimSpace(args[index])
+		lowerArg := strings.ToLower(arg)
+		if arg == "--" {
+			for _, target := range args[index+1:] {
+				targets = appendProjectArgumentTargets(targets, target)
+			}
+			break
+		}
+		if lowerArg == "-t" || lowerArg == "--target-directory" {
+			index++
+			if index >= len(args) {
+				return nil, ""
+			}
+			destination = strings.TrimSpace(args[index])
+			continue
+		}
+		if strings.HasPrefix(lowerArg, "--target-directory=") {
+			destination = strings.TrimSpace(arg[len("--target-directory="):])
+			continue
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		targets = appendProjectArgumentTargets(targets, arg)
+	}
+	if destination == "" && len(targets) >= 2 {
+		destination = targets[len(targets)-1]
+		targets = targets[:len(targets)-1]
+	}
+	return targets, destination
 }
 
 func appendProjectArgumentTargets(targets []string, value string) []string {
@@ -1088,10 +1555,509 @@ func isProjectNetworkWrite(input ActionInput) bool {
 	return lowerTrim(input.ActionType) == "network" && input.NetworkURL != ""
 }
 
+func projectNetworkWriteURLs(input ActionInput) []string {
+	var urls []string
+	appendURL := func(rawURL string) {
+		rawURL = strings.TrimSpace(rawURL)
+		if rawURL == "" || projectNetworkHost(rawURL) == "" {
+			return
+		}
+		for _, existing := range urls {
+			if existing == rawURL {
+				return
+			}
+		}
+		urls = append(urls, rawURL)
+	}
+	if isProjectNetworkWrite(input) {
+		appendURL(input.NetworkURL)
+	}
+	if isProjectShellInput(input) {
+		for _, content := range []string{input.Command, input.ContentPreview} {
+			for _, rawURL := range projectShellNetworkWriteURLs(content, 0) {
+				appendURL(rawURL)
+			}
+		}
+	}
+	return urls
+}
+
+func projectShellNetworkWriteURLs(command string, depth int) []string {
+	if strings.TrimSpace(command) == "" || depth > 2 {
+		return nil
+	}
+	var urls []string
+	for _, tokens := range splitProjectCommandSegments(command) {
+		tokens = stripProjectRedirections(tokens)
+		if len(tokens) == 0 {
+			continue
+		}
+		index := 0
+		if strings.EqualFold(tokens[index], "sudo") {
+			index++
+			for index < len(tokens) && strings.HasPrefix(tokens[index], "-") {
+				index++
+			}
+		}
+		if index < len(tokens) && strings.EqualFold(tokens[index], "command") {
+			index++
+		}
+		if index >= len(tokens) {
+			continue
+		}
+		executable := projectCommandName(tokens[index])
+		args := tokens[index+1:]
+		switch executable {
+		case "cmd":
+			for candidate := 0; candidate+1 < len(args); candidate++ {
+				if strings.EqualFold(args[candidate], "/c") || strings.EqualFold(args[candidate], "/k") {
+					urls = appendProjectNetworkURLs(urls, projectShellNetworkWriteURLs(strings.Join(args[candidate+1:], " "), depth+1))
+					break
+				}
+			}
+		case "powershell", "pwsh", "bash", "sh", "zsh":
+			for candidate := 0; candidate+1 < len(args); candidate++ {
+				if strings.EqualFold(args[candidate], "-command") || strings.EqualFold(args[candidate], "-c") {
+					urls = appendProjectNetworkURLs(urls, projectShellNetworkWriteURLs(strings.Join(args[candidate+1:], " "), depth+1))
+					break
+				}
+			}
+		case "curl":
+			urls = appendProjectNetworkURLs(urls, extractProjectCurlWriteURLs(args))
+		case "invoke-restmethod", "invoke-webrequest", "irm", "iwr":
+			urls = appendProjectNetworkURLs(urls, extractProjectPowerShellNetworkWriteURLs(args))
+		}
+	}
+	return urls
+}
+
+func appendProjectNetworkURLs(target []string, values []string) []string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || projectNetworkHost(value) == "" {
+			continue
+		}
+		seen := false
+		for _, existing := range target {
+			if existing == value {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			target = append(target, value)
+		}
+	}
+	return target
+}
+
+type projectCurlTransfer struct {
+	method        string
+	hasPayload    bool
+	headOnly      bool
+	urls          []string
+	inputTargets  []string
+	outputTargets []string
+}
+
+func extractProjectCurlWriteURLs(args []string) []string {
+	transfers, ok := parseProjectCurlTransfers(args)
+	if !ok {
+		return nil
+	}
+	var urls []string
+	for _, transfer := range transfers {
+		if projectCurlTransferWrites(transfer) {
+			urls = appendProjectNetworkURLs(urls, transfer.urls)
+		}
+	}
+	return urls
+}
+
+func extractProjectCurlOutputTargets(args []string) []string {
+	transfers, ok := parseProjectCurlTransfers(args)
+	if !ok {
+		return nil
+	}
+	var targets []string
+	for _, transfer := range transfers {
+		for _, target := range transfer.outputTargets {
+			targets = appendProjectTarget(targets, target)
+		}
+	}
+	return targets
+}
+
+func extractProjectCurlInputTargets(args []string) []string {
+	transfers, ok := parseProjectCurlTransfers(args)
+	if !ok {
+		return nil
+	}
+	var targets []string
+	for _, transfer := range transfers {
+		for _, target := range transfer.inputTargets {
+			targets = appendProjectTarget(targets, target)
+		}
+	}
+	return targets
+}
+
+func parseProjectCurlTransfers(args []string) ([]projectCurlTransfer, bool) {
+	var transfers []projectCurlTransfer
+	current := projectCurlTransfer{}
+	flush := func() {
+		transfers = append(transfers, current)
+		current = projectCurlTransfer{}
+	}
+	for index := 0; index < len(args); index++ {
+		arg := strings.TrimSpace(args[index])
+		if arg == "--next" {
+			flush()
+			continue
+		}
+		if strings.HasPrefix(arg, "--") {
+			name, inlineValue, hasInlineValue := splitProjectCurlLongOption(arg)
+			switch name {
+			case "request":
+				value, ok := projectCommandOptionValue(args, &index, inlineValue, hasInlineValue)
+				if !ok {
+					return nil, false
+				}
+				current.method = strings.ToUpper(strings.TrimSpace(value))
+			case "data", "data-ascii", "data-binary", "data-raw", "data-urlencode", "form", "form-string", "json", "upload-file":
+				value, ok := projectCommandOptionValue(args, &index, inlineValue, hasInlineValue)
+				if !ok {
+					return nil, false
+				}
+				current.hasPayload = true
+				current.inputTargets = appendProjectCurlPayloadTargets(current.inputTargets, name, value)
+			case "head":
+				if hasInlineValue {
+					return nil, false
+				}
+				current.headOnly = true
+			case "url":
+				value, ok := projectCommandOptionValue(args, &index, inlineValue, hasInlineValue)
+				if !ok {
+					return nil, false
+				}
+				current.urls = appendProjectNetworkURLs(current.urls, []string{value})
+			case "output", "cookie-jar", "dump-header", "trace", "trace-ascii":
+				value, ok := projectCommandOptionValue(args, &index, inlineValue, hasInlineValue)
+				if !ok {
+					return nil, false
+				}
+				current.outputTargets = appendProjectFileTarget(current.outputTargets, value)
+			case "config", "cert", "key", "cacert", "capath":
+				value, ok := projectCommandOptionValue(args, &index, inlineValue, hasInlineValue)
+				if !ok {
+					return nil, false
+				}
+				current.inputTargets = appendProjectFileTarget(current.inputTargets, value)
+			case "header":
+				value, ok := projectCommandOptionValue(args, &index, inlineValue, hasInlineValue)
+				if !ok {
+					return nil, false
+				}
+				if strings.HasPrefix(strings.TrimSpace(value), "@") {
+					current.inputTargets = appendProjectFileTarget(current.inputTargets, strings.TrimSpace(value)[1:])
+				}
+			default:
+				if projectCurlLongOptionConsumesValue(name) && !hasInlineValue {
+					index++
+					if index >= len(args) {
+						return nil, false
+					}
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			if !applyProjectCurlShortOptions(&current, arg[1:], args, &index) {
+				return nil, false
+			}
+			continue
+		}
+		current.urls = appendProjectNetworkURLs(current.urls, []string{arg})
+	}
+	flush()
+	return transfers, true
+}
+
+func splitProjectCurlLongOption(value string) (string, string, bool) {
+	option := strings.TrimPrefix(strings.TrimSpace(value), "--")
+	if index := strings.Index(option, "="); index >= 0 {
+		return strings.ToLower(strings.TrimSpace(option[:index])), option[index+1:], true
+	}
+	return strings.ToLower(strings.TrimSpace(option)), "", false
+}
+
+func applyProjectCurlShortOptions(transfer *projectCurlTransfer, cluster string, args []string, index *int) bool {
+	for offset := 0; offset < len(cluster); offset++ {
+		option := cluster[offset]
+		switch option {
+		case 'I':
+			transfer.headOnly = true
+		case 'X', 'd', 'F', 'T', 'o', 'c', 'D', 'K', 'E':
+			value, ok := projectCurlShortOptionValue(cluster, offset, args, index)
+			if !ok {
+				return false
+			}
+			switch option {
+			case 'X':
+				transfer.method = strings.ToUpper(strings.TrimSpace(value))
+			case 'o', 'c', 'D':
+				transfer.outputTargets = appendProjectFileTarget(transfer.outputTargets, value)
+			case 'K', 'E':
+				transfer.inputTargets = appendProjectFileTarget(transfer.inputTargets, value)
+			case 'd', 'F', 'T':
+				transfer.hasPayload = true
+				transfer.inputTargets = appendProjectCurlPayloadTargets(transfer.inputTargets, string(option), value)
+			}
+			return true
+		case 'A', 'b', 'C', 'e', 'H', 'm', 'P', 'Q', 'r', 't', 'u', 'U', 'w', 'x', 'Y', 'y', 'z':
+			value, ok := projectCurlShortOptionValue(cluster, offset, args, index)
+			if ok && option == 'H' && strings.HasPrefix(strings.TrimSpace(value), "@") {
+				transfer.inputTargets = appendProjectFileTarget(transfer.inputTargets, strings.TrimSpace(value)[1:])
+			}
+			return ok
+		}
+	}
+	return true
+}
+
+func appendProjectFileTarget(targets []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "-" {
+		return targets
+	}
+	return appendProjectTarget(targets, value)
+}
+
+func appendProjectCurlPayloadTargets(targets []string, option, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return targets
+	}
+	option = strings.TrimLeft(strings.TrimSpace(option), "-")
+	switch option {
+	case "T", "upload-file":
+		return appendProjectFileTarget(targets, value)
+	case "d", "data", "data-ascii", "data-binary", "json":
+		if strings.HasPrefix(value, "@") {
+			return appendProjectFileTarget(targets, value[1:])
+		}
+	case "data-urlencode":
+		if marker := strings.Index(value, "@"); marker >= 0 {
+			return appendProjectFileTarget(targets, value[marker+1:])
+		}
+	case "F", "form":
+		for _, marker := range []string{"=@", "=<"} {
+			if index := strings.Index(value, marker); index >= 0 {
+				file := value[index+len(marker):]
+				if separator := strings.Index(file, ";"); separator >= 0 {
+					file = file[:separator]
+				}
+				return appendProjectFileTarget(targets, file)
+			}
+		}
+	}
+	return targets
+}
+
+func projectCurlShortOptionValue(cluster string, offset int, args []string, index *int) (string, bool) {
+	if offset+1 < len(cluster) {
+		value := strings.TrimSpace(cluster[offset+1:])
+		return value, value != ""
+	}
+	(*index)++
+	if *index >= len(args) {
+		return "", false
+	}
+	value := strings.TrimSpace(args[*index])
+	return value, value != ""
+}
+
+func projectCurlTransferWrites(transfer projectCurlTransfer) bool {
+	if transfer.hasPayload {
+		return true
+	}
+	method := strings.ToUpper(strings.TrimSpace(transfer.method))
+	if method == "" {
+		if transfer.headOnly {
+			return false
+		}
+		method = "GET"
+	}
+	return method != "GET" && method != "HEAD" && method != "OPTIONS"
+}
+
+func projectCurlLongOptionConsumesValue(name string) bool {
+	switch name {
+	case "connect-timeout", "connect-to", "cookie", "max-time", "proxy", "referer", "resolve", "retry",
+		"telnet-option", "user", "user-agent", "write-out":
+		return true
+	default:
+		return false
+	}
+}
+
+type projectPowerShellNetworkRequest struct {
+	method        string
+	hasPayload    bool
+	urls          []string
+	inputTargets  []string
+	outputTargets []string
+}
+
+var projectPowerShellNetworkParameterSpecs = []powerShellParameterSpec{
+	{name: "authentication", kind: powerShellValue},
+	{name: "body", kind: powerShellValue},
+	{name: "contenttype", kind: powerShellValue},
+	{name: "credential", kind: powerShellValue},
+	{name: "debug", kind: powerShellSwitch},
+	{name: "erroraction", kind: powerShellValue},
+	{name: "errorvariable", kind: powerShellValue},
+	{name: "form", kind: powerShellValue},
+	{name: "headers", kind: powerShellValue},
+	{name: "informationaction", kind: powerShellValue},
+	{name: "informationvariable", kind: powerShellValue},
+	{name: "infile", kind: powerShellValue},
+	{name: "maximumredirection", kind: powerShellValue},
+	{name: "method", kind: powerShellValue},
+	{name: "outfile", kind: powerShellPath},
+	{name: "outbuffer", kind: powerShellValue},
+	{name: "outvariable", kind: powerShellValue},
+	{name: "passthru", kind: powerShellSwitch},
+	{name: "pipelinevariable", kind: powerShellValue},
+	{name: "progressaction", kind: powerShellValue},
+	{name: "proxy", kind: powerShellValue},
+	{name: "proxycredential", kind: powerShellValue},
+	{name: "sessionvariable", kind: powerShellValue},
+	{name: "timeoutsec", kind: powerShellValue},
+	{name: "token", kind: powerShellValue},
+	{name: "transferencoding", kind: powerShellValue},
+	{name: "uri", kind: powerShellValue},
+	{name: "usebasicparsing", kind: powerShellSwitch},
+	{name: "useragent", kind: powerShellValue},
+	{name: "verbose", kind: powerShellSwitch},
+	{name: "warningaction", kind: powerShellValue},
+	{name: "warningvariable", kind: powerShellValue},
+	{name: "websession", kind: powerShellValue},
+}
+
+func extractProjectPowerShellNetworkWriteURLs(args []string) []string {
+	request, ok := parseProjectPowerShellNetworkRequest(args)
+	if !ok || !projectPowerShellRequestWrites(request) {
+		return nil
+	}
+	return request.urls
+}
+
+func extractProjectPowerShellOutputTargets(args []string) []string {
+	request, ok := parseProjectPowerShellNetworkRequest(args)
+	if !ok {
+		return nil
+	}
+	return request.outputTargets
+}
+
+func extractProjectPowerShellInputTargets(args []string) []string {
+	request, ok := parseProjectPowerShellNetworkRequest(args)
+	if !ok {
+		return nil
+	}
+	return request.inputTargets
+}
+
+func parseProjectPowerShellNetworkRequest(args []string) (projectPowerShellNetworkRequest, bool) {
+	request := projectPowerShellNetworkRequest{}
+	for index := 0; index < len(args); index++ {
+		arg := strings.TrimSpace(args[index])
+		if !strings.HasPrefix(arg, "-") {
+			request.urls = appendProjectNetworkURLs(request.urls, []string{arg})
+			continue
+		}
+		spec, inlineValue, hasInlineValue, resolution := resolveProjectPowerShellNetworkParameter(arg)
+		if resolution != powerShellParameterResolved {
+			continue
+		}
+		if spec.kind == powerShellSwitch {
+			if hasInlineValue {
+				return projectPowerShellNetworkRequest{}, false
+			}
+			continue
+		}
+		value, ok := projectCommandOptionValue(args, &index, inlineValue, hasInlineValue)
+		if !ok {
+			return projectPowerShellNetworkRequest{}, false
+		}
+		switch spec.name {
+		case "method":
+			request.method = strings.ToUpper(strings.TrimSpace(value))
+		case "uri":
+			request.urls = appendProjectNetworkURLs(request.urls, []string{value})
+		case "body", "form", "infile":
+			request.hasPayload = true
+			if spec.name == "infile" {
+				request.inputTargets = appendProjectFileTarget(request.inputTargets, value)
+			}
+		case "outfile":
+			request.outputTargets = appendProjectFileTarget(request.outputTargets, value)
+		}
+	}
+	return request, true
+}
+
+func resolveProjectPowerShellNetworkParameter(token string) (powerShellParameterSpec, string, bool, powerShellParameterResolution) {
+	return resolvePowerShellParameter(token, projectPowerShellNetworkParameterSpecs)
+}
+
+func projectPowerShellRequestWrites(request projectPowerShellNetworkRequest) bool {
+	if request.hasPayload {
+		return true
+	}
+	method := strings.ToUpper(strings.TrimSpace(request.method))
+	if method == "" {
+		method = "GET"
+	}
+	return method != "GET" && method != "HEAD" && method != "OPTIONS"
+}
+
+func splitProjectPowerShellOption(value string) (string, string, bool) {
+	name := strings.TrimPrefix(strings.TrimSpace(value), "-")
+	inlineValue := ""
+	hasInlineValue := false
+	if index := strings.Index(name, ":"); index >= 0 {
+		inlineValue = name[index+1:]
+		name = name[:index]
+		hasInlineValue = true
+	}
+	return strings.ToLower(strings.TrimSpace(name)), inlineValue, hasInlineValue
+}
+
+func projectCommandOptionValue(args []string, index *int, inlineValue string, hasInlineValue bool) (string, bool) {
+	if hasInlineValue {
+		return inlineValue, strings.TrimSpace(inlineValue) != ""
+	}
+	(*index)++
+	if *index >= len(args) {
+		return "", false
+	}
+	return args[*index], strings.TrimSpace(args[*index]) != ""
+}
+
 func projectNetworkHost(rawURL string) string {
-	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	rawURL = strings.TrimSpace(rawURL)
+	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return ""
+	}
+	if parsed.Hostname() == "" && !strings.Contains(rawURL, "://") {
+		parsed, err = url.Parse("http://" + strings.TrimPrefix(rawURL, "//"))
+		if err != nil {
+			return ""
+		}
 	}
 	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
 	if port := parsed.Port(); host != "" && port != "" {

@@ -315,6 +315,43 @@ func TestEvaluateProjectProtectionClassifiesPatchOperations(t *testing.T) {
 	}
 }
 
+func TestEvaluateProjectProtectionClassifiesPatchMoveSourceAsDelete(t *testing.T) {
+	root := t.TempDir()
+	patch := "*** Begin Patch\n*** Update File: src/core/algorithm.go\n*** Move to: docs/algorithm.go\n*** End Patch\n"
+
+	deleteDecision, deleteMatched := EvaluateProjectProtection(ActionInput{
+		ToolName:       "apply_patch",
+		ActionType:     "write",
+		ContentPreview: patch,
+		CWD:            root,
+		ProjectRoot:    root,
+	}, ProjectProtection{
+		Enabled: true,
+		ProtectedPaths: []ProtectedPathRule{
+			{Pattern: "src/core/**", Delete: "deny"},
+		},
+	})
+	if !deleteMatched || deleteDecision.Decision != "deny" {
+		t.Fatalf("patch move source must use delete rule, got matched=%v decision=%+v", deleteMatched, deleteDecision)
+	}
+
+	writeDecision, writeMatched := EvaluateProjectProtection(ActionInput{
+		ToolName:       "apply_patch",
+		ActionType:     "write",
+		ContentPreview: patch,
+		CWD:            root,
+		ProjectRoot:    root,
+	}, ProjectProtection{
+		Enabled: true,
+		ProtectedPaths: []ProtectedPathRule{
+			{Pattern: "src/core/**", Write: "deny"},
+		},
+	})
+	if writeMatched {
+		t.Fatalf("patch move source must not be classified as a write, got %+v", writeDecision)
+	}
+}
+
 func TestEvaluateProjectProtectionKeepsStrictestMixedPatchOperation(t *testing.T) {
 	root := t.TempDir()
 	protection := ProjectProtection{
@@ -356,6 +393,11 @@ func TestEvaluateProjectProtectionRecognizesShellDeleteFromContent(t *testing.T)
 		"cmd /c del deploy/production/app.yaml",
 		"powershell -Command Remove-Item deploy/production/app.yaml",
 		"echo ok; rm deploy/production/app.yaml",
+		"echo ok\nrm deploy/production/app.yaml",
+		`printf "x\""; rm deploy/production/app.yaml`,
+		`printf "x\\"; rm deploy/production/app.yaml`,
+		"Write-Output \"x`\"\"; Remove-Item deploy/production/app.yaml",
+		"Write-Output \"x``\"; Remove-Item deploy/production/app.yaml",
 	} {
 		t.Run(command, func(t *testing.T) {
 			decision, matched := EvaluateProjectProtection(ActionInput{
@@ -367,6 +409,136 @@ func TestEvaluateProjectProtectionRecognizesShellDeleteFromContent(t *testing.T)
 			}, protection)
 			if !matched || decision.Decision != "deny" {
 				t.Fatalf("shell delete must use the delete rule, got matched=%v decision=%+v", matched, decision)
+			}
+		})
+	}
+}
+
+func TestEvaluateProjectProtectionMapsExtendedShellOperations(t *testing.T) {
+	root := t.TempDir()
+	protection := ProjectProtection{
+		Enabled: true,
+		ProtectedPaths: []ProtectedPathRule{
+			{Pattern: "src/core/**", Read: "deny", Write: "deny", Delete: "deny", Exec: "deny"},
+		},
+	}
+	cases := []struct {
+		name    string
+		command string
+	}{
+		{name: "select string read", command: "Select-String -Pattern TODO -Path src/core/algorithm.go"},
+		{name: "select string alias read", command: "sls -Pattern TODO -Path src/core/algorithm.go"},
+		{name: "select string positional path", command: "Select-String TODO src/core/algorithm.go"},
+		{name: "select string named pattern positional path", command: "Select-String -Pattern TODO src/core/algorithm.go"},
+		{name: "redirect write", command: "echo generated > src/core/generated.go"},
+		{name: "append redirect write", command: "echo generated >> src/core/generated.go"},
+		{name: "clobber redirect write", command: "echo generated >| src/core/generated.go"},
+		{name: "tee write", command: "echo generated | tee src/core/generated.go"},
+		{name: "powershell tee write", command: "Get-Content input.txt | Tee-Object -FilePath src/core/generated.go"},
+		{name: "truncate write", command: "truncate -s 0 src/core/generated.go"},
+		{name: "interpreter script exec", command: "python src/core/tool.py"},
+		{name: "later interpreter script exec", command: "python bootstrap.py src/core/tool.py"},
+		{name: "python launcher script exec", command: "py -3 src/core/tool.py"},
+		{name: "versioned interpreter script exec", command: "/usr/bin/python3.12 src/core/tool.py"},
+		{name: "direct script exec", command: "./src/core/tool.sh"},
+		{name: "move source delete", command: "mv src/core/algorithm.go docs/algorithm.go"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			decision, matched := EvaluateProjectProtection(ActionInput{
+				ToolName:       "shell",
+				ActionType:     "exec",
+				ContentPreview: tc.command,
+				CWD:            root,
+				ProjectRoot:    root,
+			}, protection)
+			if !matched || decision.Decision != "deny" {
+				t.Fatalf("extended shell operation must use project rule, command=%q matched=%v decision=%+v", tc.command, matched, decision)
+			}
+		})
+	}
+}
+
+func TestEvaluateProjectProtectionIgnoresQuotedRedirection(t *testing.T) {
+	root := t.TempDir()
+	decision, matched := EvaluateProjectProtection(ActionInput{
+		ToolName:       "shell",
+		ActionType:     "exec",
+		ContentPreview: `echo "> src/core/generated.go"`,
+		CWD:            root,
+		ProjectRoot:    root,
+	}, ProjectProtection{
+		Enabled: true,
+		ProtectedPaths: []ProtectedPathRule{
+			{Pattern: "src/core/**", Write: "deny"},
+		},
+	})
+	if matched {
+		t.Fatalf("quoted redirection text must not become a write target, got %+v", decision)
+	}
+
+	decision, matched = EvaluateProjectProtection(ActionInput{
+		ToolName:       "shell",
+		ActionType:     "exec",
+		ContentPreview: `echo \> src/core/generated.go`,
+		CWD:            root,
+		ProjectRoot:    root,
+	}, ProjectProtection{
+		Enabled: true,
+		ProtectedPaths: []ProtectedPathRule{
+			{Pattern: "src/core/**", Write: "deny"},
+		},
+	})
+	if matched {
+		t.Fatalf("escaped redirection text must not become a write target, got %+v", decision)
+	}
+}
+
+func TestEvaluateProjectProtectionClassifiesCopyMoveArguments(t *testing.T) {
+	root := t.TempDir()
+	tests := []struct {
+		name      string
+		command   string
+		pattern   string
+		operation string
+		wantMatch bool
+	}{
+		{name: "copy destination before source", command: "Copy-Item -Destination deploy/production/app.yaml -Path docs/app.yaml", pattern: "deploy/production/**", operation: "write", wantMatch: true},
+		{name: "copy source read", command: "Copy-Item -Destination docs/app.yaml -Path src/core/app.yaml", pattern: "src/core/**", operation: "read", wantMatch: true},
+		{name: "move source delete", command: "Move-Item -Destination docs/app.yaml -Path src/core/app.yaml", pattern: "src/core/**", operation: "delete", wantMatch: true},
+		{name: "move destination write", command: "Move-Item -Path docs/app.yaml -Destination deploy/production/app.yaml", pattern: "deploy/production/**", operation: "write", wantMatch: true},
+		{name: "rename destination stays beside source", command: "Rename-Item -NewName replacement.go -Path src/core/algorithm.go", pattern: "src/core/replacement.go", operation: "write", wantMatch: true},
+		{name: "truncate reference is read", command: "truncate --reference src/core/reference.go docs/output.go", pattern: "src/core/reference.go", operation: "read", wantMatch: true},
+		{name: "truncate reference is not write", command: "truncate --reference src/core/reference.go docs/output.go", pattern: "src/core/reference.go", operation: "write", wantMatch: false},
+		{name: "truncate attached reference is read", command: "truncate -rsrc/core/reference.go docs/output.go", pattern: "src/core/reference.go", operation: "read", wantMatch: true},
+		{name: "powershell copy alias destination", command: "cp -Destination deploy/production/app.yaml -Path docs/app.yaml", pattern: "deploy/production/**", operation: "write", wantMatch: true},
+		{name: "powershell copy alias source", command: "cp -Destination docs/app.yaml -Path src/core/app.yaml", pattern: "src/core/**", operation: "read", wantMatch: true},
+		{name: "powershell move alias source", command: "mv -Destination docs/app.yaml -Path src/core/app.yaml", pattern: "src/core/**", operation: "delete", wantMatch: true},
+		{name: "posix copy target directory", command: "cp -t deploy/production docs/app.yaml", pattern: "deploy/production", operation: "write", wantMatch: true},
+		{name: "posix move target directory source", command: "mv --target-directory docs src/core/app.yaml", pattern: "src/core/**", operation: "delete", wantMatch: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := ProtectedPathRule{Pattern: tc.pattern}
+			switch tc.operation {
+			case "read":
+				rule.Read = "deny"
+			case "write":
+				rule.Write = "deny"
+			case "delete":
+				rule.Delete = "deny"
+			default:
+				t.Fatalf("unsupported test operation %q", tc.operation)
+			}
+			decision, matched := EvaluateProjectProtection(ActionInput{
+				ToolName:       "shell",
+				ActionType:     "exec",
+				ContentPreview: tc.command,
+				CWD:            root,
+				ProjectRoot:    root,
+			}, ProjectProtection{Enabled: true, ProtectedPaths: []ProtectedPathRule{rule}})
+			if matched != tc.wantMatch {
+				t.Fatalf("unexpected copy/move classification, matched=%v decision=%+v", matched, decision)
 			}
 		})
 	}
@@ -566,6 +738,151 @@ func TestEvaluateWithProjectProtectionCanDenyUnlistedEgress(t *testing.T) {
 	}, protection)
 	if listed.Decision != "ask" || listed.Category == "project_egress" {
 		t.Fatalf("listed host must retain the built-in approval decision, got %+v", listed)
+	}
+}
+
+func TestEvaluateProjectProtectionCoversStaticNetworkOutputFiles(t *testing.T) {
+	root := t.TempDir()
+	protection := ProjectProtection{
+		Enabled: true,
+		ProtectedPaths: []ProtectedPathRule{
+			{Pattern: "deploy/production/**", Write: "deny"},
+		},
+	}
+	for _, command := range []string{
+		`curl -o deploy/production/download.bin https://downloads.example.test/file`,
+		`curl -sodeploy/production/download.bin https://downloads.example.test/file`,
+		`curl --output=deploy/production/download.bin https://downloads.example.test/file`,
+		`curl -c deploy/production/cookies.txt https://downloads.example.test/file`,
+		`curl -Ddeploy/production/headers.txt https://downloads.example.test/file`,
+		`Invoke-WebRequest -Uri https://downloads.example.test/file -OutFile deploy/production/download.bin`,
+		`iwr -Uri https://downloads.example.test/file -OutF deploy/production/download.bin`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			decision, matched := EvaluateProjectProtection(ActionInput{
+				ToolName:       "shell",
+				ActionType:     "exec",
+				ContentPreview: command,
+				CWD:            root,
+				ProjectRoot:    root,
+			}, protection)
+			if !matched || decision.Decision != "deny" || decision.Category != "project_protected_path" {
+				t.Fatalf("static network output must use the protected write rule, command=%q matched=%v decision=%+v", command, matched, decision)
+			}
+		})
+	}
+}
+
+func TestEvaluateProjectProtectionCoversStaticNetworkInputFiles(t *testing.T) {
+	root := t.TempDir()
+	protection := ProjectProtection{
+		Enabled: true,
+		ProtectedPaths: []ProtectedPathRule{
+			{Pattern: "src/core/**", Read: "deny"},
+		},
+		Egress: EgressRule{
+			Enabled:       true,
+			AllowedHosts:  []string{"api.github.com"},
+			UnlistedWrite: "deny",
+		},
+	}
+	for _, command := range []string{
+		`curl -T src/core/archive.bin https://api.github.com/upload`,
+		`curl --upload-file=src/core/archive.bin https://api.github.com/upload`,
+		`curl -d @src/core/payload.json https://api.github.com/upload`,
+		`curl --data-binary @src/core/payload.json https://api.github.com/upload`,
+		`curl -F file=@src/core/payload.json https://api.github.com/upload`,
+		`Invoke-RestMethod -InFile src/core/payload.json -Method Post -Uri https://api.github.com/upload`,
+		`curl -d @- https://api.github.com/upload < src/core/payload.json`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			decision, matched := EvaluateProjectProtection(ActionInput{
+				ToolName:       "shell",
+				ActionType:     "exec",
+				ContentPreview: command,
+				CWD:            root,
+				ProjectRoot:    root,
+			}, protection)
+			if !matched || decision.Decision != "deny" || decision.Category != "project_protected_path" {
+				t.Fatalf("static network input must use the protected read rule, command=%q matched=%v decision=%+v", command, matched, decision)
+			}
+		})
+	}
+}
+
+func TestEvaluateProjectProtectionCoversStaticShellEgressWrites(t *testing.T) {
+	protection := ProjectProtection{
+		Enabled: true,
+		Egress: EgressRule{
+			Enabled:       true,
+			AllowedHosts:  []string{"api.github.com"},
+			UnlistedWrite: "deny",
+		},
+	}
+	for _, command := range []string{
+		`curl -X POST https://uploads.example.test/data`,
+		`curl -iXPOST https://uploads.example.test/data`,
+		`curl -sdsynthetic https://uploads.example.test/data`,
+		`curl -sFmessage=synthetic https://uploads.example.test/data`,
+		`curl -sTpayload.txt https://uploads.example.test/data`,
+		`curl -d synthetic uploads.example.test/data`,
+		`curl https://api.github.com/status --next -d synthetic https://uploads.example.test/data`,
+		`curl --data synthetic https://uploads.example.test/data`,
+		`curl --data-ascii synthetic https://uploads.example.test/data`,
+		`curl --form-string message=synthetic https://uploads.example.test/data`,
+		`curl --json '{"message":"synthetic"}' https://uploads.example.test/data`,
+		`curl -dsynthetic -X GET https://uploads.example.test/data`,
+		`curl -i -X POST https://uploads.example.test/data`,
+		`Invoke-RestMethod -Method Post -Uri https://uploads.example.test/data`,
+		`Invoke-RestMethod -Me Post -Uri https://uploads.example.test/data`,
+		`Invoke-WebRequest -Me:Get -B:synthetic -Uri:https://uploads.example.test/data`,
+		`Invoke-RestMethod -Method:Get -Body:synthetic -Uri:https://uploads.example.test/data`,
+		`Invoke-RestMethod https://uploads.example.test/data -Body synthetic`,
+		`powershell -Command Invoke-RestMethod -Method Post -Uri https://uploads.example.test/data`,
+	} {
+		t.Run(command, func(t *testing.T) {
+			decision, matched := EvaluateProjectProtection(ActionInput{
+				ToolName:       "shell",
+				ActionType:     "exec",
+				ContentPreview: command,
+			}, protection)
+			if !matched || decision.Decision != "deny" || decision.Category != "project_egress" {
+				t.Fatalf("static shell egress write must be denied, command=%q matched=%v decision=%+v", command, matched, decision)
+			}
+		})
+	}
+
+	for _, command := range []string{
+		`curl https://uploads.example.test/data`,
+		`curl -I https://uploads.example.test/data`,
+		`curl -sI https://uploads.example.test/data`,
+		`curl -i https://uploads.example.test/data`,
+		`curl -iXGET https://uploads.example.test/data`,
+		`curl -f https://uploads.example.test/data`,
+		`curl -sf https://uploads.example.test/data`,
+		`curl -stsynthetic https://uploads.example.test/data`,
+		`curl -sxhttps://proxy.example.test https://uploads.example.test/data`,
+		`curl -x https://proxy.example.test https://uploads.example.test/data`,
+		`curl -m 5 https://uploads.example.test/data`,
+		`curl --connect-timeout 5 https://uploads.example.test/data`,
+		`curl -H "Referer: https://docs.example.test" https://uploads.example.test/data`,
+		`Invoke-RestMethod -Method Get -Uri https://uploads.example.test/data`,
+		`Invoke-RestMethod -Me Get -Uri https://uploads.example.test/data`,
+		`curl -d synthetic https://api.github.com/upload --next https://uploads.example.test/data`,
+		`curl -X POST https://api.github.com/repos/example/project/issues`,
+		`curl -m 5 -d synthetic https://api.github.com/upload`,
+		`curl --connect-timeout 5 -d synthetic https://api.github.com/upload`,
+	} {
+		t.Run("allowed "+command, func(t *testing.T) {
+			decision, matched := EvaluateProjectProtection(ActionInput{
+				ToolName:       "shell",
+				ActionType:     "exec",
+				ContentPreview: command,
+			}, protection)
+			if matched {
+				t.Fatalf("read-only or allowlisted shell network request must not add a project floor, command=%q decision=%+v", command, decision)
+			}
+		})
 	}
 }
 

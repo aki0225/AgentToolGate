@@ -60,3 +60,32 @@ func TestPrepareProjectUpRejectsInvalidProjectProtectionBeforeLiveControl(t *tes
 		t.Fatalf("invalid config must not leave live hook control, got %v", statErr)
 	}
 }
+
+func TestPrepareProjectUpRejectsInvalidHookMode(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "unknown", raw: `{"hookMode":"preview"}`},
+		{name: "missing", raw: `{"host":"127.0.0.1"}`},
+		{name: "null", raw: `{"hookMode":null}`},
+		{name: "duplicate", raw: `{"hookMode":"live","hookMode":"off"}`},
+		{name: "case alias duplicate", raw: `{"hookMode":"live","HookMode":"off"}`},
+		{name: "duplicate nested", raw: `{"hookMode":"live","workspace":{"name":"first","name":"second"}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			project := t.TempDir()
+			if _, err := writeProjectInitFiles(project, projectInitModeAll); err != nil {
+				t.Fatalf("init project: %v", err)
+			}
+			if err := os.WriteFile(projectConfigPath(project), []byte(tc.raw), 0o600); err != nil {
+				t.Fatalf("write project config: %v", err)
+			}
+
+			if _, _, _, _, _, err := prepareProjectUp(commandOptions{Command: "up", Dir: project}); err == nil {
+				t.Fatal("invalid hook mode must reject up")
+			}
+		})
+	}
+}

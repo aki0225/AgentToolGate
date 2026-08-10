@@ -27,7 +27,7 @@ Daily Use Acceptance 只用 synthetic payload 验证分类与 hook 输出，不�
 - Path classification：区分 workspace 普通动作、敏感落点、自维护篡改、持久化路径。
 - Sensitive content scan：识别 hidden PowerShell、encoded payload、凭据路径等信号。
 - Approval ticket and audit：后端 evaluate 路径可把高危动作变成 `deny_with_ticket`，并持久化解释与审计。
-- Hot switch：repo-local `.tmp/agenttoolgate/hook-control.json` 支持 `off` / `dry-run` / `live`，缺失或损坏时默认 `off`。
+- Hot switch：repo-local `.tmp/agenttoolgate/hook-control.json` 支持 `off` / `dry-run` / `live`；控制文件缺失时默认 `off`，已存在但无效时保守拒绝。
 
 ## Modes
 
@@ -101,7 +101,7 @@ Daily Use Acceptance 只用 synthetic payload 验证分类与 hook 输出，不�
 - deterministic guard 只识别工具调用层面的可解释信号，不识别所有恶意提示词。
 - 离线 fallback 是保守兜底，覆盖面和后端 evaluate / CLI core 不完全相同。
 - Codex 当前不依赖交互式 ask；需要人工确认的动作会保守 deny。
-- `live` 需要显式打开；缺失、损坏或无法解析的 control file 会按 `off` 处理，以保护开发会话不中断。
+- `live` 需要显式打开；控制文件缺失时 no-op，已存在但损坏或无法解析时 fail closed，可用显式 `hook control off` 恢复。
 
 ## Resume-Ready Summary
 

@@ -97,6 +97,8 @@ class CodexHookBridgeTest(unittest.TestCase):
         self.assertTrue(HOOK.is_guarded_tool("Read"))
         self.assertTrue(HOOK.is_guarded_tool("Grep"))
         self.assertTrue(HOOK.is_guarded_tool("Glob"))
+        self.assertTrue(HOOK.is_guarded_tool("shell_command"))
+        self.assertTrue(HOOK.is_guarded_tool("sh"))
 
     def test_search_tools_map_their_read_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -466,18 +468,28 @@ class CodexHookBridgeTest(unittest.TestCase):
             self.assertEqual(raw, "")
             self.assertFalse((repo / ".tmp" / "local-action-firewall" / "pending-audit.jsonl").exists())
 
-    def test_invalid_control_file_defaults_to_noop(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            repo = Path(temp_dir)
-            (repo / ".git").mkdir()
-            self.set_hook_control(repo, raw="{bad json")
-            raw = self.invoke_raw(
-                json.dumps({"tool_name": "Write", "tool_input": {"path": ".env", "content": "SECRET=x"}, "cwd": str(repo)}, ensure_ascii=False),
-                go_cli=lambda _payload: self.fail("损坏控制文件时不应调用 Go CLI"),
-                post_json=lambda *_args, **_kwargs: self.fail("损坏控制文件时不应调用 fallback HTTP"),
-                enable_live_control=False,
-            )
-            self.assertEqual(raw, "")
+    def test_invalid_control_file_fails_closed(self) -> None:
+        for control in (
+            "{bad json",
+            '{"mode":"preview"}',
+            '{"mode":"live","mode":"off"}',
+            '{"mode":"live","unknown":true}',
+            '{"mode":true}',
+            '[{"mode":"live"}]',
+        ):
+            with self.subTest(control=control), tempfile.TemporaryDirectory() as temp_dir:
+                repo = Path(temp_dir)
+                (repo / ".git").mkdir()
+                self.set_hook_control(repo, raw=control)
+                raw = self.invoke_raw(
+                    json.dumps({"tool_name": "Write", "tool_input": {"path": ".env", "content": "SECRET=x"}, "cwd": str(repo)}, ensure_ascii=False),
+                    go_cli=lambda _payload: self.fail("损坏控制文件时不应调用 Go CLI"),
+                    post_json=lambda *_args, **_kwargs: self.fail("损坏控制文件时不应调用 fallback HTTP"),
+                    enable_live_control=False,
+                )
+                decision = json.loads(raw)["hookSpecificOutput"]
+                self.assertEqual(decision["permissionDecision"], "deny")
+                self.assertIn("hook control invalid", decision["permissionDecisionReason"])
 
     def test_dry_run_records_preview_without_blocking_or_calling_backend(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

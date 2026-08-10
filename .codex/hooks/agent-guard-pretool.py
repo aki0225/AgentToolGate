@@ -38,6 +38,10 @@ SENSITIVE_TARGET_KEYS = {
     "token",
 }
 
+
+class HookControlError(ValueError):
+    pass
+
 if sys.platform.startswith("win"):
     import io as _io
 
@@ -133,6 +137,8 @@ def is_guarded_tool(tool_name: str) -> bool:
         "webfetch",
         "websearch",
         "shell",
+        "shell_command",
+        "sh",
         "command",
         "powershell",
         "pwsh",
@@ -337,7 +343,7 @@ def build_agent_guard_request(
     content = ""
     cwd = first_non_empty(input_data.get("cwd")) or os.getcwd()
 
-    if normalized_name in {"bash", "shell", "command", "powershell", "pwsh"}:
+    if normalized_name in {"bash", "shell", "shell_command", "sh", "command", "powershell", "pwsh"}:
         action_type = "exec"
         content = first_non_empty(
             tool_input.get("command"),
@@ -480,17 +486,36 @@ def repo_local_hook_ticket_dir(repo_root: str) -> Path:
 
 
 def read_hook_control_mode(repo_root: str) -> str:
+    path = repo_local_hook_control_path(repo_root)
     try:
-        raw = repo_local_hook_control_path(repo_root).read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except Exception:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
         return "off"
-    if not isinstance(data, dict):
-        return "off"
-    mode = get_text(data.get("mode")).lower()
+    except (OSError, UnicodeError) as exc:
+        raise HookControlError("hook control invalid") from exc
+    try:
+        data = json.loads(raw, object_pairs_hook=_reject_hook_control_duplicates)
+    except (json.JSONDecodeError, HookControlError) as exc:
+        raise HookControlError("hook control invalid") from exc
+    if not isinstance(data, dict) or any(key not in {"mode", "updatedAt", "reason"} for key in data):
+        raise HookControlError("hook control invalid")
+    if not isinstance(data.get("mode"), str):
+        raise HookControlError("hook control invalid")
+    if any(key in data and not isinstance(data[key], str) for key in ("updatedAt", "reason")):
+        raise HookControlError("hook control invalid")
+    mode = data["mode"].strip().lower()
     if mode not in HOOK_CONTROL_MODES:
-        return "off"
+        raise HookControlError("hook control invalid")
     return mode
+
+
+def _reject_hook_control_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise HookControlError("hook control invalid")
+        result[key] = value
+    return result
 
 
 def repo_local_pending_audit_path(repo_root: str) -> Path:
@@ -1408,9 +1433,6 @@ def main() -> int:
     repo_root = find_repo_root(input_data.get("cwd", os.getcwd()))
     if repo_root is None:
         return 0
-    hook_mode = read_hook_control_mode(repo_root)
-    if hook_mode == "off":
-        return 0
 
     tool_name = get_tool_name(input_data)
     if not tool_name or not is_guarded_tool(tool_name):
@@ -1418,6 +1440,15 @@ def main() -> int:
 
     tool_input = get_tool_input(input_data)
     adapter = detect_adapter()
+    try:
+        hook_mode = read_hook_control_mode(repo_root)
+    except HookControlError:
+        output = build_output(adapter, {"decision": "deny", "reason": "hook control invalid"}, tool_input)
+        print(json.dumps(output, ensure_ascii=False), flush=True)
+        return 0
+    if hook_mode == "off":
+        return 0
+
     payload = build_agent_guard_request(adapter, input_data, tool_name, tool_input, repo_root)
     if hook_mode == "dry-run":
         if is_fast_path_repo_read(repo_root, payload):

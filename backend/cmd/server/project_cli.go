@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -87,9 +88,10 @@ func runUpCommand(opts commandOptions, stdout, stderr io.Writer) int {
 		return 2
 	}
 	fmt.Fprintln(stdout, summary)
+	activation := projectHookControlActivation{path: hookControlPath, mode: hookControlMode}
 	return startServer(cfg, openBrowser, stdout, stderr,
-		func() error { return writeProjectHookControlAtPath(hookControlPath, hookControlMode) },
-		func() error { return os.Remove(hookControlPath) },
+		activation.publish,
+		activation.rollback,
 	)
 }
 
@@ -156,11 +158,93 @@ func loadProjectRunConfig(root string) (projectRunConfig, bool, string, error) {
 		}
 		return projectRunConfig{}, false, path, fmt.Errorf("读取项目配置失败：%w", err)
 	}
+	if err := rejectDuplicateJSONFields(raw); err != nil {
+		return projectRunConfig{}, false, path, fmt.Errorf("项目配置 JSON 无效：%w", err)
+	}
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return projectRunConfig{}, false, path, fmt.Errorf("项目配置 JSON 无效：%w", err)
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return projectRunConfig{}, false, path, fmt.Errorf("项目配置 JSON 无效：%w", err)
+	}
+	rawHookMode, ok := fields["hookMode"]
+	if !ok {
+		return projectRunConfig{}, false, path, fmt.Errorf("项目配置 hookMode 缺失")
+	}
+	var hookMode string
+	if err := json.Unmarshal(rawHookMode, &hookMode); err != nil {
+		return projectRunConfig{}, false, path, fmt.Errorf("项目配置 hookMode 无效")
+	}
+	normalizedMode, err := parseProjectHookMode(hookMode)
+	if err != nil {
+		return projectRunConfig{}, false, path, err
+	}
+	cfg.HookMode = normalizedMode
 	cfg.normalize(root)
 	return cfg, true, path, nil
+}
+
+func rejectDuplicateJSONFields(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := walkJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return errors.New("JSON 只能包含一个文档")
+	}
+	return nil
+}
+
+func walkJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return errors.New("JSON 无效")
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return errors.New("JSON 无效")
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("JSON 无效")
+			}
+			normalizedKey := strings.ToLower(key)
+			if _, exists := seen[normalizedKey]; exists {
+				return errors.New("JSON 存在重复字段")
+			}
+			seen[normalizedKey] = struct{}{}
+			if err := walkJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim('}') {
+			return errors.New("JSON 无效")
+		}
+	case '[':
+		for decoder.More() {
+			if err := walkJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim(']') {
+			return errors.New("JSON 无效")
+		}
+	default:
+		return errors.New("JSON 无效")
+	}
+	return nil
 }
 
 func defaultProjectRunConfig(root string) projectRunConfig {
@@ -189,7 +273,7 @@ func (c *projectRunConfig) normalize(root string) {
 	if c.Port <= 0 || c.Port > 65535 {
 		c.Port = 8080
 	}
-	c.HookMode = normalizeProjectHookMode(c.HookMode)
+	c.HookMode = strings.ToLower(strings.TrimSpace(c.HookMode))
 	if strings.TrimSpace(c.Workspace.Name) == "" {
 		c.Workspace.Name = "Default Workspace"
 	}
@@ -201,15 +285,17 @@ func (c *projectRunConfig) normalize(root string) {
 	}
 }
 
-func normalizeProjectHookMode(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
+func parseProjectHookMode(raw string) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(raw))
+	switch mode {
 	case projectHookModeOff:
-		return projectHookModeOff
+		return projectHookModeOff, nil
+	case projectHookModeDryRun:
+		return projectHookModeDryRun, nil
 	case projectHookModeLive:
-		return projectHookModeLive
+		return projectHookModeLive, nil
 	default:
-		// 项目配置缺失或写错时必须回退 dry-run，避免用户无意中开启真实阻断。
-		return projectHookModeDryRun
+		return "", fmt.Errorf("项目配置 hookMode 只支持 off、dry-run 或 live")
 	}
 }
 
@@ -379,20 +465,36 @@ func writeProjectHookControl(root, mode string) error {
 }
 
 func writeProjectHookControlAtPath(path, mode string) error {
+	payload, err := marshalProjectHookControlPayload(mode)
+	if err != nil {
+		return err
+	}
+	return writeProjectHookControlPayloadAtPath(path, payload)
+}
+
+func marshalProjectHookControlPayload(mode string) ([]byte, error) {
+	normalizedMode, err := parseProjectHookMode(mode)
+	if err != nil {
+		return nil, err
+	}
 	doc := hookControlDocument{
-		Mode:      normalizeProjectHookMode(mode),
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		Mode:      normalizedMode,
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		Reason:    "项目级 up",
 	}
+	payload, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	payload = append(payload, '\n')
+	return payload, nil
+}
+
+func writeProjectHookControlPayloadAtPath(path string, payload []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	payload, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return err
-	}
-	payload = append(payload, '\n')
 	tempFile, err := os.CreateTemp(dir, "hook-control-*.tmp")
 	if err != nil {
 		return err
@@ -415,6 +517,69 @@ func writeProjectHookControlAtPath(path, mode string) error {
 		return err
 	}
 	cleanup = false
+	return nil
+}
+
+type projectHookControlActivation struct {
+	path             string
+	mode             string
+	previous         []byte
+	publishedPayload []byte
+	hadPrevious      bool
+	published        bool
+}
+
+func (activation *projectHookControlActivation) publish() error {
+	activation.previous = nil
+	activation.publishedPayload = nil
+	activation.hadPrevious = false
+	activation.published = false
+	previous, err := os.ReadFile(activation.path)
+	if err == nil {
+		activation.previous = append([]byte(nil), previous...)
+		activation.hadPrevious = true
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	payload, err := marshalProjectHookControlPayload(activation.mode)
+	if err != nil {
+		return err
+	}
+	if err := writeProjectHookControlPayloadAtPath(activation.path, payload); err != nil {
+		return err
+	}
+	activation.publishedPayload = append([]byte(nil), payload...)
+	activation.published = true
+	return nil
+}
+
+func (activation *projectHookControlActivation) rollback() error {
+	if !activation.published {
+		return nil
+	}
+	current, err := os.ReadFile(activation.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			activation.published = false
+			return nil
+		}
+		return err
+	}
+	if !bytes.Equal(current, activation.publishedPayload) {
+		activation.published = false
+		return nil
+	}
+	if activation.hadPrevious {
+		if err := writeProjectHookControlPayloadAtPath(activation.path, activation.previous); err != nil {
+			return err
+		}
+		activation.published = false
+		return nil
+	}
+	if err := os.Remove(activation.path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	activation.published = false
 	return nil
 }
 

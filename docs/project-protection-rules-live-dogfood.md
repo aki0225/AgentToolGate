@@ -16,7 +16,7 @@
 - requester 不能审批自己的请求。
 - 独立 reviewer 批准后，同一指纹在有效期内静默通过。
 - 命令或受保护目标变化后重新评估。
-- Go CLI 不可用时，Python fallback 保持相同安全语义。
+- Go CLI 不可用时，Python fallback 对本次 remembered allow 和固定保护样本保持等价安全下限。
 
 本次没有修改用户全局 Codex / Claude Code 配置，没有使用真实凭据，也没有执行受保护
 删除或外发动作。

@@ -43,7 +43,7 @@ AI coding agent 可能被诱导执行完全不经过 MCP 的动作：
 }
 ```
 
-路径只支持 repo-relative exact / subtree，不支持任意 glob、正则、绝对路径或 `..`。规则效果只有 `require_approval` 和 `deny`，多条规则以及多目标 patch 始终取最严格结果。`.agenttoolgate/protected.json` 自身也属于 self-tamper 目标。
+路径只支持 repo-relative exact / subtree，不支持任意 glob、正则、绝对路径或 `..`。规则效果只有 `require_approval` 和 `deny`，多条规则以及多目标 patch 始终取最严格结果。`.agenttoolgate/config.json` 和 `.agenttoolgate/protected.json` 自身也属于 self-tamper 目标。
 
 调整规则时先切到 `dry-run`，编辑完成后再切回 `live`。两个启用命令都会校验配置；`off` 不读取规则，始终可用于恢复开发。
 
@@ -51,9 +51,9 @@ AI coding agent 可能被诱导执行完全不经过 MCP 的动作：
 
 - Go Hook 在调用后端前评估，普通 repo 写入仍可 no-op，受保护动作不能被后端旧的 allow 降级。
 - `/api/agent-guard/evaluate` 使用后端可信 `AGT_PROJECT_ROOT` 重新加载规则，客户端伪造 workspace root 不能绕过。
-- Go CLI 不可用时，Claude / Codex Python Hook 使用同一份最小 matcher；损坏配置在 live 下保守拒绝。
+- Go CLI 不可用时，Claude / Codex Python Hook 使用独立的最小静态 matcher；两套实现分别由对应回归用例约束安全下限，损坏配置在 live 下保守拒绝。
 
-网络规则只检查 Hook payload 能明确暴露的目标 host。允许 host 仍要服从内置网络写入审批、HTTP/MCP 部署级 allowlist 和 Connector 约束；项目配置只能继续缩小范围。
+网络规则检查 Hook payload 中的显式 URL，并静态识别当前支持的 `curl`、`Invoke-RestMethod` / `Invoke-WebRequest` 及有限嵌套形式；动态拼接 URL 和未知命令不保证识别。允许 host 仍要服从内置网络写入审批、HTTP/MCP 部署级 allowlist 和 Connector 约束；项目配置只能继续缩小范围。
 
 `/api/agent-guard/evaluate` 评估的是官方 Hook 提交的声明式动作描述，不是 OS 行为证明。若不受信任的进程同时伪造 tool/action/target 并绕过 Hook 自行执行，ATG 无法把这类请求升级成真正的 enforcement boundary。
 
@@ -80,7 +80,7 @@ repo-local hook control 文件位于：
 
 | 模式 | 行为 |
 | --- | --- |
-| `off` | hook no-op；不调用后端、不写 pending audit、不输出 hook JSON。控制文件缺失或损坏也按 `off` 处理。 |
+| `off` | 显式关闭或控制文件缺失时 hook no-op；不调用后端、不写 pending audit、不输出 hook JSON。已存在但无效的控制文件不会降级为 `off`，受治理调用会保守拒绝。 |
 | `dry-run` | 分类并写入脱敏预览 `.tmp/agenttoolgate/hook-dry-run.jsonl`，但不阻断。 |
 | `live` | 执行真实 hook 映射。 |
 
@@ -113,7 +113,7 @@ hook payload 会被规范化为本地动作：
 - content：脚本或文件内容，进入 audit 前脱敏
 - optional file identity / parent identity
 
-项目规则评估 `apply_patch` 时，Add / Update / Move 按 write 处理，Delete 按 delete 处理，并对所有目标采用最严格结果。
+项目规则评估 `apply_patch` 时，Add / Update 和 Move 目标按 write 处理，Move 源路径和 Delete 按 delete 处理，并对所有目标采用最严格结果。
 
 风险由落点和内容共同驱动，不是简单地“所有 write 都危险”。
 

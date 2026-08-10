@@ -393,19 +393,39 @@ func TestEvaluateDeniesPersistenceTargets(t *testing.T) {
 	}
 }
 
-func TestEvaluateDeniesHookControlTamper(t *testing.T) {
+func TestEvaluateDeniesHookControlAndProjectConfigTamper(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []ActionInput{
+		{ToolName: "Write", ActionType: "write", Target: `.tmp\agenttoolgate\hook-control.json`, ContentPreview: `{"mode":"off"}`},
+		{ToolName: "Write", ActionType: "write", Target: `.agenttoolgate\config.json`, ContentPreview: `{"hookMode":"off"}`},
+		{ToolName: "Write", ActionType: "write", Target: `.agenttoolgate\clients\claude-hook.json`, ContentPreview: `{}`},
+		{ToolName: "Delete", ActionType: "delete", Target: `.agenttoolgate\config.json`},
+		{ToolName: "Bash", ActionType: "exec", Command: `rm -rf .agenttoolgate`},
+		{ToolName: "PowerShell", ActionType: "exec", Command: `Remove-Item -Recurse .tmp\agenttoolgate`},
+		{ToolName: "Bash", ActionType: "exec", Command: `mv .agenttoolgate config-backup`},
+	} {
+		input.CWD = `X:\demo\AgentToolGate`
+		input.ProjectRoot = `X:\demo\AgentToolGate`
+		got := Evaluate(input)
+		if got.Decision != "deny" || got.RiskLevel != "critical" || got.Category != "agent_self_tamper" {
+			t.Fatalf("control tamper %+v must be denied as self-maintenance, got %+v", input, got)
+		}
+	}
+}
+
+func TestEvaluateDoesNotAssociateControlDirectoryReadWithUnrelatedWrite(t *testing.T) {
 	t.Parallel()
 
 	got := Evaluate(ActionInput{
-		ToolName:       "Write",
-		ActionType:     "write",
-		Target:         `.tmp\agenttoolgate\hook-control.json`,
-		ContentPreview: `{"mode":"off"}`,
-		CWD:            `X:\demo\AgentToolGate`,
-		ProjectRoot:    `X:\demo\AgentToolGate`,
+		ToolName:    "PowerShell",
+		ActionType:  "exec",
+		Command:     `Get-ChildItem .agenttoolgate | Set-Content docs/tree.txt`,
+		CWD:         `X:\demo\AgentToolGate`,
+		ProjectRoot: `X:\demo\AgentToolGate`,
 	})
-	if got.Decision != "deny" || got.RiskLevel != "critical" || got.Category != "agent_self_tamper" {
-		t.Fatalf("hook control tamper must be denied as self-maintenance, got %+v", got)
+	if got.Decision == "deny" && got.Category == "agent_self_tamper" {
+		t.Fatalf("read-only access to control directory must not be associated with an unrelated write, got %+v", got)
 	}
 }
 

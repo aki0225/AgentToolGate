@@ -150,6 +150,7 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 - ATG 管理的 Connector Secret 目前是 env-backed `valueRef`，不是 KMS、Vault 或云 Secret Manager。
 - GitHub 集成适合 PAT / demo token，不是 GitHub App installation token 的生产闭环。
 - HTTP 的 SSRF guard 还没覆盖 DNS rebinding、解析后私网网段判定和 redirect 后的 DNS 复检。
+- 项目规则只覆盖 Hook 暴露的显式目标及当前可静态解析的已知命令、解释器和脚本后缀；动态命令、未知解释器或绕过 Hook 的进程不保证命中。
 - 当前只有基础 role/workspace 隔离；职责分离、版本化迁移、备份、告警、SLO、灾备和组织级策略发布/回滚等生产化前提都还没有。
 
 ## 深入文档

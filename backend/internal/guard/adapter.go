@@ -324,7 +324,7 @@ func firstStringFromMaps(maps []map[string]any, keys ...string) string {
 func stringFromHookValue(value any) string {
 	switch typed := value.(type) {
 	case string:
-		return trimPreview(typed)
+		return strings.TrimSpace(typed)
 	case json.Number:
 		return typed.String()
 	case bool:
@@ -335,13 +335,4 @@ func stringFromHookValue(value any) string {
 	default:
 		return ""
 	}
-}
-
-func trimPreview(value string) string {
-	trimmed := strings.TrimSpace(value)
-	const maxPreview = 2048
-	if len(trimmed) <= maxPreview {
-		return trimmed
-	}
-	return trimmed[:maxPreview]
 }

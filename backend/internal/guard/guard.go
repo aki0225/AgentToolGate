@@ -94,13 +94,13 @@ func evaluateAction(input ActionInput) Decision {
 	if d, ok := detectSensitiveRead(command, commandText, toolName, actionType, target, workspaceRoot); ok {
 		return d
 	}
+	if d, ok := detectSelfTamper(input, target, commandText, command, toolName, actionType); ok {
+		return d
+	}
 	if d, ok := detectDeleteRisk(command, commandText, toolName, actionType, target, workspaceRoot, cwd); ok {
 		return d
 	}
 	if d, ok := detectPersistentWrite(command, commandText, target); ok {
-		return d
-	}
-	if d, ok := detectSelfTamper(target, commandText, command, toolName, actionType); ok {
 		return d
 	}
 	if d, ok := detectSensitiveWrite(target, commandText, command, content, actionType, toolName); ok {
@@ -243,7 +243,10 @@ func detectPersistentWrite(command, commandText, target string) (Decision, bool)
 	return Decision{}, false
 }
 
-func detectSelfTamper(target, commandText, command, toolName, actionType string) (Decision, bool) {
+func detectSelfTamper(input ActionInput, target, commandText, command, toolName, actionType string) (Decision, bool) {
+	if targetsAgentToolGateControlDirectoryMutation(input, target, command, toolName, actionType) {
+		return newDecision("deny", "critical", false, "命中自维护篡改", "agent_self_tamper", "agent_self_tamper", "项目保护配置篡改"), true
+	}
 	if target == "" {
 		if isHardSelfTamperText(commandText) {
 			return newDecision("deny", "critical", false, "命中自维护篡改", "agent_self_tamper", "agent_self_tamper", "hooks 或启动篡改"), true
@@ -263,6 +266,33 @@ func detectSelfTamper(target, commandText, command, toolName, actionType string)
 		return newDecision("ask", "medium", false, "需要确认", "config_write", "agent_self_tamper", "敏感配置写入"), true
 	}
 	return Decision{}, false
+}
+
+func isSelfTamperMutationLike(actionType, toolName, command string) bool {
+	return isWriteLike(actionType, toolName, command) || isDeleteLike(actionType, toolName, command) ||
+		containsAny(actionType, "move", "rename") || containsAny(command, "mv ", "move ", "move-item", "ren ", "rename-item")
+}
+
+func isAgentToolGateControlDirectoryPath(target string) bool {
+	segments := pathSegments(strings.TrimSuffix(normalizedPathText(target), "/"))
+	return hasSequence(segments, pathSegments(".agenttoolgate")) ||
+		hasSequence(segments, pathSegments(".tmp/agenttoolgate"))
+}
+
+func targetsAgentToolGateControlDirectoryMutation(input ActionInput, target, command, toolName, actionType string) bool {
+	if isSelfTamperMutationLike(actionType, toolName, command) && isAgentToolGateControlDirectoryPath(target) {
+		return true
+	}
+	for _, operation := range projectProtectionTargetOperations(input) {
+		if operation.Operation != "write" && operation.Operation != "delete" {
+			continue
+		}
+		resolved := normalizePathCandidate(resolveTarget(operation.Target, input.CWD, input.ProjectRoot))
+		if isAgentToolGateControlDirectoryPath(operation.Target) || isAgentToolGateControlDirectoryPath(resolved) {
+			return true
+		}
+	}
+	return false
 }
 
 func detectSensitiveWrite(target, commandText, command, content, actionType, toolName string) (Decision, bool) {
@@ -1323,7 +1353,7 @@ func isSensitiveWriteText(text string) bool {
 
 func isHardSelfTamperText(text string) bool {
 	normalized := normalizedPathText(text)
-	return containsAny(normalized, "/.git/hooks/", ".tmp/agenttoolgate/hook-control.json", "/appdata/roaming/microsoft/windows/start menu/programs/startup", "/documents/powershell/", "/documents/windowspowershell/", "/microsoft.powershell_profile.ps1")
+	return containsAny(normalized, "/.git/hooks/", ".agenttoolgate/config.json", ".tmp/agenttoolgate/hook-control.json", "/appdata/roaming/microsoft/windows/start menu/programs/startup", "/documents/powershell/", "/documents/windowspowershell/", "/microsoft.powershell_profile.ps1")
 }
 
 func isSoftSelfTamperText(text string) bool {
@@ -1416,7 +1446,8 @@ func isCredentialConfigWritePath(target string) bool {
 
 func isHardSelfTamperPath(target string) bool {
 	lower := lowerTrim(target)
-	if containsAny(lower, "/.git/hooks/") || strings.HasSuffix(lower, "/.git/hooks") || strings.HasSuffix(lower, "/.tmp/agenttoolgate/hook-control.json") {
+	if containsAny(lower, "/.git/hooks/") || strings.HasSuffix(lower, "/.git/hooks") ||
+		strings.HasSuffix(lower, "/.agenttoolgate/config.json") || strings.HasSuffix(lower, "/.tmp/agenttoolgate/hook-control.json") {
 		return true
 	}
 	return containsAny(lower, "/appdata/roaming/microsoft/windows/start menu/programs/startup") || containsAny(lower, "/documents/powershell/") || containsAny(lower, "/documents/windowspowershell/") || strings.HasSuffix(lower, "/microsoft.powershell_profile.ps1")
