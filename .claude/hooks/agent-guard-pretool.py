@@ -269,6 +269,7 @@ try:
         is_project_metadata_read_target,
         is_probably_high_risk_target,
         is_probably_script_target,
+        local_guard_preview,
         project_protection_floor,
     )
 except ImportError:  # pragma: no cover - 兼容直接复制单文件调试的场景。
@@ -279,6 +280,7 @@ except ImportError:  # pragma: no cover - 兼容直接复制单文件调试的�
         is_project_metadata_read_target,
         is_probably_high_risk_target,
         is_probably_script_target,
+        local_guard_preview,
         project_protection_floor,
     )
 
@@ -678,17 +680,21 @@ def record_local_hook_dry_run(repo_root: str, payload: dict[str, Any]) -> None:
     try:
         preview_path = repo_local_hook_dry_run_path(repo_root)
         preview_path.parent.mkdir(parents=True, exist_ok=True)
-        high_risk = is_high_risk_offline_target(payload)
         signals = hook_preview_signals(payload)
         try:
-            project_floor = project_protection_floor(repo_root, payload)
+            preview = local_guard_preview(repo_root, payload)
         except ProjectProtectionError:
-            project_floor = None
-            high_risk = True
+            preview = {
+                "decision": "deny",
+                "riskLevel": "high",
+                "projectCodeExecution": False,
+                "projectRule": False,
+            }
             signals.append("project_protection_config_invalid")
-        if project_floor is not None:
-            high_risk = True
+        if preview["projectRule"]:
             signals.append("project_protection_rule")
+        if preview["projectCodeExecution"]:
+            signals.append("project_code_execution")
         workspace = get_text(os.environ.get("AGENTTOOLGATE_WORKSPACE_ORG_ID") or os.environ.get("WORKSPACE_ORG_ID"))
         if not workspace:
             workspace = Path(repo_root).name
@@ -700,8 +706,8 @@ def record_local_hook_dry_run(repo_root: str, payload: dict[str, Any]) -> None:
             "action": get_text(payload.get("actionType")),
             "target": redact_preview_target(payload.get("target")),
             "mode": "dry-run",
-            "riskLevel": "high" if high_risk else "low",
-            "decisionPreview": "would_block_in_live" if high_risk else "would_allow_in_live",
+            "riskLevel": preview["riskLevel"],
+            "decisionPreview": preview["decision"],
             "signals": signals,
             "time": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
         }

@@ -31,6 +31,8 @@ contains_hidden_script_features = _MODULE.contains_hidden_script_features
 decoded_base64_payloads = _MODULE.decoded_base64_payloads
 contains_hidden_script_features_in_decoded_base64 = _MODULE.contains_hidden_script_features_in_decoded_base64
 is_high_risk_offline_target = _MODULE.is_high_risk_offline_target
+is_project_code_execution = _MODULE.is_project_code_execution
+local_guard_preview = _MODULE.local_guard_preview
 ProjectProtectionError = _MODULE.ProjectProtectionError
 project_protection_floor = _MODULE.project_protection_floor
 
@@ -42,11 +44,13 @@ __all__ = [
     "has_sequence",
     "has_suffix",
     "is_high_risk_offline_target",
+    "is_project_code_execution",
     "is_project_metadata_read_target",
     "is_probably_high_risk_target",
     "is_probably_script_target",
     "path_matches_dir_or_descendant",
     "path_matches_exact_file",
     "path_segments",
+    "local_guard_preview",
     "project_protection_floor",
 ]

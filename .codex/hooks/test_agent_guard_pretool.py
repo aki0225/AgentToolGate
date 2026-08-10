@@ -478,8 +478,33 @@ class CodexHookBridgeTest(unittest.TestCase):
             self.assertTrue(preview_path.is_file())
             preview = json.loads(preview_path.read_text(encoding="utf-8").strip())
             self.assertEqual(preview["mode"], "dry-run")
-            self.assertEqual(preview["decisionPreview"], "would_block_in_live")
+            self.assertEqual(preview["decisionPreview"], "deny")
             self.assertNotIn("ssh-rsa", json.dumps(preview, ensure_ascii=False))
+
+    def test_dry_run_previews_project_code_execution_as_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            self.set_hook_control(repo, "dry-run")
+            raw = self.invoke_raw(
+                json.dumps(
+                    {
+                        "tool_name": "shell",
+                        "tool_input": {"command": "go test ./..."},
+                        "cwd": str(repo),
+                    },
+                    ensure_ascii=False,
+                ),
+                go_cli=lambda _payload: self.fail("dry-run 模式不应调用 Go CLI"),
+                post_json=lambda *_args, **_kwargs: self.fail("dry-run 模式不应调用 fallback HTTP"),
+                enable_live_control=False,
+            )
+            self.assertEqual(raw, "")
+            preview_path = repo / ".tmp" / "agenttoolgate" / "hook-dry-run.jsonl"
+            preview = json.loads(preview_path.read_text(encoding="utf-8").strip())
+            self.assertEqual(preview["decisionPreview"], "ask")
+            self.assertEqual(preview["riskLevel"], "medium")
+            self.assertIn("project_code_execution", preview["signals"])
 
     def test_dry_run_redacts_sensitive_url_target(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

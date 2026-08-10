@@ -15,6 +15,10 @@ from typing import Any
 
 
 PROJECT_PROTECTION_MAX_BYTES = 64 * 1024
+PROJECT_CODE_EXECUTION_PATTERNS = (
+    re.compile(r"(?i)(^|[\s;&|])go\s+(test|vet)(\s|$)"),
+    re.compile(r"(?i)(^|[\s;&|])(npm|pnpm|yarn|bun)\s+(test|run\s+(build|test))(\s|$)"),
+)
 
 
 class ProjectProtectionError(ValueError):
@@ -272,6 +276,46 @@ def is_high_risk_offline_target(payload: dict[str, object]) -> bool:
         or (not skip_hidden_script_scan and contains_hidden_script_features(content))
         or (not skip_hidden_script_scan and contains_hidden_script_features_in_decoded_base64(content))
     )
+
+
+def is_project_code_execution(payload: dict[str, Any]) -> bool:
+    action = str(payload.get("actionType") or "").strip().lower()
+    if action not in {"command", "exec", "execute"}:
+        return False
+    candidates = (
+        str(payload.get("target") or ""),
+        str(payload.get("content") or ""),
+    )
+    return any(pattern.search(candidate) for candidate in candidates for pattern in PROJECT_CODE_EXECUTION_PATTERNS)
+
+
+def local_guard_preview(repo_root: str, payload: dict[str, Any]) -> dict[str, Any]:
+    high_risk = is_high_risk_offline_target(payload)
+    project_code_execution = is_project_code_execution(payload)
+    if high_risk:
+        decision = "deny"
+        risk_level = "high"
+    elif project_code_execution:
+        decision = "ask"
+        risk_level = "medium"
+    else:
+        decision = "allow"
+        risk_level = "low"
+
+    project_floor = project_protection_floor(repo_root, payload)
+    if project_floor is not None:
+        rank = {"allow": 1, "ask": 2, "deny": 3}
+        floor_decision = str(project_floor.get("decision") or "")
+        if rank.get(floor_decision, 0) > rank.get(decision, 0):
+            decision = floor_decision
+        risk_level = "high"
+
+    return {
+        "decision": decision,
+        "riskLevel": risk_level,
+        "projectCodeExecution": project_code_execution,
+        "projectRule": project_floor is not None,
+    }
 
 
 def project_protection_floor(repo_root: str, payload: dict[str, Any]) -> dict[str, str] | None:

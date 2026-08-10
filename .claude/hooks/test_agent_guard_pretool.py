@@ -961,8 +961,58 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             self.assertTrue(preview_path.is_file())
             preview = json.loads(preview_path.read_text(encoding="utf-8").strip())
             self.assertEqual(preview["mode"], "dry-run")
-            self.assertEqual(preview["decisionPreview"], "would_block_in_live")
+            self.assertEqual(preview["decisionPreview"], "deny")
             self.assertNotIn("#!/bin/sh", json.dumps(preview, ensure_ascii=False))
+
+    def test_dry_run_previews_project_code_execution_as_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            self.set_hook_control(repo, "dry-run")
+            raw = self.invoke_raw(
+                {"tool_name": "Bash", "tool_input": {"command": "go test ./..."}, "cwd": str(repo)},
+                post_json=lambda *_args, **_kwargs: self.fail("dry-run 模式不应调用后端"),
+                enable_live=False,
+            )
+            self.assertEqual(raw, "")
+            preview_path = repo / ".tmp" / "agenttoolgate" / "hook-dry-run.jsonl"
+            preview = json.loads(preview_path.read_text(encoding="utf-8").strip())
+            self.assertEqual(preview["decisionPreview"], "ask")
+            self.assertEqual(preview["riskLevel"], "medium")
+            self.assertIn("project_code_execution", preview["signals"])
+
+    def test_dry_run_previews_project_rule_as_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            self.set_hook_control(repo, "dry-run")
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [
+                            {
+                                "pattern": "src/core/**",
+                                "read": "require_approval",
+                            }
+                        ],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            raw = self.invoke_raw(
+                {"tool_name": "Read", "tool_input": {"file_path": "src/core/algorithm.go"}, "cwd": str(repo)},
+                post_json=lambda *_args, **_kwargs: self.fail("dry-run 模式不应调用后端"),
+                enable_live=False,
+            )
+            self.assertEqual(raw, "")
+            preview_path = repo / ".tmp" / "agenttoolgate" / "hook-dry-run.jsonl"
+            preview = json.loads(preview_path.read_text(encoding="utf-8").strip())
+            self.assertEqual(preview["decisionPreview"], "ask")
+            self.assertEqual(preview["riskLevel"], "high")
+            self.assertIn("project_protection_rule", preview["signals"])
 
     def test_dry_run_redacts_sensitive_url_target(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
