@@ -30,6 +30,18 @@ func TestLoadProjectProtectionRejectsUnsafeDocuments(t *testing.T) {
 			body: `{"version":1,"localActionFirewall":{"enabled":true,"unexpected":true}}`,
 		},
 		{
+			name: "duplicate root field",
+			body: `{"version":1,"version":1,"localActionFirewall":{"enabled":true}}`,
+		},
+		{
+			name: "duplicate nested field cannot disable protection",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"enabled":false}}`,
+		},
+		{
+			name: "duplicate rule effect cannot weaken protection",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"protectedPaths":[{"pattern":"src/core/**","read":"deny","read":"require_approval"}]}}`,
+		},
+		{
 			name: "parent traversal",
 			body: `{"version":1,"localActionFirewall":{"enabled":true,"protectedPaths":[{"pattern":"../outside/**","read":"deny"}]}}`,
 		},

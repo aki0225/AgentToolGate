@@ -101,6 +101,9 @@ func LoadProjectProtection(repoRoot string) (ProjectProtection, error) {
 	if err != nil {
 		return ProjectProtection{}, errors.New("读取项目保护策略失败")
 	}
+	if err := rejectDuplicateProjectProtectionFields(raw); err != nil {
+		return ProjectProtection{}, err
+	}
 
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -216,6 +219,67 @@ func EvaluateProjectProtection(input ActionInput, protection ProjectProtection) 
 func ensureProjectProtectionEOF(decoder *json.Decoder) error {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return errors.New("项目保护策略 JSON 只能包含一个文档")
+	}
+	return nil
+}
+
+func rejectDuplicateProjectProtectionFields(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := walkProjectProtectionJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return errors.New("项目保护策略 JSON 只能包含一个文档")
+	}
+	return nil
+}
+
+func walkProjectProtectionJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return errors.New("项目保护策略 JSON 无效")
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return errors.New("项目保护策略 JSON 无效")
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("项目保护策略 JSON 无效")
+			}
+			if _, exists := seen[key]; exists {
+				return errors.New("项目保护策略 JSON 存在重复字段")
+			}
+			seen[key] = struct{}{}
+			if err := walkProjectProtectionJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim('}') {
+			return errors.New("项目保护策略 JSON 无效")
+		}
+	case '[':
+		for decoder.More() {
+			if err := walkProjectProtectionJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim(']') {
+			return errors.New("项目保护策略 JSON 无效")
+		}
+	default:
+		return errors.New("项目保护策略 JSON 无效")
 	}
 	return nil
 }
