@@ -1373,6 +1373,39 @@ func TestRunGuardHookCodexAsksBecomeDenyAndSupportsStdin(t *testing.T) {
 	}
 }
 
+func TestEnforceHookDecisionFloorAllowsRememberedApproval(t *testing.T) {
+	local := guard.Decision{
+		Decision:  "ask",
+		RiskLevel: "medium",
+		Reason:    "Guard Core requires confirmation",
+	}
+	backend := hookAgentGuardResponse{
+		Decision:       "allow",
+		ApprovalID:     "approval-remembered",
+		ApprovalStatus: "consumed",
+		Fingerprint:    "fingerprint-remembered",
+	}
+
+	got := enforceHookDecisionFloor(local, hookAgentGuardRequest{}, backend)
+	if got.Decision != "allow" {
+		t.Fatalf("remembered approval should bypass the local ask floor, got %+v", got)
+	}
+}
+
+func TestEnforceHookDecisionFloorRejectsUnbackedAllow(t *testing.T) {
+	local := guard.Decision{
+		Decision:  "ask",
+		RiskLevel: "medium",
+		Reason:    "Guard Core requires confirmation",
+	}
+	backend := hookAgentGuardResponse{Decision: "allow"}
+
+	got := enforceHookDecisionFloor(local, hookAgentGuardRequest{}, backend)
+	if got.Decision != "deny" {
+		t.Fatalf("unbacked backend allow must remain denied, got %+v", got)
+	}
+}
+
 func TestProjectHookMatcherIncludesDirectNetworkTools(t *testing.T) {
 	for _, tool := range []string{"http.request", "network.request"} {
 		matched, err := regexp.MatchString(localActionHookMatcher, tool)

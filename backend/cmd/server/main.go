@@ -970,6 +970,15 @@ func enforceHookDecisionFloor(local guard.Decision, request hookAgentGuardReques
 		}
 	case "ask":
 		if strings.EqualFold(strings.TrimSpace(response.Decision), "allow") && strings.TrimSpace(request.TicketID) == "" {
+			// 后端在低/中风险 remembered allow 时不会要求客户端再次携带 ticket，
+			// 但会返回已审批票据的状态、ID 和指纹；只接受这组证据，避免普通
+			// 的后端 allow 绕过本地 Guard Core 的 ask floor。
+			approvalStatus := strings.ToLower(strings.TrimSpace(response.ApprovalStatus))
+			if (approvalStatus == "approved" || approvalStatus == "consumed") &&
+				strings.TrimSpace(response.ApprovalID) != "" &&
+				strings.TrimSpace(response.Fingerprint) != "" {
+				return response
+			}
 			return hookAgentGuardResponse{
 				Decision: "deny",
 				Reason:   firstNonEmptyString(local.Reason, "Guard Core requires confirmation"),
