@@ -168,3 +168,10 @@ git diff --check
 - 独立 reviewer 审批、防自批和单次票据均通过。
 - 文档明确 Hook 只治理客户端暴露的动作，不宣称覆盖绕过 Hook 的进程或完整数据外传。
 - 分支 CI 通过后再合并，不修改已发布的 `v0.2.0` 与 `v0.2.0-rc1` 标签。
+
+## 7. 当前实测结果
+
+Live 双 Actor 审批、remembered allow、命令变化重新评估和 Python fallback 已完成真实
+验证。完整环境、指标、发现的问题与剩余边界见：
+
+- [项目保护规则 Live Dogfood 记录](project-protection-rules-live-dogfood.md)
