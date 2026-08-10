@@ -61,6 +61,23 @@ class CodexHookBridgeTest(unittest.TestCase):
             return
         control_path.write_text(json.dumps({"mode": mode}, ensure_ascii=False), encoding="utf-8")
 
+    def test_python_floor_allows_remembered_approval(self) -> None:
+        request = {"guardDecision": "ask"}
+        decision = {
+            "decision": "allow",
+            "approvalId": "approval-remembered",
+            "approvalStatus": "consumed",
+            "fingerprint": "fingerprint-remembered",
+        }
+
+        self.assertEqual(HOOK.enforce_python_guard_floor(request, decision)["decision"], "allow")
+
+    def test_python_floor_rejects_unbacked_allow(self) -> None:
+        request = {"guardDecision": "ask"}
+        decision = {"decision": "allow"}
+
+        self.assertEqual(HOOK.enforce_python_guard_floor(request, decision)["decision"], "deny")
+
     def test_missing_control_file_defaults_to_noop(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)

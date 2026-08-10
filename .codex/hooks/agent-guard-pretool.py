@@ -1346,6 +1346,15 @@ def enforce_python_guard_floor(request: dict[str, Any], decision: dict[str, Any]
     if guard_decision == "deny":
         return {"decision": "deny", "reason": "local guard denied this action"}
     if guard_decision == "ask" and get_text(decision.get("decision")) == "allow" and not get_text(request.get("ticketId")):
+        # 低/中风险 remembered allow 不要求客户端再次携带 ticket，但后端必须
+        # 返回完整的已审批证据；普通 allow 仍不能绕过本地 ask floor。
+        approval_status = get_text(decision.get("approvalStatus")).lower()
+        if (
+            approval_status in {"approved", "consumed"}
+            and get_text(decision.get("approvalId"))
+            and get_text(decision.get("fingerprint"))
+        ):
+            return decision
         return {"decision": "deny", "reason": "local guard requires confirmation"}
     return decision
 

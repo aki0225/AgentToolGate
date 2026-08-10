@@ -56,6 +56,23 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             if original is not None:
                 os.environ["AGENTTOOLGATE_HOOK_TIMEOUT_MS"] = original
 
+    def test_python_floor_allows_remembered_approval(self) -> None:
+        request = {"guardDecision": "ask"}
+        decision = {
+            "decision": "allow",
+            "approvalId": "approval-remembered",
+            "approvalStatus": "approved",
+            "fingerprint": "fingerprint-remembered",
+        }
+
+        self.assertEqual(HOOK.enforce_python_guard_floor(request, decision)["decision"], "allow")
+
+    def test_python_floor_rejects_unbacked_allow(self) -> None:
+        request = {"guardDecision": "ask"}
+        decision = {"decision": "allow"}
+
+        self.assertEqual(HOOK.enforce_python_guard_floor(request, decision)["decision"], "deny")
+
     def set_hook_control(self, repo: Path, mode: str | None = None, raw: str | None = None) -> None:
         control_path = repo / ".tmp" / "agenttoolgate" / "hook-control.json"
         original = control_path.read_bytes() if control_path.exists() else None
