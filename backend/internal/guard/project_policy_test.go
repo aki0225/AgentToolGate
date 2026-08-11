@@ -895,8 +895,24 @@ func TestEvaluateProtectsProjectProtectionFileFromMutation(t *testing.T) {
 		CWD:         root,
 		ProjectRoot: root,
 	})
-	if decision.Decision != "ask" || decision.Category != "agent_self_tamper" || !strings.Contains(strings.Join(decision.Signals, " "), "agent_self_tamper") {
-		t.Fatalf("project protection config mutation must ask, got %+v", decision)
+	if decision.Decision != "deny" || decision.RiskLevel != "critical" ||
+		decision.Category != "agent_self_tamper" ||
+		!strings.Contains(strings.Join(decision.Signals, " "), "agent_self_tamper") {
+		t.Fatalf("project protection config mutation must fail closed, got %+v", decision)
+	}
+}
+
+func TestEvaluateAllowsReadingGeneratedProjectClientConfig(t *testing.T) {
+	root := t.TempDir()
+	decision := Evaluate(ActionInput{
+		ToolName:    "Read",
+		ActionType:  "read",
+		Target:      ".agenttoolgate/clients/codex.config.snippet.toml",
+		CWD:         root,
+		ProjectRoot: root,
+	})
+	if decision.Decision != "allow" || !decision.Silent {
+		t.Fatalf("reading generated client config must remain low friction, got %+v", decision)
 	}
 }
 
