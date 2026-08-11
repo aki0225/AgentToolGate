@@ -162,6 +162,7 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 - [演示剧本](docs/demo-playbook.md)：产品化演示路径。
 - [安全评审说明](docs/security-review-notes.md)：安全评审视角的控制与剩余风险。
 - [Daily Use Acceptance](docs/daily-use-acceptance.md)：日常开发低噪音验收证据。
+- [v0.3.0 发布验收](docs/v0.3.0-release-acceptance.md)：项目保护规则、跨平台评估附件和正式 Release 的可追溯验收记录。
 - [Agent Guard Synthetic Demo](examples/agent-demo/windows-startup-poisoning.md)：Windows Startup poisoning synthetic demo。
 - [ATG 管理的 Connector Secret 外传 Synthetic Demo](examples/agent-demo/secret-exfiltration-blocked.md)：本机验证这类 Secret 不直接暴露给 Agent，并对危险 header 与响应做脱敏。
 - [GitHub 写审批 Synthetic Demo](examples/agent-demo/github-write-approval.md)：本机验证审批前不触达上游和独立 reviewer 放行。
