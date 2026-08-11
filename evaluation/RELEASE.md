@@ -2,8 +2,8 @@
 
 这个附件用于在 disposable 目录中复跑 AgentToolGate 的公开安全评估。它包含同平台的
 `agenttoolgate`、`atg-eval`、固定 suites、JSON Schema、`BUILD-METADATA.json` 和许可
-证，不包含预先生成的通过结果。构建元数据记录版本、源码 commit、平台和两个二进制
-文件名。
+证，以及治理不变量评估所需的 Claude / Codex 产品 Hook，不包含预先生成的通过结果。
+构建元数据记录版本、源码 commit、平台和两个二进制文件名。
 
 ## 快速校验
 
@@ -20,6 +20,20 @@ Linux：
 ```
 
 成功时应返回 `schemaVersion=v1` 和 `caseCount=20`。
+
+要复跑包含治理不变量的 quick suite：
+
+```powershell
+.\atg-eval.exe run `
+  --input .\evaluation\suites\pr-quick-v1.jsonl `
+  --atg .\agenttoolgate.exe `
+  --run-id release-quick `
+  --output .\proof-packs\release-quick `
+  --sandbox-base .\.tmp\evaluation
+```
+
+Linux 使用无扩展名二进制和 `/` 路径分隔符。运行目录中必须保留附件自带的
+`.codex/hooks/` 与 `.claude/hooks/`，否则治理不变量会保守失败。
 
 ## 运行完整评估
 

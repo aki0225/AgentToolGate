@@ -13,6 +13,8 @@ $FrontendDir = Join-Path $RepoRoot "frontend"
 $BackendDir = Join-Path $RepoRoot "backend"
 $EvaluatorDir = Join-Path (Join-Path $RepoRoot "tools") "atg-eval"
 $EvaluationDir = Join-Path $RepoRoot "evaluation"
+$CodexHookDir = Join-Path (Join-Path $RepoRoot ".codex") "hooks"
+$ClaudeHookDir = Join-Path (Join-Path $RepoRoot ".claude") "hooks"
 $FrontendDist = Join-Path $FrontendDir "dist"
 $EmbedDist = Join-Path (Join-Path $BackendDir "internal") (Join-Path "static" "site")
 $DistDir = Join-Path $RepoRoot "dist"
@@ -223,6 +225,57 @@ function Invoke-EvaluatorSmoke {
     }
 }
 
+function Invoke-EvaluatorRunSmoke {
+    param(
+        [Parameter(Mandatory = $true)][string]$EvaluatorPath,
+        [Parameter(Mandatory = $true)][string]$ProductPath,
+        [Parameter(Mandatory = $true)][string]$SuitePath,
+        [Parameter(Mandatory = $true)][string]$TargetPlatform,
+        [Parameter(Mandatory = $true)][string]$WorkingRoot
+    )
+
+    if ($SkipSmoke) {
+        Write-Host "==> 已跳过 $TargetPlatform evaluator run smoke" -ForegroundColor Yellow
+        return
+    }
+
+    $expectedCaseCount = @(
+        Get-Content -LiteralPath $SuitePath |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    ).Count
+    $output = Join-Path $WorkingRoot "quick-output"
+    $sandbox = Join-Path $WorkingRoot "quick-sandbox"
+    $stdoutPath = Join-Path $WorkingRoot "quick.stdout.json"
+    $stderrPath = Join-Path $WorkingRoot "quick.stderr.log"
+    New-Item -ItemType Directory -Force -Path $WorkingRoot | Out-Null
+    $oldRequirePython = [Environment]::GetEnvironmentVariable("ATG_EVAL_REQUIRE_PYTHON", "Process")
+    try {
+        [Environment]::SetEnvironmentVariable("ATG_EVAL_REQUIRE_PYTHON", "1", "Process")
+        & $EvaluatorPath run `
+            --input $SuitePath `
+            --atg $ProductPath `
+            --run-id "release-smoke-$TargetPlatform" `
+            --output $output `
+            --sandbox-base $sandbox `
+            --guard-timeout 30s `
+            1> $stdoutPath `
+            2> $stderrPath
+        if ($LASTEXITCODE -ne 0) {
+            $stderrText = Get-Content -LiteralPath $stderrPath -Raw -ErrorAction SilentlyContinue
+            throw "$TargetPlatform evaluator run 失败，退出码 $LASTEXITCODE`n$stderrText"
+        }
+        $document = Get-Content -LiteralPath $stdoutPath -Raw | ConvertFrom-Json
+        if ($document.schemaVersion -ne "v1" -or
+            $document.metrics.case_count -ne $expectedCaseCount -or
+            $document.metrics.failed_count -ne 0) {
+            throw "$TargetPlatform evaluator run 摘要不符合预期"
+        }
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable("ATG_EVAL_REQUIRE_PYTHON", $oldRequirePython, "Process")
+    }
+}
+
 if (-not (Test-Path $FrontendDir)) {
     throw "未找到前端目录：$FrontendDir"
 }
@@ -237,6 +290,17 @@ if (-not (Test-Path $EvaluatorDir)) {
 
 if (-not (Test-Path $EvaluationDir)) {
     throw "未找到评估契约目录：$EvaluationDir"
+}
+
+foreach ($hookFile in @(
+    (Join-Path $CodexHookDir "_guard_core.py"),
+    (Join-Path $CodexHookDir "agent-guard-pretool.py"),
+    (Join-Path $ClaudeHookDir "_guard_core.py"),
+    (Join-Path $ClaudeHookDir "agent-guard-pretool.py")
+)) {
+    if (-not (Test-Path -LiteralPath $hookFile)) {
+        throw "未找到评估所需产品 Hook：$hookFile"
+    }
 }
 
 $Platform = Resolve-Platform -RequestedPlatform $Platform
@@ -354,6 +418,13 @@ Copy-Item -LiteralPath (Join-Path $EvaluationDir "README.md") -Destination $Pack
 Copy-Item -LiteralPath (Join-Path $EvaluationDir "RELEASE.md") -Destination $PackagedEvaluationDir -Force
 Copy-Item -LiteralPath (Join-Path $EvaluationDir "schema") -Destination $PackagedEvaluationDir -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $EvaluationDir "suites") -Destination $PackagedEvaluationDir -Recurse -Force
+$PackagedCodexHookDir = Join-Path (Join-Path $EvaluationPackageDir ".codex") "hooks"
+$PackagedClaudeHookDir = Join-Path (Join-Path $EvaluationPackageDir ".claude") "hooks"
+New-Item -ItemType Directory -Force -Path $PackagedCodexHookDir, $PackagedClaudeHookDir | Out-Null
+foreach ($name in @("_guard_core.py", "agent-guard-pretool.py")) {
+    Copy-Item -LiteralPath (Join-Path $CodexHookDir $name) -Destination $PackagedCodexHookDir -Force
+    Copy-Item -LiteralPath (Join-Path $ClaudeHookDir $name) -Destination $PackagedClaudeHookDir -Force
+}
 Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination $EvaluationPackageDir -Force
 $buildMetadata = [ordered]@{
     schemaVersion = "v1"
@@ -451,10 +522,18 @@ else {
     Expand-Archive -LiteralPath $evaluationPackagePath -DestinationPath $EvaluationExtractDir -Force
 }
 $SmokeEvaluator = Join-Path $EvaluationExtractDir $evaluatorBinaryName
+$SmokeEvaluationProduct = Join-Path $EvaluationExtractDir $binaryName
 $SmokeEvaluationSuite = Join-Path (Join-Path (Join-Path $EvaluationExtractDir "evaluation") "suites") "pr-quick-v1.jsonl"
 $SmokeBuildMetadata = Join-Path $EvaluationExtractDir "BUILD-METADATA.json"
-if (-not (Test-Path $SmokeEvaluator) -or -not (Test-Path $SmokeEvaluationSuite) -or -not (Test-Path $SmokeBuildMetadata)) {
-    throw "$evaluationPackageName 缺少评估工具、quick suite 或构建元数据"
+$SmokeCodexHook = Join-Path (Join-Path (Join-Path $EvaluationExtractDir ".codex") "hooks") "agent-guard-pretool.py"
+$SmokeClaudeHook = Join-Path (Join-Path (Join-Path $EvaluationExtractDir ".claude") "hooks") "agent-guard-pretool.py"
+if (-not (Test-Path $SmokeEvaluator) -or
+    -not (Test-Path $SmokeEvaluationProduct) -or
+    -not (Test-Path $SmokeEvaluationSuite) -or
+    -not (Test-Path $SmokeBuildMetadata) -or
+    -not (Test-Path $SmokeCodexHook) -or
+    -not (Test-Path $SmokeClaudeHook)) {
+    throw "$evaluationPackageName 缺少评估工具、产品二进制、Hook、quick suite 或构建元数据"
 }
 $verifiedMetadata = Get-Content -LiteralPath $SmokeBuildMetadata -Raw | ConvertFrom-Json
 if ($verifiedMetadata.schemaVersion -ne "v1" -or
@@ -464,9 +543,15 @@ if ($verifiedMetadata.schemaVersion -ne "v1" -or
     throw "$evaluationPackageName 构建元数据不符合当前源码和平台"
 }
 if ($Platform -eq "linux-amd64") {
-    & chmod +x $SmokeEvaluator
+    & chmod +x $SmokeEvaluator $SmokeEvaluationProduct
 }
 Invoke-EvaluatorSmoke -EvaluatorPath $SmokeEvaluator -SuitePath $SmokeEvaluationSuite -TargetPlatform $Platform
+Invoke-EvaluatorRunSmoke `
+    -EvaluatorPath $SmokeEvaluator `
+    -ProductPath $SmokeEvaluationProduct `
+    -SuitePath $SmokeEvaluationSuite `
+    -TargetPlatform $Platform `
+    -WorkingRoot (Join-Path $SmokeDir ("evaluation-run-" + $Platform))
 
 Write-Host "==> 发布产物已生成" -ForegroundColor Green
 Write-Host "    $packagePath"
