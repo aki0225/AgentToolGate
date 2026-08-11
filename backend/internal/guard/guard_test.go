@@ -598,7 +598,7 @@ func TestEvaluatePathNormalization(t *testing.T) {
 		ActionType:  "read",
 		Target:      `.\\docs\\..\\docs\\README.md`,
 		CWD:         `X:\demo\AgentToolGate`,
-		ProjectRoot: `x:\demo\agenttoolgate`,
+		ProjectRoot: `X:\demo\AgentToolGate`,
 	})
 	if got.Decision != "allow" || !got.Silent {
 		t.Fatalf("expected normalized workspace allow, got %+v", got)
