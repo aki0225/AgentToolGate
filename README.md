@@ -8,12 +8,14 @@
   <a href="https://github.com/aki0225/AgentToolGate/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/aki0225/AgentToolGate/ci.yml?branch=main&style=for-the-badge&label=CI" alt="CI"></a>
   <img src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.26+">
   <img src="https://img.shields.io/badge/Platforms-Windows%20%7C%20Linux-8B5CF6?style=for-the-badge" alt="Windows / Linux">
+  <a href="https://aki0225.github.io/AgentToolGate/"><img src="https://img.shields.io/badge/在线展示-v0.3.0-5EEAD4?style=for-the-badge" alt="AgentToolGate 在线展示"></a>
   <a href="https://github.com/aki0225/AgentToolGate/releases"><img src="https://img.shields.io/badge/Release-amd64%20%2B%20SHA256-22C55E?style=for-the-badge" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-F8FAFC?style=for-the-badge" alt="MIT License"></a>
 </p>
 
 **[架构总览](#架构总览)** ·
 **[快速开始](#快速开始)** ·
+**[在线展示](https://aki0225.github.io/AgentToolGate/)** ·
 **[实测评估](#实测评估)** ·
 **[防护范围](#防护范围)** ·
 **[非目标](#非目标)** ·
@@ -122,6 +124,16 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 数字由 [公开评估快照](evaluation/published/agent-safety-proof.json) 的逐 case 状态计算；同一文件记录 Artifact 名称、
 ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex / Claude Code 客户端验收。
 <!-- agent-safety-proof:end -->
+
+### 证据分层
+
+- **正式发布验收**：[v0.3.0 发布验收](docs/v0.3.0-release-acceptance.md)记录正式附件
+  SHA256、Windows / Linux 启动 smoke、MCP 调用和脱离源码仓库的评估附件复跑结果。
+- **真实客户端验收**：[Codex CLI 与 Claude Code 验收](evaluation/client-acceptance/README.md)
+  保存 MCP Audit、Hook 生命周期、文件系统后置条件和同步脱敏录屏。该证据来自历史源提交
+  `0ee86ef`，用于证明真实客户端集成路径，不冒充 `v0.3.0` Release 二进制重跑。
+- **可重复评估**：`v0.3.0` Release 同时提供 Windows / Linux 评估附件，可在
+  disposable 目录复跑 quick 或完整 suite。
 
 ## 防护范围
 

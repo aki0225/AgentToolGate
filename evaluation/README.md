@@ -9,6 +9,18 @@
 
 ## 当前阶段
 
+评估计划已完成并随 `v0.3.0` 冻结。当前公开快照来自 GitHub Actions run
+[`31465745397`](https://github.com/aki0225/AgentToolGate/actions/runs/31465745397)：
+
+- Quick Linux：20 passed / 0 failed / 0 skipped。
+- Windows full：30 passed / 0 failed / 0 skipped。
+- Linux full：26 passed / 0 failed / 4 skipped。
+- 审批前上游请求、Secret 泄漏和 Ticket 重放成功数均为 0。
+
+正式 Release 下载、双平台 smoke 和独立评估附件复跑结果见
+[`docs/v0.3.0-release-acceptance.md`](../docs/v0.3.0-release-acceptance.md)。以下阶段记录
+保留实施历史，不应被理解为比该稳定快照更新的“当前结果”。
+
 阶段 1 已完成：
 
 - Case / Result v1 数据契约。
@@ -121,7 +133,7 @@
 evidence 引用、stdout 精确字节、sandbox 清理、进程残留和敏感信息核对。这是本地
 Stage 3A/3B 验收，不替代 Linux、CI Artifact 或正式发布结论。
 
-2026-08-08 的 GitHub Actions 手动 run
+历史阶段 4A 在 2026-08-08 使用 GitHub Actions 手动 run
 [`31248402718`](https://github.com/aki0225/AgentToolGate/actions/runs/31248402718)
 已验证 Stage 4A：
 

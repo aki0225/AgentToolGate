@@ -1,9 +1,14 @@
 # AgentToolGate GitHub Pages 产品展示站实施计划
 
-> 状态：本地实现完成，待启用 GitHub Pages 与远端发布验收
+> 状态：已完成，正式站已发布并纳入 `v0.3.0` 证据展示
 > 计划版本：v0.1
 > 编写日期：2026-08-04
-> 审阅结论：首版本地实现与验证已完成；代码可推送保存，但 Pages workflow 暂仅支持手动触发，不在本轮自动启用或部署公开站点。
+> 完成日期：2026-08-11
+>
+> 当前公开站点：<https://aki0225.github.io/AgentToolGate/>
+>
+> 本文保留设计与实施决策；当前评估数字由公开快照生成，稳定发布结论见
+> [`docs/v0.3.0-release-acceptance.md`](v0.3.0-release-acceptance.md)。
 
 ## 1. 背景
 
@@ -733,17 +738,17 @@ scripts/build-release.ps1
 
 首版完成必须同时满足：
 
-- [ ] GitHub Pages 展示站可匿名访问。
-- [ ] 10 秒内能理解产品定位。
-- [ ] 三个静态场景可运行、重置且无真实副作用。
-- [ ] 展示真实的 Policy、Approval、Guard、Secret 和 Audit 语义。
-- [ ] 页面明确声明 guardrail 与 OS sandbox 的边界。
-- [ ] Windows / Linux Release 和源码入口可用。
-- [ ] 桌面和移动端布局通过检查。
-- [ ] 类型检查、单元测试、生产构建和 CI 全绿。
-- [ ] Pages 资源无 404，浏览器控制台无 error。
-- [ ] 截图和 fixtures 不含敏感信息。
-- [ ] README 和展示站口径一致。
+- [x] GitHub Pages 展示站可匿名访问。
+- [x] 10 秒内能理解产品定位。
+- [x] 三个静态场景可运行、重置且无真实副作用。
+- [x] 展示真实的 Policy、Approval、Guard、Secret 和 Audit 语义。
+- [x] 页面明确声明 guardrail 与 OS sandbox 的边界。
+- [x] Windows / Linux Release 和源码入口可用。
+- [x] 桌面和移动端布局通过检查。
+- [x] 类型检查、单元测试、生产构建和 CI 全绿。
+- [x] Pages 资源无 404，浏览器控制台无 error。
+- [x] 截图和 fixtures 不含敏感信息。
+- [x] README 和展示站口径一致。
 
 ## 18. 审阅决策点
 
