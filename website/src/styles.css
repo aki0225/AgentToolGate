@@ -300,11 +300,32 @@ pre {
 }
 
 .hero-brand {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
   margin: 0 0 20px;
   color: var(--primary);
   font-size: var(--text-xl);
   font-weight: 800;
   letter-spacing: -0.02em;
+}
+
+.hero-brand a {
+  padding: 5px 9px;
+  border: 1px solid rgba(94, 234, 212, 0.28);
+  border-radius: 999px;
+  background: rgba(94, 234, 212, 0.07);
+  color: #bafbf1;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.hero-brand a:hover {
+  border-color: rgba(94, 234, 212, 0.5);
+  background: rgba(94, 234, 212, 0.11);
 }
 
 .hero h1 {
@@ -786,6 +807,82 @@ pre {
   margin-inline: 9px;
   color: #60758e;
   font-style: normal;
+}
+
+.evidence-ladder {
+  margin-top: 34px;
+}
+
+.evidence-ladder-heading {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 24px;
+  align-items: baseline;
+  margin-bottom: 15px;
+}
+
+.evidence-ladder-heading span {
+  color: var(--primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+}
+
+.evidence-ladder-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.65;
+}
+
+.evidence-ladder-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: rgba(7, 17, 31, 0.6);
+}
+
+.evidence-ladder-grid a {
+  display: grid;
+  min-width: 0;
+  gap: 9px;
+  padding: 22px;
+  border-right: 1px solid var(--border);
+  transition:
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.evidence-ladder-grid a:last-child {
+  border-right: 0;
+}
+
+.evidence-ladder-grid a:hover {
+  background: rgba(94, 234, 212, 0.04);
+}
+
+.evidence-ladder-grid span,
+.evidence-ladder-grid small {
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.evidence-ladder-grid strong {
+  color: var(--foreground);
+  font-size: var(--text-base);
+}
+
+.evidence-ladder-grid p {
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: var(--text-sm);
+  line-height: 1.65;
+}
+
+.evidence-ladder-grid a:hover strong {
+  color: var(--primary);
 }
 
 .evaluation-meta {
@@ -1820,6 +1917,24 @@ pre {
 
   .evaluation-invariants i {
     margin-inline: 5px;
+  }
+
+  .evidence-ladder-heading,
+  .evidence-ladder-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .evidence-ladder-heading {
+    gap: 6px;
+  }
+
+  .evidence-ladder-grid a {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .evidence-ladder-grid a:last-child {
+    border-bottom: 0;
   }
 
   .scenario-tabs {
