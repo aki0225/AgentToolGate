@@ -1000,6 +1000,29 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             nested.mkdir(parents=True)
             self.assertEqual(HOOK.find_repo_root(str(nested)), str(repo))
 
+    def test_outer_controlled_project_is_not_shadowed_by_inner_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            self.set_hook_control(repo, "live")
+            inner = repo / "packages" / "demo"
+            (inner / ".agenttoolgate").mkdir(parents=True)
+            nested = inner / "src"
+            nested.mkdir()
+
+            self.assertEqual(HOOK.find_repo_root(str(nested)), str(repo))
+
+    def test_nearest_explicit_control_defines_nested_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            self.set_hook_control(repo, "live")
+            inner = repo / "packages" / "demo"
+            (inner / ".agenttoolgate").mkdir(parents=True)
+            self.set_hook_control(inner, "off")
+
+            self.assertEqual(HOOK.find_repo_root(str(inner / "src")), str(inner))
+
     def test_live_ordinary_repo_read_delegates_to_go_cli(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)

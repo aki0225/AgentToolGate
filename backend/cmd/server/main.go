@@ -359,15 +359,30 @@ func findCLIRepoRoot(start string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	nearestMarker := ""
 	for {
+		hasMarker := false
 		if _, err := os.Stat(filepath.Join(current, ".git")); err == nil {
-			return current, nil
+			hasMarker = true
 		}
 		if _, err := os.Stat(filepath.Join(current, ".agenttoolgate")); err == nil {
-			return current, nil
+			hasMarker = true
+		}
+		if hasMarker {
+			if nearestMarker == "" {
+				nearestMarker = current
+			}
+			// 已发布 control 的项目比单纯的嵌套 marker 更可信，避免子目录
+			// 通过空 .git 或 .agenttoolgate 把外层 live 治理静默降为 off。
+			if _, err := os.Stat(hookControlPath(current)); err == nil || !os.IsNotExist(err) {
+				return current, nil
+			}
 		}
 		parent := filepath.Dir(current)
 		if parent == current {
+			if nearestMarker != "" {
+				return nearestMarker, nil
+			}
 			return "", fmt.Errorf("未找到仓库根目录：请在 AgentToolGate 仓库内运行 hook control")
 		}
 		current = parent

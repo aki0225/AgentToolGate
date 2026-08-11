@@ -68,11 +68,24 @@ if sys.platform.startswith("win"):
 
 def find_repo_root(start_path: str) -> str | None:
     current = Path(get_text(start_path) or os.getcwd()).resolve()
+    nearest_marker: str | None = None
     while True:
-        if (current / ".git").exists() or (current / ".agenttoolgate").exists():
-            return str(current)
+        has_marker = (current / ".git").exists() or (current / ".agenttoolgate").exists()
+        if has_marker:
+            if nearest_marker is None:
+                nearest_marker = str(current)
+            control_path = current / ".tmp" / "agenttoolgate" / "hook-control.json"
+            try:
+                control_path.stat()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                # 无法确认 control 是否存在时保守绑定当前项目，后续读取会 fail closed。
+                return str(current)
+            else:
+                return str(current)
         if current == current.parent:
-            return None
+            return nearest_marker
         current = current.parent
 
 

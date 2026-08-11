@@ -815,6 +815,57 @@ func TestFindCLIRepoRootSupportsInitializedNonGitProject(t *testing.T) {
 	}
 }
 
+func TestFindCLIRepoRootPrefersOuterControlledProjectOverInnerMarker(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create outer git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write outer hook control: %v", err)
+	}
+	inner := filepath.Join(repo, "packages", "demo")
+	if err := os.MkdirAll(filepath.Join(inner, ".agenttoolgate"), 0o700); err != nil {
+		t.Fatalf("create inner project marker: %v", err)
+	}
+	nested := filepath.Join(inner, "src")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatalf("create nested directory: %v", err)
+	}
+
+	root, err := findCLIRepoRoot(nested)
+	if err != nil {
+		t.Fatalf("find controlled project root: %v", err)
+	}
+	if root != repo {
+		t.Fatalf("empty inner marker must not shadow outer controlled project, got %q want %q", root, repo)
+	}
+}
+
+func TestFindCLIRepoRootPrefersNearestExplicitControl(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create outer git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write outer hook control: %v", err)
+	}
+	inner := filepath.Join(repo, "packages", "demo")
+	if err := os.MkdirAll(filepath.Join(inner, ".agenttoolgate"), 0o700); err != nil {
+		t.Fatalf("create inner project marker: %v", err)
+	}
+	if err := writeProjectHookControl(inner, projectHookModeOff); err != nil {
+		t.Fatalf("write inner hook control: %v", err)
+	}
+
+	root, err := findCLIRepoRoot(filepath.Join(inner, "src"))
+	if err != nil {
+		t.Fatalf("find nested controlled project root: %v", err)
+	}
+	if root != inner {
+		t.Fatalf("nearest explicit control must define the nested project, got %q want %q", root, inner)
+	}
+}
+
 func TestHookFastPathReadRejectsWorkspaceEscape(t *testing.T) {
 	repo := t.TempDir()
 	outside := filepath.Join(filepath.Dir(repo), "outside.txt")
