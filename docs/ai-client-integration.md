@@ -2,9 +2,23 @@
 
 > 目标：让本地 AI 编程客户端先接入 AgentToolGate，再通过网关调用数据库、GitHub、HTTP 和 MCP 工具。AgentToolGate 是工具治理网关 / 防火墙，不是操作系统级强制沙箱。
 
-## 1. 先启动 AgentToolGate
+> [!IMPORTANT]
+> 本文所述新版 `init codex`、配套 `doctor` 检查、项目 TOML 和自包含 Hook 要求 AgentToolGate `v0.3.1+`。当前 `v0.3.0` 不包含这些命令语义；请从当前 `main` 构建，或继续按 `v0.3.0` 随附的旧接入说明操作。
 
-从 GitHub Release 下载后：
+## 1. 选择启动方式
+
+要使用 Codex 项目 Hook，必须先初始化，再只用 `up` 启动：
+
+```powershell
+agenttoolgate.exe init codex
+agenttoolgate.exe up --open
+```
+
+`init codex` 和 `init all` 要求目标目录本身就是 Git 仓库根目录，不能指向普通目录或外层仓库中的任意子目录。
+
+如果普通 serve 已通过 `agenttoolgate.exe --open` 等方式运行，先在原终端按 `Ctrl+C` 停止，再运行 `up`；否则两个进程会争用默认 `8080` 端口。其他客户端的初始化选项见第 3 节。
+
+仅使用 MCP、无需项目 Hook 时，才直接启动普通 serve。从 GitHub Release 下载后：
 
 ```powershell
 .\agenttoolgate.exe --open
@@ -68,16 +82,18 @@ X-Workspace-Org-Id: local-org
 在目标项目根目录运行：
 
 ```powershell
-# 只用 Codex
+# 从下面三种 init 中任选一种
 agenttoolgate.exe init codex
-
-# 只用 Claude Code
+# 或
 agenttoolgate.exe init claude
-
-# 同时使用 Codex 和 Claude Code
+# 或
 agenttoolgate.exe init all
-agenttoolgate.exe up
+
+# init 完成后只用 up 启动
+agenttoolgate.exe up --open
 ```
+
+`up` 运行后，可在另一个终端执行 `agenttoolgate.exe doctor --dir <project>` 核对 adapter、Core、mode 和实际 endpoint。
 
 Codex 初始化会生成实际项目 Hook 和用户级配置片段：
 
@@ -182,7 +198,7 @@ codex mcp add agenttoolgate -- npx -y mcp-remote http://127.0.0.1:8090/mcp/sse -
 2. 在要保护的项目根目录运行 `agenttoolgate.exe init codex`。已有 `.codex/config.toml` 或 Hook 文件不会被覆盖；若显示“已跳过”，需要人工合并或核对自定义内容。若已有 `.codex/hooks.json`，普通初始化会在写入任何文件前停止；请先人工选择继续使用 JSON，或备份并移除它后迁移到 ATG 默认 TOML，不要让两种来源同层并存。继续使用 JSON 时，运行 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 只安装或刷新 adapter/Core。
 3. 打开 `.agenttoolgate/clients/codex.config.snippet.toml`，把 `<repo>` 替换为 Codex 实际使用的规范化绝对路径，再按键合并到用户级 `config.toml`。Windows Codex `0.147.0` 的实际形式类似 `[projects.'e:\workspace\demo']`；TOML 单引号会原样保留反斜杠。保留已有设置，只新增或更新对应键，不要重复定义 TOML 表。默认位置是 `~/.codex/config.toml`，使用 ccswitch 时合并到它实际管理的用户配置。
 4. 如果项目 `.codex/config.toml` 已存在，ATG 会保留原文件，并生成 `.agenttoolgate/clients/codex.project-hook.snippet.toml`。按键合并该片段后再次运行 `doctor --dir <project>`；不要为了省事覆盖现有项目配置。
-5. 运行 `agenttoolgate.exe up --open`，再从该项目或任意仓库子目录启动 Codex。`up` 会在服务成功监听后写入忽略提交的 repo-local control；当 `doctor` 确认 adapter 为 `current` 时，还会记录本次实际回环地址和当前 ATG 二进制位置，因此自定义端口不会回落到 8080，二进制也不要求预先加入 `PATH`。为兼容旧版严格解析的 adapter，`modified` adapter 只接收旧版 mode 字段。先审查自定义内容；确认使用当前发行版覆盖时运行 `agenttoolgate.exe init codex --refresh-hooks --dir <project>`，它只刷新 adapter/Core，不覆盖 `.codex/config.toml` 或用户级配置。刷新后必须重新运行 `up`，才能发布非默认 endpoint 和当前 executable。endpoint 仅接受回环 HTTP，executable 必须是现存绝对普通文件。
+5. 运行 `agenttoolgate.exe up --open`，再从该项目或任意仓库子目录启动 Codex。`up` 会在服务成功监听后写入忽略提交的 repo-local control；当 `doctor` 确认 adapter 为 `current` 时，还会记录本次实际回环地址和当前 ATG 二进制位置，因此自定义端口不会回落到 8080，二进制也不要求预先加入 `PATH`。为兼容旧版严格解析的 adapter，`modified` adapter 只接收旧版 mode 字段。先审查自定义内容；确认使用当前发行版覆盖时运行 `agenttoolgate.exe init codex --refresh-hooks --dir <project>`，它只刷新 adapter/Core，不覆盖 `.codex/config.toml` 或用户级配置。旧运行文件会保留到 Git 忽略的 `.tmp/agenttoolgate/recovery/`，命令会打印恢复路径；确认新 Hook 稳定后再手工清理。刷新后必须重新运行 `up`，才能发布非默认 endpoint 和当前 executable。endpoint 仅接受回环 HTTP，executable 必须是现存绝对普通文件。
 6. 在 Codex 中打开 `/hooks`，核对 Hook 来源、命令和当前 Hash，然后由用户显式信任。不要从文档复制固定 `trusted_hash`。`/hooks` 的 trust 绑定当前 Hook 定义及其 Hash；当它显示 changed、modified 或 untrusted 时重新审查。adapter/Core 内容是否与发行版一致，由 `doctor` 的 `current/modified` 独立检查。
 7. 运行 `agenttoolgate.exe doctor --dir <project>`。项目配置会报告 `missing/unreadable/configured/custom`，adapter/Core 会报告 `missing/unreadable/current/modified`。这些状态不表示 Codex 运行时已信任、已启用或处于 `live`；最终以 `/hooks` 与 `hook control status` 为准。
 

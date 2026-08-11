@@ -518,6 +518,31 @@ class CodexHookBridgeTest(unittest.TestCase):
                 self.assertEqual(decision["permissionDecision"], "deny")
                 self.assertIn("hook control invalid", decision["permissionDecisionReason"])
 
+    def test_runtime_control_supplies_endpoint_and_executable_to_go_bridge(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            endpoint = "http://127.0.0.1:18091"
+            self.set_hook_control(
+                repo,
+                raw=json.dumps(
+                    {
+                        "mode": "live",
+                        "endpoint": endpoint,
+                        "executable": sys.executable,
+                    }
+                ),
+            )
+            previous_url = os.environ.pop("AGENTTOOLGATE_URL", None)
+            try:
+                env = HOOK.agenttoolgate_subprocess_env({"cwd": str(repo)})
+                executable = HOOK.agenttoolgate_executable(str(repo))
+            finally:
+                if previous_url is not None:
+                    os.environ["AGENTTOOLGATE_URL"] = previous_url
+            self.assertEqual(env["AGENTTOOLGATE_URL"], endpoint)
+            self.assertEqual(Path(executable).resolve(), Path(sys.executable).resolve())
+
     def test_dry_run_records_preview_without_blocking_or_calling_backend(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
@@ -871,16 +896,94 @@ class CodexHookBridgeTest(unittest.TestCase):
         raw = self.invoke_raw("{bad json", go_cli=lambda _payload: self.fail("非法 JSON 不应调用 Go CLI"))
         self.assertEqual(raw, "")
 
-    def test_go_cli_invalid_json_output_is_ignored(self) -> None:
+    def test_go_cli_output_contract_is_enforced(self) -> None:
         original_run = HOOK.subprocess.run
 
         class Completed:
             returncode = 0
-            stdout = "not-json"
+
+            def __init__(self, stdout: str) -> None:
+                self.stdout = stdout
+
+        valid_deny = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "AgentToolGate 已阻止该操作",
+            }
+        }
+        cases = (
+            ("非法 JSON", "not-json", None),
+            ("额外顶层字段", json.dumps({**valid_deny, "extra": True}, ensure_ascii=False), None),
+            (
+                "updatedInput",
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            **valid_deny["hookSpecificOutput"],
+                            "updatedInput": {"path": ".env"},
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                None,
+            ),
+            (
+                "重复 JSON key",
+                '{"hookSpecificOutput":{"hookEventName":"PreToolUse",'
+                '"permissionDecision":"deny","permissionDecision":"allow",'
+                '"permissionDecisionReason":"blocked"}}',
+                None,
+            ),
+            (
+                "deny reason 类型非法",
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": 1,
+                        }
+                    }
+                ),
+                None,
+            ),
+            (
+                "deny reason 为空",
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": "   ",
+                        }
+                    }
+                ),
+                None,
+            ),
+            (
+                "deny reason 缺失",
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                        }
+                    }
+                ),
+                None,
+            ),
+            ("合法 deny", json.dumps(valid_deny, ensure_ascii=False), valid_deny),
+        )
 
         try:
-            HOOK.subprocess.run = lambda *_args, **_kwargs: Completed()
-            self.assertIsNone(HOOK.call_agenttoolgate_guard_hook_codex({"tool_name": "shell"}))
+            for name, stdout, expected in cases:
+                with self.subTest(name=name):
+                    HOOK.subprocess.run = lambda *_args, stdout=stdout, **_kwargs: Completed(stdout)
+                    self.assertEqual(
+                        HOOK.call_agenttoolgate_guard_hook_codex({"tool_name": "shell"}),
+                        expected,
+                    )
         finally:
             HOOK.subprocess.run = original_run
 

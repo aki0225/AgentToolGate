@@ -2,6 +2,9 @@
 
 > 目标：让个人在 Windows / Linux amd64 上下载或构建一个二进制后，就能清楚知道怎么启动、数据在哪里、如何自检，以及下一步如何接入 Codex / Claude Code。
 
+> [!IMPORTANT]
+> 本文所述新版 `init codex`、配套 `doctor` 检查、项目 TOML 和自包含 Hook 要求 AgentToolGate `v0.3.1+`。当前 `v0.3.0` 不包含这些命令语义；请从当前 `main` 构建，或继续按 `v0.3.0` 随附的旧接入说明操作。
+
 ## 适合谁
 
 - 想在本机长期保存 AgentToolGate 状态，但不想每次都起 PostgreSQL。
@@ -24,7 +27,7 @@ Expand-Archive .\agenttoolgate-windows-amd64.zip -DestinationPath .\agenttoolgat
 cd .\agenttoolgate-windows-amd64
 ```
 
-3. 运行：
+3. 若只使用 MCP、无需项目 Hook，运行普通 serve：
 
 ```powershell
 .\agenttoolgate.exe doctor --dir <project>
@@ -42,7 +45,7 @@ tar -xzf agenttoolgate-linux-amd64.tar.gz
 chmod +x ./agenttoolgate
 ```
 
-3. 运行：
+3. 若只使用 MCP、无需项目 Hook，运行普通 serve：
 
 ```bash
 ./agenttoolgate doctor
@@ -55,29 +58,33 @@ chmod +x ./agenttoolgate
 
 下载或构建好二进制后，推荐在你想保护的项目根目录执行一次：
 
+如果普通 serve 已通过 `agenttoolgate.exe --open`、`./agenttoolgate --open` 等方式运行，先在原终端按 `Ctrl+C` 停止；项目 Hook 流程必须先 `init`，再只用 `up` 启动，避免两个进程争用默认 `8080` 端口。
+
+`init codex` 和 `init all` 要求目标目录本身就是 Git 仓库根目录，不能指向普通目录或外层仓库中的任意子目录。
+
 ```powershell
-# 只用 Codex
+# 从下面三种 init 中任选一种
 agenttoolgate.exe init codex
-
-# 只用 Claude Code
+# 或
 agenttoolgate.exe init claude
-
-# 同时使用 Codex 和 Claude Code
+# 或
 agenttoolgate.exe init all
+
+# init 完成后只用 up 启动
 agenttoolgate.exe up --open
 ```
 
 Linux 下命令名是不带 `.exe` 的 `agenttoolgate`：
 
 ```bash
-# 只用 Codex
+# 从下面三种 init 中任选一种
 ./agenttoolgate init codex
-
-# 只用 Claude Code
+# 或
 ./agenttoolgate init claude
-
-# 同时使用 Codex 和 Claude Code
+# 或
 ./agenttoolgate init all
+
+# init 完成后只用 up 启动
 ./agenttoolgate up --open
 ```
 
@@ -108,7 +115,7 @@ agenttoolgate.exe up --dir <project> --open
 agenttoolgate.exe up --dir <project> --port 8090
 ```
 
-`init` 默认不覆盖已有文件，重复执行会跳过用户已修改的文件。项目已有 `.codex/hooks.json` 时，普通 `init codex` / `init all` 会在写入前停止，避免 JSON 与 TOML Hook 同层重复执行；请先人工保留一种来源。继续使用 JSON，或升级后 `doctor` 显示 adapter/Core 为 `modified` 时，先审查差异，再用 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 只安装或刷新 adapter/Core。刷新后重新运行 `up`，才能把非默认 endpoint 和当前 executable 写回 control。`up` 会读取 `.agenttoolgate/config.json`，服务启动成功后写入 repo-local `.tmp/agenttoolgate/hook-control.json`，默认 hook mode 是 `dry-run`。这一步不会修改用户全局 Codex / Claude Code 配置、系统策略或注册表。
+`init` 默认不覆盖已有文件，重复执行会跳过用户已修改的文件。项目已有 `.codex/hooks.json` 时，普通 `init codex` / `init all` 会在写入前停止，避免 JSON 与 TOML Hook 同层重复执行；请先人工保留一种来源。继续使用 JSON，或升级后 `doctor` 显示 adapter/Core 为 `modified` 时，先审查差异，再用 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 只安装或刷新 adapter/Core。旧运行文件会保留到 Git 忽略的 `.tmp/agenttoolgate/recovery/` 并打印路径；确认新 Hook 稳定后再手工清理。刷新后重新运行 `up`，才能把非默认 endpoint 和当前 executable 写回 control。`up` 会读取 `.agenttoolgate/config.json`，服务启动成功后写入 repo-local `.tmp/agenttoolgate/hook-control.json`，默认 hook mode 是 `dry-run`。这一步不会修改用户全局 Codex / Claude Code 配置、系统策略或注册表。
 
 `hook control` 当前不接受 `--dir`；从任意目录执行 `up --dir <project>` 后，切换 `off` / `dry-run` / `live` 前仍需进入目标项目或其子目录，避免作用到另一个仓库。
 
@@ -363,7 +370,7 @@ DATABASE_URL=postgres://agenttoolgate:agenttoolgate@127.0.0.1:5432/agenttoolgate
 .\agenttoolgate.exe hook control live --reason "enable guarded session"
 ```
 
-控制文件写在 `.tmp/agenttoolgate/hook-control.json`。项目级 `up` 成功且 `doctor` 确认 Codex adapter 为 `current` 时，还会记录实际回环 endpoint 和当前 ATG executable，使自定义端口与未加入 `PATH` 的本地二进制都能被 Hook 正确使用；endpoint 只接受回环 HTTP，executable 必须是现存绝对普通文件。为兼容旧版严格解析的 adapter，`modified` adapter 只写旧版 mode 字段，更新前不会收到扩展 runtime 字段；确认需要覆盖时使用 `init codex --refresh-hooks`，随后重新运行 `up`。该文件位于忽略提交的 `.tmp`，公开 evidence 仍应脱敏本机路径。文件缺失时按 `off` 处理；文件已存在但损坏、不可读、字段非法或无法解析时 fail closed：Hook 返回 `deny`，`status` 报错，可显式执行 `hook control off` 重写后恢复。`dry-run` 只写 `.tmp/agenttoolgate/hook-dry-run.jsonl` 的脱敏预览，不阻断；`live` 才执行真实拦截。`TRELLIS_HOOKS=0` 和 `TRELLIS_DISABLE_HOOKS=1` 仍是最高优先级硬关闭。
+控制文件写在 `.tmp/agenttoolgate/hook-control.json`。项目级 `up` 成功且 `doctor` 确认 Codex adapter 为 `current` 时，还会记录实际回环 endpoint 和当前 ATG executable，使自定义端口与未加入 `PATH` 的本地二进制都能被 Hook 正确使用；endpoint 只接受回环 HTTP，executable 必须是现存绝对普通文件。为兼容旧版严格解析的 adapter，`modified` adapter 只写旧版 mode 字段，更新前不会收到扩展 runtime 字段；确认需要覆盖时使用 `init codex --refresh-hooks`，随后重新运行 `up`。该文件位于忽略提交的 `.tmp`，公开 evidence 仍应脱敏本机路径。文件缺失时按 `off` 处理；文件已存在但损坏、不可读、字段非法或无法解析时 fail closed：Hook 返回 `deny`，`status` 报错，可显式执行 `hook control off` 重写后恢复。`off` 会移除 control 中不再需要的 endpoint 和 executable，避免旧临时二进制路径反过来造成无效控制文件。`dry-run` 只写 `.tmp/agenttoolgate/hook-dry-run.jsonl` 的脱敏预览，不阻断；`live` 才执行真实拦截。`TRELLIS_HOOKS=0` 和 `TRELLIS_DISABLE_HOOKS=1` 仍是最高优先级硬关闭。
 
 `live` 请求后端的默认超时是 1000ms，Python Bridge 等待 Go CLI 的默认超时是 1500ms；如本机性能不同，可分别用 `AGENTTOOLGATE_HOOK_TIMEOUT_MS`（50–2000ms）和 `AGENTTOOLGATE_CLI_TIMEOUT_MS`（100–5000ms）覆盖。该设置不影响 `off` / `dry-run`。
 

@@ -123,10 +123,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if opts.Command == "up" {
 		return runUpCommand(opts, stdout, stderr)
 	}
-	if err := applyListenOptions(&cfg, opts); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 2
-	}
 	if opts.Command == "doctor" {
 		root, err := resolveProjectRoot(opts.Dir)
 		if err != nil {
@@ -151,6 +147,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, formatDiagnostics(cfg, hasEmbeddedFrontend()))
 		fmt.Fprint(stdout, "\n"+formatProjectCodexDiagnostics(root))
 		return 0
+	}
+	if err := applyListenOptions(&cfg, opts); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
 	}
 	return startServer(cfg, opts.OpenBrowser, stdout, stderr)
 }
@@ -330,7 +330,7 @@ func runHookControlCLI(args []string, stdout, stderr io.Writer) int {
 			}
 		}
 		previous, _ := readHookControlDocument(repoRoot)
-		runtimeMetadataSupported := codexProjectRuntimeMetadataSupported(repoRoot)
+		runtimeMetadataSupported := mode != projectHookModeOff && codexProjectRuntimeMetadataSupported(repoRoot)
 		executable := ""
 		if current, executableErr := os.Executable(); runtimeMetadataSupported && executableErr == nil {
 			executable, executableErr = normalizeHookControlExecutable(current)

@@ -128,6 +128,34 @@ func TestRunDoctorUsesProjectPort(t *testing.T) {
 	}
 }
 
+func TestRunDoctorAppliesProjectPortBeforeValidatingEnvironment(t *testing.T) {
+	project := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(projectConfigPath(project)), 0o700); err != nil {
+		t.Fatalf("create project config dir: %v", err)
+	}
+	config := `{
+  "host": "127.0.0.1",
+  "port": 18093,
+  "workspace": {"name":"Demo","slug":"demo","orgId":"demo-org"},
+  "hookMode": "off",
+  "openBrowser": false
+}
+`
+	if err := os.WriteFile(projectConfigPath(project), []byte(config), 0o600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+	t.Setenv("PORT", "invalid")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"doctor", "--dir", project}, &stdout, &stderr); code != 0 {
+		t.Fatalf("doctor returned %d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "http://127.0.0.1:18093") {
+		t.Fatalf("doctor did not replace invalid environment port with project config:\n%s", stdout.String())
+	}
+}
+
 func TestRunDoctorWithoutProjectConfigKeepsEnvironmentPort(t *testing.T) {
 	project := t.TempDir()
 	t.Setenv("PORT", "18092")
@@ -322,6 +350,9 @@ func TestRunHookControlOffRecoversInvalidControl(t *testing.T) {
 	if doc.Mode != projectHookModeOff || doc.Reason != "recover development" {
 		t.Fatalf("unexpected recovered control: %+v", doc)
 	}
+	if doc.Endpoint != "" || doc.Executable != "" {
+		t.Fatalf("off control must not retain runtime metadata: %+v", doc)
+	}
 }
 
 func TestRunHookControlWritesRepoLocalControlFile(t *testing.T) {
@@ -358,8 +389,14 @@ func TestRunHookControlWritesRepoLocalControlFile(t *testing.T) {
 		if err := json.Unmarshal(raw, &doc); err != nil {
 			t.Fatalf("decode hook control file: %v content=%s", err, string(raw))
 		}
-		if doc.Mode != mode || doc.Reason != "test session" || strings.TrimSpace(doc.UpdatedAt) == "" || doc.Executable == "" {
+		if doc.Mode != mode || doc.Reason != "test session" || strings.TrimSpace(doc.UpdatedAt) == "" {
 			t.Fatalf("unexpected hook control doc: %+v", doc)
+		}
+		if mode == projectHookModeOff && (doc.Endpoint != "" || doc.Executable != "") {
+			t.Fatalf("off control must not contain runtime metadata: %+v", doc)
+		}
+		if mode != projectHookModeOff && doc.Executable == "" {
+			t.Fatalf("enabled control must contain the current executable: %+v", doc)
 		}
 	}
 }
@@ -1388,7 +1425,24 @@ func TestRunGuardHookCodexPrintsDenyForRootDelete(t *testing.T) {
 }
 
 func TestRunGuardHookCodexAllowBecomesNoop(t *testing.T) {
-	payload := []byte(`{"tool_name":"shell","cwd":"F:\\workspace\\AgentToolGate","project_root":"F:\\workspace\\AgentToolGate","args":{"command":"git status"}}`)
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"tool_name":    "shell",
+		"cwd":          repo,
+		"project_root": repo,
+		"args":         map[string]any{"command": "git status"},
+	})
+	if err != nil {
+		t.Fatalf("encode hook payload: %v", err)
+	}
+	t.Setenv("TRELLIS_HOOKS", "1")
+	t.Setenv("TRELLIS_DISABLE_HOOKS", "0")
 	oldStdin := os.Stdin
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -1757,6 +1811,7 @@ func TestRunGuardHookClaudeDoesNotLeakPayloadSecret(t *testing.T) {
 
 func TestRunInitGeneratesProjectFiles(t *testing.T) {
 	project := t.TempDir()
+	initTestGitRepository(t, project)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -1923,6 +1978,7 @@ func TestProjectHookSnippetsUseCurrentPlatformCommand(t *testing.T) {
 func TestRunInitClientTargetsGenerateOnlyRequestedTemplates(t *testing.T) {
 	t.Run("codex only", func(t *testing.T) {
 		project := t.TempDir()
+		initTestGitRepository(t, project)
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
 		code := run([]string{"init", "codex", "--dir", project}, &stdout, &stderr)
@@ -1978,6 +2034,7 @@ func TestRunInitClientTargetsGenerateOnlyRequestedTemplates(t *testing.T) {
 
 func TestRunInitDoesNotOverwriteExistingFiles(t *testing.T) {
 	project := t.TempDir()
+	initTestGitRepository(t, project)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	if code := run([]string{"init", "--dir", project}, &stdout, &stderr); code != 0 {

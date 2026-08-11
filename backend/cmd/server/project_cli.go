@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,6 +55,7 @@ type projectInitReport struct {
 	Created     []string
 	Skipped     []string
 	Refreshed   []string
+	Backups     []string
 }
 
 func runInitCommand(opts commandOptions, stdout, stderr io.Writer) int {
@@ -71,6 +73,12 @@ func runInitCommand(opts commandOptions, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+	if initTarget == projectInitModeAll || initTarget == projectInitModeCodex {
+		if err := validateCodexProjectGitRoot(root); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+	}
 	report, err := writeProjectInitFilesWithOptions(root, initTarget, opts.RefreshHooks)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -83,6 +91,7 @@ func runInitCommand(opts commandOptions, stdout, stderr io.Writer) int {
 		printInitPathList(stdout, "已生成", report.Created)
 		printInitPathList(stdout, "已跳过", report.Skipped)
 		printInitPathList(stdout, "已刷新", report.Refreshed)
+		printInitPathList(stdout, "恢复备份", report.Backups)
 		fmt.Fprintln(stdout, "项目 TOML、用户级配置和 Hook 信任未修改；请重新运行 up，再用 doctor 和 Codex /hooks 核对。")
 		return 0
 	}
@@ -100,6 +109,7 @@ func runInitCommand(opts commandOptions, stdout, stderr io.Writer) int {
 	printInitPathList(stdout, "已生成", report.Created)
 	printInitPathList(stdout, "已跳过", report.Skipped)
 	printInitPathList(stdout, "已刷新", report.Refreshed)
+	printInitPathList(stdout, "恢复备份", report.Backups)
 	if initTarget == projectInitModeAll || initTarget == projectInitModeCodex {
 		status := codexProjectConfigStatus(projectCodexProjectConfigPath(root))
 		fmt.Fprintln(stdout, "Codex 项目配置状态: "+status)
@@ -117,27 +127,10 @@ func runUpCommand(opts commandOptions, stdout, stderr io.Writer) int {
 		return 2
 	}
 	fmt.Fprintln(stdout, summary)
-	endpoint := ""
-	executable := ""
-	if codexProjectRuntimeMetadataSupported(cfg.ProjectRoot) {
-		executable, err = os.Executable()
-		if err != nil {
-			fmt.Fprintln(stderr, "无法定位当前 AgentToolGate 二进制")
-			return 1
-		}
-		executable, err = normalizeHookControlExecutable(executable)
-		if err != nil {
-			fmt.Fprintln(stderr, "无法验证当前 AgentToolGate 二进制")
-			return 1
-		}
-		endpoint = publicListenURL(cfg)
-	}
-	activation := projectHookControlActivation{
-		root:       cfg.ProjectRoot,
-		path:       hookControlPath,
-		mode:       hookControlMode,
-		endpoint:   endpoint,
-		executable: executable,
+	activation, err := newProjectHookControlActivation(cfg, hookControlPath, hookControlMode)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
 	return startServer(cfg, openBrowser, stdout, stderr,
 		activation.publish,
@@ -196,6 +189,20 @@ func resolveProjectRoot(dir string) (string, error) {
 		return "", fmt.Errorf("解析项目目录失败：%w", err)
 	}
 	return resolved, nil
+}
+
+func validateCodexProjectGitRoot(root string) error {
+	command := exec.Command("git", "-C", root, "rev-parse", "--show-toplevel")
+	output, err := command.Output()
+	if err != nil {
+		return fmt.Errorf("Codex 项目 Hook 需要目标目录本身是 Git 仓库根目录")
+	}
+	gitRoot := strings.TrimSpace(string(output))
+	resolved, err := filepath.EvalSymlinks(gitRoot)
+	if err != nil || !sameHookPath(root, resolved) {
+		return fmt.Errorf("Codex 项目 Hook 必须在目标 Git 仓库根目录初始化")
+	}
+	return nil
 }
 
 func loadProjectRunConfig(root string) (projectRunConfig, bool, string, error) {
@@ -405,6 +412,7 @@ func writeProjectInitFilesWithOptions(root, initTarget string, refreshHooks bool
 		sortPaths(&report.Skipped)
 		sortPaths(&report.CodexFiles)
 		sortPaths(&report.Refreshed)
+		sortPaths(&report.Backups)
 		return report, nil
 	}
 	if initTarget == projectInitModeAll || initTarget == projectInitModeCodex {
@@ -501,6 +509,7 @@ func writeProjectInitFilesWithOptions(root, initTarget string, refreshHooks bool
 	sortPaths(&report.CodexFiles)
 	sortPaths(&report.ClaudeFiles)
 	sortPaths(&report.Refreshed)
+	sortPaths(&report.Backups)
 	return report, nil
 }
 
@@ -634,6 +643,28 @@ type projectHookControlActivation struct {
 	publishedPayload []byte
 	hadPrevious      bool
 	published        bool
+}
+
+func newProjectHookControlActivation(cfg config.Config, path, mode string) (projectHookControlActivation, error) {
+	activation := projectHookControlActivation{
+		root: cfg.ProjectRoot,
+		path: path,
+		mode: mode,
+	}
+	if !codexProjectRuntimeMetadataSupported(cfg.ProjectRoot) {
+		return activation, nil
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return projectHookControlActivation{}, fmt.Errorf("无法定位当前 AgentToolGate 二进制")
+	}
+	executable, err = normalizeHookControlExecutable(executable)
+	if err != nil {
+		return projectHookControlActivation{}, fmt.Errorf("无法验证当前 AgentToolGate 二进制")
+	}
+	activation.endpoint = publicListenURL(cfg)
+	activation.executable = executable
+	return activation, nil
 }
 
 func (activation *projectHookControlActivation) publish() error {
@@ -917,6 +948,12 @@ func mustJSONLine(v any) string {
 	return buf.String()
 }
 
+var (
+	linkProjectFile              = os.Link
+	renameProjectFileNoReplace   = moveProjectFileNoReplace
+	replaceProjectFileWithBackup = replaceProjectFileKeepingBackup
+)
+
 func writeFileIfMissing(root, path string, data []byte, perm os.FileMode) (bool, error) {
 	if err := validateProjectWritePath(root, path); err != nil {
 		return false, err
@@ -955,14 +992,27 @@ func writeFileIfMissing(root, path string, data []byte, perm os.FileMode) (bool,
 		_ = temp.Close()
 		return false, err
 	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return false, err
+	}
 	if err := temp.Close(); err != nil {
 		return false, err
 	}
-	if err := os.Link(tempPath, path); err != nil {
+	if err := linkProjectFile(tempPath, path); err != nil {
 		if os.IsExist(err) {
 			return false, nil
 		}
-		return false, err
+		if validateErr := validateProjectWritePath(root, path); validateErr != nil {
+			return false, validateErr
+		}
+		if renameErr := renameProjectFileNoReplace(tempPath, path); renameErr != nil {
+			if os.IsExist(renameErr) {
+				return false, nil
+			}
+			return false, fmt.Errorf("无法原子创建项目文件：%w", renameErr)
+		}
+		cleanup = false
 	}
 	return true, nil
 }
@@ -977,32 +1027,64 @@ func rejectCodexHookSourceConflict(root string) error {
 	return fmt.Errorf("检测到 %s；Codex 会合并同层 hooks.json 与 config.toml Hook。请先人工保留一种来源：迁移到 ATG 默认 TOML 时备份并移除 hooks.json 后重试，继续使用 JSON 时仅用 init codex --refresh-hooks 更新运行文件", path)
 }
 
-func writeCodexRuntimeFile(root, path string, data []byte, refresh bool) (bool, bool, error) {
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		created, writeErr := writeFileIfMissing(root, path, data, 0o600)
-		return created, false, writeErr
+var replaceCodexRuntimeFile = replaceCodexRuntimeFileFromSnapshot
+
+type codexRuntimeFileSpec struct {
+	path    string
+	content []byte
+}
+
+type codexRuntimeFileSnapshot struct {
+	existed bool
+	content []byte
+	perm    os.FileMode
+	info    os.FileInfo
+}
+
+type codexRuntimeFileOutcome struct {
+	spec      codexRuntimeFileSpec
+	created   bool
+	refreshed bool
+	backup    string
+	previous  codexRuntimeFileSnapshot
+	installed codexRuntimeFileSnapshot
+}
+
+func writeCodexRuntimeFile(root string, spec codexRuntimeFileSpec, refresh bool, snapshot codexRuntimeFileSnapshot) (codexRuntimeFileOutcome, error) {
+	outcome := codexRuntimeFileOutcome{spec: spec, previous: snapshot}
+	if err := ensureCodexRuntimeFileMatchesSnapshot(spec.path, snapshot); err != nil {
+		return outcome, err
 	}
+	if !snapshot.existed {
+		created, err := writeFileIfMissing(root, spec.path, spec.content, 0o600)
+		if err != nil {
+			return outcome, err
+		}
+		if !created {
+			return outcome, fmt.Errorf("Codex Hook 文件已被并发创建：%s", spec.path)
+		}
+		installed, err := snapshotCodexRuntimeFile(spec.path)
+		if err != nil {
+			return outcome, err
+		}
+		if !installed.existed || !bytes.Equal(installed.content, spec.content) {
+			return outcome, fmt.Errorf("Codex Hook 文件创建后被并发修改：%s", spec.path)
+		}
+		outcome.created = true
+		outcome.installed = installed
+		return outcome, nil
+	}
+	if bytes.Equal(snapshot.content, spec.content) || !refresh {
+		return outcome, nil
+	}
+	backup, installed, err := replaceCodexRuntimeFile(root, spec.path, spec.content, 0o600, snapshot)
 	if err != nil {
-		return false, false, err
+		return outcome, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return false, false, fmt.Errorf("拒绝写入符号链接：%s", path)
-	}
-	if !info.Mode().IsRegular() {
-		return false, false, fmt.Errorf("Codex Hook 路径不是普通文件：%s", path)
-	}
-	current, err := os.ReadFile(path)
-	if err != nil {
-		return false, false, err
-	}
-	if bytes.Equal(current, data) || !refresh {
-		return false, false, nil
-	}
-	if err := replaceProjectFile(root, path, data, 0o600); err != nil {
-		return false, false, err
-	}
-	return false, true, nil
+	outcome.refreshed = true
+	outcome.backup = backup
+	outcome.installed = installed
+	return outcome, nil
 }
 
 func writeCodexRuntimeFiles(root string, report *projectInitReport, refresh bool) error {
@@ -1013,28 +1095,245 @@ func writeCodexRuntimeFiles(root string, report *projectInitReport, refresh bool
 		return err
 	}
 	bundle := hookassets.Codex()
-	for _, file := range []struct {
-		path    string
-		content []byte
-	}{
+	files := []codexRuntimeFileSpec{
 		{path: projectCodexHookCorePath(root), content: bundle.Core},
 		{path: projectCodexHookAdapterPath(root), content: bundle.Adapter},
-	} {
-		created, refreshed, err := writeCodexRuntimeFile(root, file.path, file.content, refresh)
+	}
+	snapshots := make(map[string]codexRuntimeFileSnapshot, len(files))
+	for _, file := range files {
+		snapshot, err := snapshotCodexRuntimeFile(file.path)
 		if err != nil {
 			return err
 		}
-		switch {
-		case created:
-			report.Created = append(report.Created, file.path)
-		case refreshed:
-			report.Refreshed = append(report.Refreshed, file.path)
-		default:
-			report.Skipped = append(report.Skipped, file.path)
+		snapshots[file.path] = snapshot
+	}
+
+	outcomes := make([]codexRuntimeFileOutcome, 0, len(files))
+	for _, file := range files {
+		outcome, err := writeCodexRuntimeFile(root, file, refresh, snapshots[file.path])
+		if err != nil {
+			rollbackErr := rollbackCodexRuntimeFiles(root, outcomes)
+			if rollbackErr != nil {
+				return fmt.Errorf("更新 Codex Hook bundle 失败：%w；回滚失败：%v", err, rollbackErr)
+			}
+			return fmt.Errorf("更新 Codex Hook bundle 失败：%w", err)
 		}
-		report.CodexFiles = append(report.CodexFiles, file.path)
+		outcomes = append(outcomes, outcome)
+	}
+	backups, err := archiveCodexRuntimeBackups(root, outcomes)
+	if err != nil {
+		return fmt.Errorf("Codex Hook bundle 已更新，但旧文件备份保留失败：%w", err)
+	}
+	report.Backups = append(report.Backups, backups...)
+
+	for _, outcome := range outcomes {
+		switch {
+		case outcome.created:
+			report.Created = append(report.Created, outcome.spec.path)
+		case outcome.refreshed:
+			report.Refreshed = append(report.Refreshed, outcome.spec.path)
+		default:
+			report.Skipped = append(report.Skipped, outcome.spec.path)
+		}
+		report.CodexFiles = append(report.CodexFiles, outcome.spec.path)
 	}
 	return nil
+}
+
+func snapshotCodexRuntimeFile(path string) (codexRuntimeFileSnapshot, error) {
+	content, info, err := readCodexRuntimeFile(path)
+	if os.IsNotExist(err) {
+		return codexRuntimeFileSnapshot{}, nil
+	}
+	if err != nil {
+		return codexRuntimeFileSnapshot{}, err
+	}
+	return codexRuntimeFileSnapshot{existed: true, content: content, perm: info.Mode().Perm(), info: info}, nil
+}
+
+func readCodexRuntimeFile(path string) ([]byte, os.FileInfo, error) {
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("拒绝刷新非普通 Codex Hook 文件：%s", path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	if !os.SameFile(pathInfo, openedInfo) {
+		return nil, nil, fmt.Errorf("Codex Hook 文件已被并发替换：%s", path)
+	}
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	afterInfo, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	currentPathInfo, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !os.SameFile(openedInfo, afterInfo) || !os.SameFile(afterInfo, currentPathInfo) ||
+		openedInfo.Size() != afterInfo.Size() || !openedInfo.ModTime().Equal(afterInfo.ModTime()) || openedInfo.Mode() != afterInfo.Mode() {
+		return nil, nil, fmt.Errorf("Codex Hook 文件读取期间被并发修改：%s", path)
+	}
+	return content, afterInfo, nil
+}
+
+func ensureCodexRuntimeFileMatchesSnapshot(path string, snapshot codexRuntimeFileSnapshot) error {
+	if !snapshot.existed {
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		return fmt.Errorf("Codex Hook 文件已被并发创建：%s", path)
+	}
+	content, info, err := readCodexRuntimeFile(path)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("Codex Hook 文件已被并发删除：%s", path)
+	}
+	if err != nil {
+		return err
+	}
+	if snapshot.info == nil || !os.SameFile(snapshot.info, info) || snapshot.perm != info.Mode().Perm() || !bytes.Equal(snapshot.content, content) {
+		return fmt.Errorf("Codex Hook 文件已被并发修改：%s", path)
+	}
+	return nil
+}
+
+func replaceCodexRuntimeFileFromSnapshot(root, path string, data []byte, perm os.FileMode, snapshot codexRuntimeFileSnapshot) (string, codexRuntimeFileSnapshot, error) {
+	tempPath, err := stageProjectFile(root, path, data, perm)
+	if err != nil {
+		return "", codexRuntimeFileSnapshot{}, err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	replacement, err := snapshotCodexRuntimeFile(tempPath)
+	if err != nil {
+		return "", codexRuntimeFileSnapshot{}, err
+	}
+	if err := ensureCodexRuntimeFileMatchesSnapshot(path, snapshot); err != nil {
+		return "", codexRuntimeFileSnapshot{}, err
+	}
+	backupPath, err := replaceProjectFileWithBackup(path, tempPath)
+	if err != nil {
+		return "", codexRuntimeFileSnapshot{}, err
+	}
+	cleanup = false
+	backup, err := snapshotCodexRuntimeFile(backupPath)
+	if err != nil || !codexRuntimeSnapshotsEqual(snapshot, backup) {
+		restoreErr := restoreCodexRuntimeBackup(root, path, backupPath, replacement)
+		if restoreErr != nil {
+			return "", codexRuntimeFileSnapshot{}, fmt.Errorf("Codex Hook 文件已被并发修改：%s；恢复失败：%v", path, restoreErr)
+		}
+		return "", codexRuntimeFileSnapshot{}, fmt.Errorf("Codex Hook 文件已被并发修改：%s", path)
+	}
+	installed, err := snapshotCodexRuntimeFile(path)
+	if err != nil || !codexRuntimeSnapshotsEqual(replacement, installed) {
+		restoreErr := restoreCodexRuntimeBackup(root, path, backupPath, replacement)
+		if restoreErr != nil {
+			return "", codexRuntimeFileSnapshot{}, fmt.Errorf("Codex Hook 新文件发布后被并发修改：%s；原文件保留在 %s；恢复失败：%v", path, backupPath, restoreErr)
+		}
+		return "", codexRuntimeFileSnapshot{}, fmt.Errorf("Codex Hook 新文件发布后被并发修改：%s", path)
+	}
+	return backupPath, installed, nil
+}
+
+func codexRuntimeSnapshotsEqual(expected, actual codexRuntimeFileSnapshot) bool {
+	return expected.existed && actual.existed && expected.info != nil && actual.info != nil &&
+		os.SameFile(expected.info, actual.info) && expected.perm == actual.perm && bytes.Equal(expected.content, actual.content)
+}
+
+func restoreCodexRuntimeBackup(root, targetPath, backupPath string, expectedDisplaced codexRuntimeFileSnapshot) error {
+	if err := validateProjectWritePath(root, targetPath); err != nil {
+		return err
+	}
+	if err := validateProjectWritePath(root, backupPath); err != nil {
+		return err
+	}
+	displacedPath, err := replaceProjectFileWithBackup(targetPath, backupPath)
+	if err != nil {
+		return fmt.Errorf("原文件仍保留在 %s：%w", backupPath, err)
+	}
+	displaced, readErr := snapshotCodexRuntimeFile(displacedPath)
+	if readErr == nil && codexRuntimeSnapshotsEqual(expectedDisplaced, displaced) {
+		if _, err := archiveCodexRecoveryFile(root, displacedPath, "displaced"); err != nil {
+			return fmt.Errorf("原文件已恢复；替换文件保留在 %s：%w", displacedPath, err)
+		}
+		return nil
+	}
+
+	restoredBackup, restoreErr := replaceProjectFileWithBackup(targetPath, displacedPath)
+	if restoreErr != nil {
+		return fmt.Errorf("原文件已恢复，但并发版本保留在 %s 且无法换回：%v", displacedPath, restoreErr)
+	}
+	archivedBackup, archiveErr := archiveCodexRecoveryFile(root, restoredBackup, "rollback")
+	if archiveErr != nil {
+		return fmt.Errorf("并发版本已换回，原文件保留在 %s；备份归档失败：%v", restoredBackup, archiveErr)
+	}
+	if readErr != nil {
+		return fmt.Errorf("并发版本已换回，原文件保留在 %s；无法校验并发版本：%v", archivedBackup, readErr)
+	}
+	return fmt.Errorf("并发版本已换回，原文件保留在 %s", archivedBackup)
+}
+
+func rollbackCodexRuntimeFiles(root string, outcomes []codexRuntimeFileOutcome) error {
+	var rollbackErrors []error
+	for index := len(outcomes) - 1; index >= 0; index-- {
+		outcome := outcomes[index]
+		if !outcome.created && !outcome.refreshed {
+			continue
+		}
+		if outcome.created {
+			if _, err := os.Lstat(outcome.spec.path); os.IsNotExist(err) {
+				continue
+			}
+			if err := removeCodexRuntimeFileFromSnapshot(root, outcome.spec.path, outcome.installed); err != nil {
+				rollbackErrors = append(rollbackErrors, err)
+			}
+			continue
+		}
+		if err := restoreCodexRuntimeBackup(root, outcome.spec.path, outcome.backup, outcome.installed); err != nil {
+			rollbackErrors = append(rollbackErrors, err)
+		}
+	}
+	return errors.Join(rollbackErrors...)
+}
+
+func archiveCodexRuntimeBackups(root string, outcomes []codexRuntimeFileOutcome) ([]string, error) {
+	var archiveErrors []error
+	var archivedPaths []string
+	for _, outcome := range outcomes {
+		if !outcome.refreshed || strings.TrimSpace(outcome.backup) == "" {
+			continue
+		}
+		if err := ensureCodexRuntimeFileMatchesSnapshot(outcome.backup, outcome.previous); err != nil {
+			archiveErrors = append(archiveErrors, err)
+			continue
+		}
+		archivedPath, err := archiveCodexRecoveryFile(root, outcome.backup, "refresh")
+		if err != nil {
+			archiveErrors = append(archiveErrors, err)
+			continue
+		}
+		archivedPaths = append(archivedPaths, archivedPath)
+	}
+	return archivedPaths, errors.Join(archiveErrors...)
 }
 
 func validateCodexRuntimeFiles(root string) error {
@@ -1061,40 +1360,16 @@ func replaceProjectFile(root, path string, data []byte, perm os.FileMode) error 
 }
 
 func writeProjectFileAtomically(root, path string, data []byte, perm os.FileMode) error {
-	if err := validateProjectWritePath(root, path); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	if err := validateProjectWritePath(root, path); err != nil {
-		return err
-	}
-	if err := validateProjectFileTarget(root, path); err != nil {
-		return err
-	}
-	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	tempPath, err := stageProjectFile(root, path, data, perm)
 	if err != nil {
 		return err
 	}
-	tempPath := temp.Name()
 	cleanup := true
 	defer func() {
 		if cleanup {
 			_ = os.Remove(tempPath)
 		}
 	}()
-	if err := temp.Chmod(perm); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if _, err := temp.Write(data); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
 	if err := validateProjectWritePath(root, path); err != nil {
 		return err
 	}
@@ -1108,18 +1383,134 @@ func writeProjectFileAtomically(root, path string, data []byte, perm os.FileMode
 	return nil
 }
 
-func removeFileIfUnchanged(root, path string, expected []byte) error {
+func stageProjectFile(root, path string, data []byte, perm os.FileMode) (string, error) {
+	if err := validateProjectWritePath(root, path); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	if err := validateProjectWritePath(root, path); err != nil {
+		return "", err
+	}
+	if err := validateProjectFileTarget(root, path); err != nil {
+		return "", err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return "", err
+	}
+	tempPath := temp.Name()
+	if err := temp.Chmod(perm); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return "", err
+	}
+	return tempPath, nil
+}
+
+func removeCodexRuntimeFileFromSnapshot(root, path string, snapshot codexRuntimeFileSnapshot) error {
 	if err := validateProjectFileTarget(root, path); err != nil {
 		return err
 	}
-	current, err := os.ReadFile(path)
+	if err := ensureCodexRuntimeFileMatchesSnapshot(path, snapshot); err != nil {
+		return err
+	}
+	quarantinePath, err := unusedSiblingPath(path, "remove")
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(current, expected) {
+	if err := renameProjectFileNoReplace(path, quarantinePath); err != nil {
+		return err
+	}
+	quarantined, readErr := snapshotCodexRuntimeFile(quarantinePath)
+	if readErr == nil && codexRuntimeSnapshotsEqual(snapshot, quarantined) {
+		if _, err := archiveCodexRecoveryFile(root, quarantinePath, "removed"); err != nil {
+			return fmt.Errorf("待删除文件保留在 %s：%w", quarantinePath, err)
+		}
+		return nil
+	}
+	if restoreErr := renameProjectFileNoReplace(quarantinePath, path); restoreErr != nil {
+		return fmt.Errorf("文件已被并发修改并保留在 %s；恢复失败：%v", quarantinePath, restoreErr)
+	}
+	if readErr != nil {
+		return fmt.Errorf("文件已恢复；无法校验隔离文件：%w", readErr)
+	}
+	return fmt.Errorf("文件已被并发修改，未删除：%s", path)
+}
+
+func unusedSiblingPath(path, purpose string) (string, error) {
+	marker, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+"."+purpose+".*.tmp")
+	if err != nil {
+		return "", err
+	}
+	markerPath := marker.Name()
+	if err := marker.Close(); err != nil {
+		_ = os.Remove(markerPath)
+		return "", err
+	}
+	if err := os.Remove(markerPath); err != nil {
+		return "", err
+	}
+	return markerPath, nil
+}
+
+func archiveCodexRecoveryFile(root, path, purpose string) (string, error) {
+	if err := validateProjectFileTarget(root, path); err != nil {
+		return "", err
+	}
+	recoveryDir := filepath.Join(root, ".tmp", "agenttoolgate", "recovery")
+	archiveProbe := filepath.Join(recoveryDir, "archive")
+	if err := validateProjectWritePath(root, archiveProbe); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(recoveryDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := validateProjectWritePath(root, archiveProbe); err != nil {
+		return "", err
+	}
+	marker, err := os.CreateTemp(recoveryDir, filepath.Base(path)+"."+purpose+".*.bak")
+	if err != nil {
+		return "", err
+	}
+	archivePath := marker.Name()
+	if err := marker.Close(); err != nil {
+		_ = os.Remove(archivePath)
+		return "", err
+	}
+	if err := os.Remove(archivePath); err != nil {
+		return "", err
+	}
+	if err := renameProjectFileNoReplace(path, archivePath); err != nil {
+		return "", err
+	}
+	return archivePath, nil
+}
+
+func removeFileIfUnchanged(root, path string, expected []byte) error {
+	current, err := snapshotCodexRuntimeFile(path)
+	if err != nil {
+		return err
+	}
+	if !current.existed || !bytes.Equal(current.content, expected) {
 		return fmt.Errorf("文件已被并发修改：%s", path)
 	}
-	return os.Remove(path)
+	return removeCodexRuntimeFileFromSnapshot(root, path, current)
 }
 
 func validateProjectFileTarget(root, path string) error {
@@ -1469,7 +1860,17 @@ func codexPythonStatus() string {
 	if runtime.GOOS == "windows" {
 		command = "python"
 	}
-	return commandAvailabilityStatus(command)
+	path, err := exec.LookPath(command)
+	if err != nil {
+		return "missing (" + command + ")"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	probe := exec.CommandContext(ctx, path, "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)")
+	if err := probe.Run(); err != nil {
+		return "unusable (" + command + ", requires Python 3.10+)"
+	}
+	return "available (" + command + ", Python 3.10+)"
 }
 
 func commandAvailabilityStatus(command string) string {
