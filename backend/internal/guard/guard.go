@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"unicode"
 )
@@ -1586,6 +1587,10 @@ func containsAny(value string, needles ...string) bool {
 }
 
 func normalizePathCandidate(raw string) string {
+	return normalizePathCandidateForOS(raw, runtime.GOOS)
+}
+
+func normalizePathCandidateForOS(raw, goos string) string {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		return ""
@@ -1599,7 +1604,11 @@ func normalizePathCandidate(raw string) string {
 		value = value[len("//?/"):]
 	}
 	cleaned := path.Clean(strings.ReplaceAll(value, `\`, `/`))
-	return trimPathSegments(strings.ToLower(cleaned))
+	cleaned = trimPathSegments(cleaned)
+	if goos == "windows" {
+		return strings.ToLower(cleaned)
+	}
+	return cleaned
 }
 
 func normalizedPathText(raw string) string {

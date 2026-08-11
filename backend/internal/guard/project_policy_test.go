@@ -149,6 +149,55 @@ func TestEvaluateWithProjectProtectionGuardsConfiguredReadsAndWrites(t *testing.
 	}
 }
 
+func TestEvaluateProjectProtectionPreservesLinuxPathCase(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux 文件系统大小写语义由 Ubuntu CI 验证")
+	}
+	root := t.TempDir()
+	upperDir := filepath.Join(root, "src", "Core")
+	lowerDir := filepath.Join(root, "src", "core")
+	if err := os.MkdirAll(upperDir, 0o700); err != nil {
+		t.Fatalf("create upper-case directory: %v", err)
+	}
+	if err := os.MkdirAll(lowerDir, 0o700); err != nil {
+		t.Fatalf("create lower-case directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(upperDir, "policy.go"), []byte("package core\n"), 0o600); err != nil {
+		t.Fatalf("write upper-case file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(lowerDir, "policy.go"), []byte("package core\n"), 0o600); err != nil {
+		t.Fatalf("write lower-case file: %v", err)
+	}
+	protection := ProjectProtection{
+		Enabled: true,
+		ProtectedPaths: []ProtectedPathRule{
+			{Pattern: "src/Core/**", Read: "deny"},
+		},
+	}
+
+	decision, matched := EvaluateProjectProtection(ActionInput{
+		ToolName:    "Read",
+		ActionType:  "read",
+		Target:      "src/core/policy.go",
+		CWD:         root,
+		ProjectRoot: root,
+	}, protection)
+	if matched {
+		t.Fatalf("different-case Linux path must not match protected rule, got %+v", decision)
+	}
+
+	decision, matched = EvaluateProjectProtection(ActionInput{
+		ToolName:    "Read",
+		ActionType:  "read",
+		Target:      "src/Core/policy.go",
+		CWD:         root,
+		ProjectRoot: root,
+	}, protection)
+	if !matched || decision.Decision != "deny" {
+		t.Fatalf("same-case Linux path must match protected rule, matched=%v decision=%+v", matched, decision)
+	}
+}
+
 func TestEvaluateWithProjectProtectionKeepsMostSevereTarget(t *testing.T) {
 	root := t.TempDir()
 	protection := ProjectProtection{

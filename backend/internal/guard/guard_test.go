@@ -517,6 +517,16 @@ func TestEvaluateAsksOnCredentialConfigWrite(t *testing.T) {
 	}
 }
 
+func TestNormalizePathCandidateUsesPlatformCaseRules(t *testing.T) {
+	const raw = `/tmp/AgentToolGate/Src/Core.go`
+	if got := normalizePathCandidateForOS(raw, "linux"); got != raw {
+		t.Fatalf("Linux path normalization must preserve case, got %q want %q", got, raw)
+	}
+	if got := normalizePathCandidateForOS(raw, "windows"); got != strings.ToLower(raw) {
+		t.Fatalf("Windows path normalization must remain case-insensitive, got %q", got)
+	}
+}
+
 func TestEvaluateAllowsCredentialNamedWorkspaceFiles(t *testing.T) {
 	t.Parallel()
 	cases := []string{

@@ -821,7 +821,16 @@ func bindHookActionToRepo(action guard.ActionInput, repoRoot string) guard.Actio
 }
 
 func sameHookPath(left, right string) bool {
-	return strings.EqualFold(filepath.Clean(strings.TrimSpace(left)), filepath.Clean(strings.TrimSpace(right)))
+	return sameHookPathForOS(left, right, runtime.GOOS)
+}
+
+func sameHookPathForOS(left, right, goos string) bool {
+	left = filepath.Clean(strings.TrimSpace(left))
+	right = filepath.Clean(strings.TrimSpace(right))
+	if goos == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 func buildHookAgentGuardRequest(client string, action guard.ActionInput, repoRoot string, localDecision guard.Decision) hookAgentGuardRequest {

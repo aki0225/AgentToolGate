@@ -866,6 +866,15 @@ func TestFindCLIRepoRootPrefersNearestExplicitControl(t *testing.T) {
 	}
 }
 
+func TestSameHookPathUsesPlatformCaseRules(t *testing.T) {
+	if !sameHookPathForOS(`C:\Repo\AgentToolGate`, `c:\repo\agenttoolgate`, "windows") {
+		t.Fatal("Windows hook paths must remain case-insensitive")
+	}
+	if sameHookPathForOS("/tmp/Repo/AgentToolGate", "/tmp/repo/agenttoolgate", "linux") {
+		t.Fatal("Linux hook paths must preserve case")
+	}
+}
+
 func TestHookFastPathReadRejectsWorkspaceEscape(t *testing.T) {
 	repo := t.TempDir()
 	outside := filepath.Join(filepath.Dir(repo), "outside.txt")
