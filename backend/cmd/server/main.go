@@ -40,18 +40,21 @@ var (
 )
 
 type commandOptions struct {
-	Command     string
-	OpenBrowser bool
-	Addr        string
-	Port        string
-	Dir         string
-	InitTarget  string
+	Command      string
+	OpenBrowser  bool
+	Addr         string
+	Port         string
+	Dir          string
+	InitTarget   string
+	RefreshHooks bool
 }
 
 type hookControlDocument struct {
-	Mode      string `json:"mode"`
-	UpdatedAt string `json:"updatedAt,omitempty"`
-	Reason    string `json:"reason,omitempty"`
+	Mode       string `json:"mode"`
+	UpdatedAt  string `json:"updatedAt,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	Endpoint   string `json:"endpoint,omitempty"`
+	Executable string `json:"executable,omitempty"`
 }
 
 type hookAgentGuardRequest struct {
@@ -125,7 +128,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	if opts.Command == "doctor" {
+		root, err := resolveProjectRoot(opts.Dir)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		projectCfg, loadedFromFile, _, err := loadProjectRunConfig(root)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		if loadedFromFile {
+			projectCfg.ProjectRoot = root
+			applyProjectRunConfig(&cfg, projectCfg)
+		} else {
+			cfg.ProjectRoot = root
+		}
+		if err := applyListenOptions(&cfg, opts); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
 		fmt.Fprint(stdout, formatDiagnostics(cfg, hasEmbeddedFrontend()))
+		fmt.Fprint(stdout, "\n"+formatProjectCodexDiagnostics(root))
 		return 0
 	}
 	return startServer(cfg, opts.OpenBrowser, stdout, stderr)
@@ -305,10 +329,29 @@ func runHookControlCLI(args []string, stdout, stderr io.Writer) int {
 				return 2
 			}
 		}
+		previous, _ := readHookControlDocument(repoRoot)
+		runtimeMetadataSupported := codexProjectRuntimeMetadataSupported(repoRoot)
+		executable := ""
+		if current, executableErr := os.Executable(); runtimeMetadataSupported && executableErr == nil {
+			executable, executableErr = normalizeHookControlExecutable(current)
+			if executableErr != nil && mode != projectHookModeOff {
+				fmt.Fprintln(stderr, "无法验证当前 AgentToolGate 二进制")
+				return 2
+			}
+		} else if runtimeMetadataSupported && mode != projectHookModeOff {
+			fmt.Fprintln(stderr, "无法定位当前 AgentToolGate 二进制")
+			return 2
+		}
+		endpoint := ""
+		if runtimeMetadataSupported {
+			endpoint = previous.Endpoint
+		}
 		doc := hookControlDocument{
-			Mode:      mode,
-			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-			Reason:    reason,
+			Mode:       mode,
+			UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
+			Reason:     reason,
+			Endpoint:   endpoint,
+			Executable: executable,
 		}
 		if err := writeHookControlDocument(repoRoot, doc); err != nil {
 			fmt.Fprintf(stderr, "写入 hook control 失败：%v\n", err)
@@ -394,6 +437,9 @@ func hookControlPath(repoRoot string) string {
 }
 
 func readHookControlDocument(repoRoot string) (hookControlDocument, error) {
+	if err := validateProjectFileTarget(repoRoot, hookControlPath(repoRoot)); err != nil {
+		return hookControlDocument{}, errors.New("hook control invalid")
+	}
 	raw, err := os.ReadFile(hookControlPath(repoRoot))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -410,7 +456,7 @@ func readHookControlDocument(repoRoot string) (hookControlDocument, error) {
 	}
 	for field := range fields {
 		switch field {
-		case "mode", "updatedAt", "reason":
+		case "mode", "updatedAt", "reason", "endpoint", "executable":
 		default:
 			return hookControlDocument{}, errors.New("hook control invalid")
 		}
@@ -425,6 +471,14 @@ func readHookControlDocument(repoRoot string) (hookControlDocument, error) {
 		return hookControlDocument{}, errors.New("hook control invalid")
 	}
 	doc.Mode = strings.ToLower(strings.TrimSpace(doc.Mode))
+	doc.Endpoint, err = normalizeHookControlEndpoint(doc.Endpoint)
+	if err != nil {
+		return hookControlDocument{}, errors.New("hook control invalid")
+	}
+	doc.Executable, err = normalizeHookControlExecutable(doc.Executable)
+	if err != nil {
+		return hookControlDocument{}, errors.New("hook control invalid")
+	}
 	switch doc.Mode {
 	case "off", "dry-run", "live":
 		return doc, nil
@@ -434,38 +488,12 @@ func readHookControlDocument(repoRoot string) (hookControlDocument, error) {
 }
 
 func writeHookControlDocument(repoRoot string, doc hookControlDocument) error {
-	dir := filepath.Dir(hookControlPath(repoRoot))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
 	payload, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return err
 	}
 	payload = append(payload, '\n')
-	tempFile, err := os.CreateTemp(dir, "hook-control-*.tmp")
-	if err != nil {
-		return err
-	}
-	tempPath := tempFile.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tempPath)
-		}
-	}()
-	if _, err := tempFile.Write(payload); err != nil {
-		_ = tempFile.Close()
-		return err
-	}
-	if err := tempFile.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tempPath, hookControlPath(repoRoot)); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
+	return writeProjectHookControlPayload(repoRoot, hookControlPath(repoRoot), payload)
 }
 
 func printHookControlStatus(w io.Writer, repoRoot string, doc hookControlDocument) {
@@ -477,6 +505,58 @@ func printHookControlStatus(w io.Writer, repoRoot string, doc hookControlDocumen
 	if strings.TrimSpace(doc.Reason) != "" {
 		fmt.Fprintf(w, "reason: %s\n", strings.TrimSpace(doc.Reason))
 	}
+	if doc.Endpoint != "" {
+		fmt.Fprintf(w, "endpoint: %s\n", doc.Endpoint)
+	}
+	if doc.Executable != "" {
+		fmt.Fprintln(w, "executable: configured")
+	}
+}
+
+func normalizeHookControlEndpoint(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("hook control endpoint invalid")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", errors.New("hook control endpoint invalid")
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return "", errors.New("hook control endpoint invalid")
+	}
+	port := parsed.Port()
+	if port == "" {
+		return "", errors.New("hook control endpoint invalid")
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return "", errors.New("hook control endpoint invalid")
+	}
+	return "http://" + net.JoinHostPort(host, port), nil
+}
+
+func normalizeHookControlExecutable(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(value) {
+		return "", errors.New("hook control executable invalid")
+	}
+	resolved, err := filepath.EvalSymlinks(value)
+	if err != nil {
+		return "", errors.New("hook control executable invalid")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("hook control executable invalid")
+	}
+	return resolved, nil
 }
 
 func runGuardCLI(args []string, stdout, stderr io.Writer) int {
@@ -1347,21 +1427,18 @@ func parseServeArgs(args []string) bool {
 func parseCommandArgs(args []string) (commandOptions, error) {
 	opts := commandOptions{Command: "serve"}
 	initTargetSet := false
+	commandSet := false
 	for i := 0; i < len(args); i++ {
 		arg := strings.TrimSpace(args[i])
-		if arg == "" || arg == "--" || arg == "serve" {
+		if arg == "" || arg == "--" {
 			continue
 		}
-		if arg == "doctor" {
-			opts.Command = "doctor"
-			continue
-		}
-		if arg == "up" {
-			opts.Command = "up"
-			continue
-		}
-		if arg == "init" {
-			opts.Command = "init"
+		if arg == "serve" || arg == "doctor" || arg == "up" || arg == "init" {
+			if commandSet {
+				return commandOptions{}, fmt.Errorf("一次只能指定一个子命令")
+			}
+			opts.Command = arg
+			commandSet = true
 			continue
 		}
 		if opts.Command == "init" && !strings.HasPrefix(arg, "--") && !initTargetSet {
@@ -1379,6 +1456,10 @@ func parseCommandArgs(args []string) (commandOptions, error) {
 		}
 		if arg == "--open" {
 			opts.OpenBrowser = true
+			continue
+		}
+		if arg == "--refresh-hooks" {
+			opts.RefreshHooks = true
 			continue
 		}
 		if value, ok := strings.CutPrefix(arg, "--addr="); ok {
@@ -1421,6 +1502,9 @@ func parseCommandArgs(args []string) (commandOptions, error) {
 	}
 	if opts.Command == "init" && !initTargetSet {
 		opts.InitTarget = projectInitModeAll
+	}
+	if opts.RefreshHooks && opts.Command != "init" {
+		return commandOptions{}, fmt.Errorf("--refresh-hooks 仅适用于 init codex")
 	}
 	return opts, nil
 }
@@ -1481,7 +1565,7 @@ func printUsage(w io.Writer) {
 
   agenttoolgate.exe [serve] [--open] [--port 8090]
   agenttoolgate.exe [serve] --addr 127.0.0.1:8090
-  agenttoolgate.exe init [all|codex|claude] [--dir <path>]
+	  agenttoolgate.exe init [all|codex|claude] [--dir <path>] [--refresh-hooks]
   agenttoolgate.exe up [--dir <path>] [--open] [--port 8090]
   agenttoolgate.exe doctor
   agenttoolgate.exe guard evaluate --input action.json
@@ -1558,7 +1642,7 @@ func formatDiagnostics(cfg config.Config, embeddedFrontend bool) string {
 	builder.WriteString("默认 Connector: " + connectorTypeSummary(app.DefaultBootstrapConnectors(cfg)) + "\n")
 	builder.WriteString("MCP Outbound: 仅使用 workspace connector，Secret 运行时解析\n")
 	builder.WriteString("Secret: 只显示 env valueRef 元数据，不打印解析后的值\n")
-	builder.WriteString("项目接入: 目标项目先运行 agenttoolgate.exe init all；AI 客户端片段见 docs/ai-client-integration.md\n")
+	builder.WriteString("项目接入: 目标项目先运行 agenttoolgate.exe init all；随后用 doctor --dir <project> 核对 Codex Hook 文件\n")
 	return builder.String()
 }
 

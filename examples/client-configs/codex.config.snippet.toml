@@ -1,5 +1,9 @@
-# 复制到 ~/.codex/config.toml 或交给 ccswitch 管理的项目级片段
-[projects."F:/path/to/your/project"]
+# 按键合并到 ~/.codex/config.toml 或 ccswitch 管理的用户级配置
+# 不要重复追加已有的 [features] 或 [mcp_servers.agenttoolgate] 表
+# 把 <repo> 替换为 Codex 规范化后的项目绝对路径
+# Windows 使用小写、反斜杠形式；TOML 单引号会原样保留反斜杠
+# 项目信任不等于 Hook 内容信任
+[projects.'<repo>']
 trust_level = "trusted"
 
 [features]
@@ -10,4 +14,4 @@ url = "http://127.0.0.1:8080/mcp"
 default_tools_approval_mode = "approve"
 
 # 可选命令等价参考：codex mcp add agenttoolgate --url http://127.0.0.1:8080/mcp
-# 如果需要手动桥接项目级 hook，可指向：agenttoolgate.exe guard hook codex --input -
+# 启动 Codex 后在 /hooks 中核对命令和当前 Hash，再由用户显式信任

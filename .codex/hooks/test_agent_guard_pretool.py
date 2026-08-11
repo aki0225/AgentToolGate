@@ -497,6 +497,10 @@ class CodexHookBridgeTest(unittest.TestCase):
             '{"mode":"preview"}',
             '{"mode":"live","mode":"off"}',
             '{"mode":"live","unknown":true}',
+            '{"mode":"live","endpoint":"https://example.com:443"}',
+            '{"mode":"live","endpoint":"http://127.0.0.1:0"}',
+            '{"mode":"live","executable":"relative-agenttoolgate.exe"}',
+            "[" * 3000 + "]" * 3000,
             '{"mode":true}',
             '[{"mode":"live"}]',
         ):
@@ -609,6 +613,25 @@ class CodexHookBridgeTest(unittest.TestCase):
             post_json=lambda *_args, **_kwargs: self.fail("allow no-op 不应调用 fallback HTTP"),
         )
         self.assertEqual(output, "")
+
+    def test_codex_go_output_rejects_protocol_invalid_fields(self) -> None:
+        valid = {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "blocked",
+            }
+        }
+        self.assertTrue(HOOK.is_valid_codex_hook_output(valid))
+        for invalid in (
+            {**valid, "continue": True},
+            {"hookSpecificOutput": {**valid["hookSpecificOutput"], "updatedInput": {}}},
+            {"hookSpecificOutput": {**valid["hookSpecificOutput"], "permissionDecision": " deny "}},
+            {"hookSpecificOutput": {**valid["hookSpecificOutput"], "permissionDecisionReason": True}},
+            {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny"}},
+        ):
+            with self.subTest(output=invalid):
+                self.assertFalse(HOOK.is_valid_codex_hook_output(invalid))
 
     def test_go_cli_missing_falls_back_to_existing_offline_logic(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

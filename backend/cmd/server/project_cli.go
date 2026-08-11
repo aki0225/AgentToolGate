@@ -7,13 +7,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	"agenttoolgate/backend/internal/config"
 	"agenttoolgate/backend/internal/guard"
+	"agenttoolgate/backend/internal/hookassets"
 )
 
 const (
@@ -23,6 +26,8 @@ const (
 	projectHookModeOff    = "off"
 	projectHookModeDryRun = "dry-run"
 	projectHookModeLive   = "live"
+	codexUnixHookCommand  = `python3 "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
+	codexWinHookCommand   = `python "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
 )
 
 type projectRunConfig struct {
@@ -48,11 +53,17 @@ type projectInitReport struct {
 	ClaudeFiles []string
 	Created     []string
 	Skipped     []string
+	Refreshed   []string
 }
 
 func runInitCommand(opts commandOptions, stdout, stderr io.Writer) int {
 	if strings.TrimSpace(opts.Addr) != "" || strings.TrimSpace(opts.Port) != "" || opts.OpenBrowser {
-		fmt.Fprintln(stderr, "init 仅支持 --dir 和 init codex|claude|all")
+		fmt.Fprintln(stderr, "init 仅支持 --dir、--refresh-hooks 和 init codex|claude|all")
+		return 2
+	}
+	initTarget := normalizeInitTarget(opts.InitTarget)
+	if opts.RefreshHooks && initTarget != projectInitModeCodex {
+		fmt.Fprintln(stderr, "--refresh-hooks 仅适用于 init codex")
 		return 2
 	}
 	root, err := resolveProjectRoot(opts.Dir)
@@ -60,12 +71,22 @@ func runInitCommand(opts commandOptions, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	report, err := writeProjectInitFiles(root, strings.ToLower(strings.TrimSpace(opts.InitTarget)))
+	report, err := writeProjectInitFilesWithOptions(root, initTarget, opts.RefreshHooks)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	fmt.Fprintln(stdout, "AgentToolGate init 完成")
+	if opts.RefreshHooks {
+		fmt.Fprintln(stdout, "AgentToolGate Codex Hook 运行文件处理完成")
+		fmt.Fprintln(stdout, "项目目录: "+report.Root)
+		printInitPathList(stdout, "Codex Hook 文件", report.CodexFiles)
+		printInitPathList(stdout, "已生成", report.Created)
+		printInitPathList(stdout, "已跳过", report.Skipped)
+		printInitPathList(stdout, "已刷新", report.Refreshed)
+		fmt.Fprintln(stdout, "项目 TOML、用户级配置和 Hook 信任未修改；请重新运行 up，再用 doctor 和 Codex /hooks 核对。")
+		return 0
+	}
+	fmt.Fprintln(stdout, "AgentToolGate init 文件处理完成")
 	fmt.Fprintln(stdout, "项目目录: "+report.Root)
 	fmt.Fprintln(stdout, "项目配置: "+report.ConfigPath)
 	fmt.Fprintln(stdout, "保护策略: "+report.Protected)
@@ -73,11 +94,19 @@ func runInitCommand(opts commandOptions, stdout, stderr io.Writer) int {
 	fmt.Fprintln(stdout, "AI 提示: "+report.PromptPath)
 	fmt.Fprintln(stdout, "默认 hook mode: dry-run")
 	cmdName := currentAgentToolGateCommandName()
-	fmt.Fprintf(stdout, "下一步: 运行 %s up --open，然后把 .agenttoolgate/clients/ 里的片段复制到 Codex / Claude / ccswitch。\n", cmdName)
-	printInitPathList(stdout, "Codex 片段", report.CodexFiles)
+	fmt.Fprintf(stdout, "下一步: 运行 %s up --open；Codex 用户还需按键合并 .agenttoolgate/clients/codex.config.snippet.toml，并在 /hooks 中信任 Hook。\n", cmdName)
+	printInitPathList(stdout, "Codex 文件", report.CodexFiles)
 	printInitPathList(stdout, "Claude 片段", report.ClaudeFiles)
 	printInitPathList(stdout, "已生成", report.Created)
 	printInitPathList(stdout, "已跳过", report.Skipped)
+	printInitPathList(stdout, "已刷新", report.Refreshed)
+	if initTarget == projectInitModeAll || initTarget == projectInitModeCodex {
+		status := codexProjectConfigStatus(projectCodexProjectConfigPath(root))
+		fmt.Fprintln(stdout, "Codex 项目配置状态: "+status)
+		if status != "configured" {
+			fmt.Fprintln(stdout, "Codex 接入待处理: ATG 未覆盖已有 .codex/config.toml；请按键合并 .agenttoolgate/clients/codex.project-hook.snippet.toml。")
+		}
+	}
 	return 0
 }
 
@@ -88,7 +117,28 @@ func runUpCommand(opts commandOptions, stdout, stderr io.Writer) int {
 		return 2
 	}
 	fmt.Fprintln(stdout, summary)
-	activation := projectHookControlActivation{path: hookControlPath, mode: hookControlMode}
+	endpoint := ""
+	executable := ""
+	if codexProjectRuntimeMetadataSupported(cfg.ProjectRoot) {
+		executable, err = os.Executable()
+		if err != nil {
+			fmt.Fprintln(stderr, "无法定位当前 AgentToolGate 二进制")
+			return 1
+		}
+		executable, err = normalizeHookControlExecutable(executable)
+		if err != nil {
+			fmt.Fprintln(stderr, "无法验证当前 AgentToolGate 二进制")
+			return 1
+		}
+		endpoint = publicListenURL(cfg)
+	}
+	activation := projectHookControlActivation{
+		root:       cfg.ProjectRoot,
+		path:       hookControlPath,
+		mode:       hookControlMode,
+		endpoint:   endpoint,
+		executable: executable,
+	}
 	return startServer(cfg, openBrowser, stdout, stderr,
 		activation.publish,
 		activation.rollback,
@@ -324,6 +374,10 @@ func applyProjectRunConfig(cfg *config.Config, project projectRunConfig) {
 }
 
 func writeProjectInitFiles(root, initTarget string) (projectInitReport, error) {
+	return writeProjectInitFilesWithOptions(root, initTarget, false)
+}
+
+func writeProjectInitFilesWithOptions(root, initTarget string, refreshHooks bool) (projectInitReport, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return projectInitReport{}, fmt.Errorf("项目目录不能为空")
@@ -331,6 +385,9 @@ func writeProjectInitFiles(root, initTarget string) (projectInitReport, error) {
 	initTarget = normalizeInitTarget(initTarget)
 	if initTarget == "" {
 		return projectInitReport{}, fmt.Errorf("init 仅支持 all、codex 或 claude")
+	}
+	if refreshHooks && initTarget != projectInitModeCodex {
+		return projectInitReport{}, fmt.Errorf("--refresh-hooks 仅适用于 init codex")
 	}
 	cfg := defaultProjectRunConfig(root)
 	report := projectInitReport{
@@ -340,6 +397,24 @@ func writeProjectInitFiles(root, initTarget string) (projectInitReport, error) {
 		ReadmePath: projectReadmePath(root),
 		PromptPath: projectPromptPath(root),
 	}
+	if refreshHooks {
+		if err := writeCodexRuntimeFiles(root, &report, true); err != nil {
+			return projectInitReport{}, err
+		}
+		sortPaths(&report.Created)
+		sortPaths(&report.Skipped)
+		sortPaths(&report.CodexFiles)
+		sortPaths(&report.Refreshed)
+		return report, nil
+	}
+	if initTarget == projectInitModeAll || initTarget == projectInitModeCodex {
+		if err := rejectCodexHookSourceConflict(root); err != nil {
+			return projectInitReport{}, err
+		}
+		if err := validateCodexRuntimeFiles(root); err != nil {
+			return projectInitReport{}, err
+		}
+	}
 	commonFiles := map[string]string{
 		report.ConfigPath: renderProjectConfigFile(cfg),
 		report.Protected:  renderProjectProtectedFile(cfg),
@@ -347,7 +422,7 @@ func writeProjectInitFiles(root, initTarget string) (projectInitReport, error) {
 		report.PromptPath: renderProjectPromptFile(cfg),
 	}
 	for path, content := range commonFiles {
-		ok, err := writeFileIfMissing(path, []byte(content), 0o600)
+		ok, err := writeFileIfMissing(root, path, []byte(content), 0o600)
 		if err != nil {
 			return projectInitReport{}, err
 		}
@@ -358,21 +433,49 @@ func writeProjectInitFiles(root, initTarget string) (projectInitReport, error) {
 		}
 	}
 	if initTarget == projectInitModeAll || initTarget == projectInitModeCodex {
-		files := map[string]string{
-			projectCodexConfigSnippetPath(root): renderCodexConfigSnippet(cfg),
-			projectCodexHooksPath(root):         renderCodexHooksSnippet(cfg),
-		}
-		for path, content := range files {
-			ok, err := writeFileIfMissing(path, []byte(content), 0o600)
+		projectHookConfig := renderCodexProjectHookConfig()
+		for _, file := range []struct {
+			path    string
+			content []byte
+		}{
+			{path: projectCodexConfigSnippetPath(root), content: []byte(renderCodexConfigSnippet(cfg))},
+			{path: projectCodexProjectSnippetPath(root), content: []byte(projectHookConfig)},
+		} {
+			ok, err := writeFileIfMissing(root, file.path, file.content, 0o600)
 			if err != nil {
 				return projectInitReport{}, err
 			}
 			if ok {
-				report.Created = append(report.Created, path)
+				report.Created = append(report.Created, file.path)
 			} else {
-				report.Skipped = append(report.Skipped, path)
+				report.Skipped = append(report.Skipped, file.path)
 			}
-			report.CodexFiles = append(report.CodexFiles, path)
+			report.CodexFiles = append(report.CodexFiles, file.path)
+		}
+		if err := rejectCodexHookSourceConflict(root); err != nil {
+			return projectInitReport{}, err
+		}
+		configPath := projectCodexProjectConfigPath(root)
+		configCreated, err := writeFileIfMissing(root, configPath, []byte(projectHookConfig), 0o600)
+		if err != nil {
+			return projectInitReport{}, err
+		}
+		if configCreated {
+			report.Created = append(report.Created, configPath)
+		} else {
+			report.Skipped = append(report.Skipped, configPath)
+		}
+		report.CodexFiles = append(report.CodexFiles, configPath)
+		if err := writeCodexRuntimeFiles(root, &report, false); err != nil {
+			return projectInitReport{}, err
+		}
+		if err := rejectCodexHookSourceConflict(root); err != nil {
+			if configCreated {
+				if rollbackErr := removeFileIfUnchanged(root, configPath, []byte(projectHookConfig)); rollbackErr != nil {
+					return projectInitReport{}, fmt.Errorf("%v；回滚 ATG 项目 Hook 失败：%w", err, rollbackErr)
+				}
+			}
+			return projectInitReport{}, err
 		}
 	}
 	if initTarget == projectInitModeAll || initTarget == projectInitModeClaude {
@@ -381,7 +484,7 @@ func writeProjectInitFiles(root, initTarget string) (projectInitReport, error) {
 			projectClaudeSettingsPath(root): renderClaudeSettingsSnippet(cfg),
 		}
 		for path, content := range files {
-			ok, err := writeFileIfMissing(path, []byte(content), 0o600)
+			ok, err := writeFileIfMissing(root, path, []byte(content), 0o600)
 			if err != nil {
 				return projectInitReport{}, err
 			}
@@ -397,6 +500,7 @@ func writeProjectInitFiles(root, initTarget string) (projectInitReport, error) {
 	sortPaths(&report.Skipped)
 	sortPaths(&report.CodexFiles)
 	sortPaths(&report.ClaudeFiles)
+	sortPaths(&report.Refreshed)
 	return report, nil
 }
 
@@ -444,8 +548,24 @@ func projectCodexConfigSnippetPath(root string) string {
 	return filepath.Join(root, ".agenttoolgate", "clients", "codex.config.snippet.toml")
 }
 
-func projectCodexHooksPath(root string) string {
-	return filepath.Join(root, ".agenttoolgate", "clients", "codex.hooks.json")
+func projectCodexProjectSnippetPath(root string) string {
+	return filepath.Join(root, ".agenttoolgate", "clients", "codex.project-hook.snippet.toml")
+}
+
+func projectCodexProjectConfigPath(root string) string {
+	return filepath.Join(root, ".codex", "config.toml")
+}
+
+func projectCodexHooksJSONPath(root string) string {
+	return filepath.Join(root, ".codex", "hooks.json")
+}
+
+func projectCodexHookAdapterPath(root string) string {
+	return filepath.Join(root, ".codex", "hooks", "agent-guard-pretool.py")
+}
+
+func projectCodexHookCorePath(root string) string {
+	return filepath.Join(root, ".codex", "hooks", "_guard_core.py")
 }
 
 func projectClaudeMCPPath(root string) string {
@@ -461,26 +581,36 @@ func projectHookControlPath(root string) string {
 }
 
 func writeProjectHookControl(root, mode string) error {
-	return writeProjectHookControlAtPath(projectHookControlPath(root), mode)
+	return writeProjectHookControlAtPath(root, projectHookControlPath(root), mode)
 }
 
-func writeProjectHookControlAtPath(path, mode string) error {
-	payload, err := marshalProjectHookControlPayload(mode)
+func writeProjectHookControlAtPath(root, path, mode string) error {
+	payload, err := marshalProjectHookControlPayload(mode, "", "")
 	if err != nil {
 		return err
 	}
-	return writeProjectHookControlPayloadAtPath(path, payload)
+	return writeProjectHookControlPayload(root, path, payload)
 }
 
-func marshalProjectHookControlPayload(mode string) ([]byte, error) {
+func marshalProjectHookControlPayload(mode, endpoint, executable string) ([]byte, error) {
 	normalizedMode, err := parseProjectHookMode(mode)
 	if err != nil {
 		return nil, err
 	}
+	normalizedEndpoint, err := normalizeHookControlEndpoint(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	normalizedExecutable, err := normalizeHookControlExecutable(executable)
+	if err != nil {
+		return nil, err
+	}
 	doc := hookControlDocument{
-		Mode:      normalizedMode,
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
-		Reason:    "项目级 up",
+		Mode:       normalizedMode,
+		UpdatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		Reason:     "项目级 up",
+		Endpoint:   normalizedEndpoint,
+		Executable: normalizedExecutable,
 	}
 	payload, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -490,39 +620,16 @@ func marshalProjectHookControlPayload(mode string) ([]byte, error) {
 	return payload, nil
 }
 
-func writeProjectHookControlPayloadAtPath(path string, payload []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tempFile, err := os.CreateTemp(dir, "hook-control-*.tmp")
-	if err != nil {
-		return err
-	}
-	tempPath := tempFile.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tempPath)
-		}
-	}()
-	if _, err := tempFile.Write(payload); err != nil {
-		_ = tempFile.Close()
-		return err
-	}
-	if err := tempFile.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tempPath, path); err != nil {
-		return err
-	}
-	cleanup = false
-	return nil
+func writeProjectHookControlPayload(root, path string, payload []byte) error {
+	return writeProjectFileAtomically(root, path, payload, 0o600)
 }
 
 type projectHookControlActivation struct {
+	root             string
 	path             string
 	mode             string
+	endpoint         string
+	executable       string
 	previous         []byte
 	publishedPayload []byte
 	hadPrevious      bool
@@ -534,6 +641,9 @@ func (activation *projectHookControlActivation) publish() error {
 	activation.publishedPayload = nil
 	activation.hadPrevious = false
 	activation.published = false
+	if err := validateProjectFileTarget(activation.root, activation.path); err != nil {
+		return err
+	}
 	previous, err := os.ReadFile(activation.path)
 	if err == nil {
 		activation.previous = append([]byte(nil), previous...)
@@ -541,11 +651,11 @@ func (activation *projectHookControlActivation) publish() error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	payload, err := marshalProjectHookControlPayload(activation.mode)
+	payload, err := marshalProjectHookControlPayload(activation.mode, activation.endpoint, activation.executable)
 	if err != nil {
 		return err
 	}
-	if err := writeProjectHookControlPayloadAtPath(activation.path, payload); err != nil {
+	if err := writeProjectHookControlPayload(activation.root, activation.path, payload); err != nil {
 		return err
 	}
 	activation.publishedPayload = append([]byte(nil), payload...)
@@ -556,6 +666,9 @@ func (activation *projectHookControlActivation) publish() error {
 func (activation *projectHookControlActivation) rollback() error {
 	if !activation.published {
 		return nil
+	}
+	if err := validateProjectFileTarget(activation.root, activation.path); err != nil {
+		return err
 	}
 	current, err := os.ReadFile(activation.path)
 	if err != nil {
@@ -570,7 +683,7 @@ func (activation *projectHookControlActivation) rollback() error {
 		return nil
 	}
 	if activation.hadPrevious {
-		if err := writeProjectHookControlPayloadAtPath(activation.path, activation.previous); err != nil {
+		if err := writeProjectHookControlPayload(activation.root, activation.path, activation.previous); err != nil {
 			return err
 		}
 		activation.published = false
@@ -671,13 +784,14 @@ func renderProjectReadmeFile(cfg projectRunConfig) string {
 	var b strings.Builder
 	commandName := currentAgentToolGateCommandName()
 	b.WriteString("# AgentToolGate 项目级初始化说明\n\n")
-	b.WriteString("本目录由 `" + commandName + " init` 生成，用于记录项目级安全偏好与客户端接入片段。\n\n")
+	b.WriteString("本目录由 `" + commandName + " init` 生成，用于记录项目级安全偏好与客户端接入信息。\n\n")
 	b.WriteString("## 文件说明\n\n")
 	b.WriteString("- `config.json`：本项目的本地运行偏好，包含 host、port、workspace 与 hook mode。\n")
 	b.WriteString("- `protected.json`：项目级受保护路径和外发规则；只允许收紧 Guard Core。\n")
-	b.WriteString("- `clients/`：Codex / Claude Code 可复制的配置片段。\n")
+	b.WriteString("- `clients/`：Codex 用户级配置、已有项目配置的 Hook 合并片段，以及 Claude Code 可复制片段。\n")
+	b.WriteString("- `../.codex/config.toml` 与 `../.codex/hooks/`：Codex 实际读取的项目 Hook 配置和自包含运行文件。\n")
 	b.WriteString("- `AGENTTOOLGATE.md`：给 AI 客户端和人类读者的最小安全提示。\n\n")
-	b.WriteString("`clients/*.json` 根部只保留客户端可消费字段；复制说明只写在本文档，避免把无关 `note` 字段带进客户端配置。\n\n")
+	b.WriteString("Codex 项目信任和 Hook 内容信任都由用户在 Codex 中确认；AgentToolGate 不会自动写入用户级配置或信任 Hash。\n\n")
 	b.WriteString("## 默认值\n\n")
 	b.WriteString("- host: `" + cfg.Host + "`\n")
 	b.WriteString("- port: `" + fmt.Sprintf("%d", cfg.Port) + "`\n")
@@ -688,6 +802,7 @@ func renderProjectReadmeFile(cfg projectRunConfig) string {
 	b.WriteString("2. 需要切换模式时，编辑 `config.json` 中的 `hookMode`。\n")
 	b.WriteString("3. 需要保护核心目录时，在 `protected.json` 的 `protectedPaths` 中添加仓库相对路径规则。\n")
 	b.WriteString("4. 不要在这些文件里写入敏感凭据、密钥明文或连接串密码。\n")
+	b.WriteString("5. `doctor` 显示 adapter/Core 为 `modified` 时先审查差异；确认使用当前发行版覆盖后，运行 `" + commandName + " init codex --refresh-hooks`，再重新运行 `up`。\n")
 	return b.String()
 }
 
@@ -708,16 +823,19 @@ func renderProjectPromptFile(cfg projectRunConfig) string {
 	b.WriteString("- 不要把敏感凭据、密钥明文、`.env` 内容或连接串密码写入 prompt、日志或配置文件。\n\n")
 	b.WriteString("## 下一步\n\n")
 	b.WriteString("- 运行 `" + commandName + " up`。\n")
-	b.WriteString("- 需要 Codex / Claude Code 配置片段时，复制 `.agenttoolgate/clients/` 下的文件。\n")
+	b.WriteString("- Codex 用户按 `.agenttoolgate/clients/codex.config.snippet.toml` 建立项目信任，再在 Codex `/hooks` 中核对并信任 Hook。\n")
+	b.WriteString("- 如果 `.codex/config.toml` 已存在，按键合并 `.agenttoolgate/clients/codex.project-hook.snippet.toml`，不要重复追加 TOML 表。\n")
+	b.WriteString("- Claude Code 用户复制 `.agenttoolgate/clients/` 下对应片段。\n")
 	return b.String()
 }
 
 func renderCodexConfigSnippet(cfg projectRunConfig) string {
 	var b strings.Builder
-	commandName := currentAgentToolGateCommandName()
-	b.WriteString("# 复制到 ~/.codex/config.toml 或交给 ccswitch 管理的项目级片段\n")
+	b.WriteString("# 按键合并到 ~/.codex/config.toml 或 ccswitch 管理的用户级配置；不要重复追加同名 TOML 表\n")
 	b.WriteString("# 下方项目路径请由本机实际仓库根目录替换；示例里统一使用 <repo>\n")
-	b.WriteString("[projects.\"<repo>\"]\n")
+	b.WriteString("# Windows 使用 Codex 规范化后的小写绝对路径；TOML 单引号会原样保留反斜杠\n")
+	b.WriteString("# 项目信任不等于 Hook 内容信任\n")
+	b.WriteString("[projects.'<repo>']\n")
 	b.WriteString("trust_level = \"trusted\"\n\n")
 	b.WriteString("[features]\n")
 	b.WriteString("hooks = true\n\n")
@@ -729,29 +847,25 @@ func renderCodexConfigSnippet(cfg projectRunConfig) string {
 	b.WriteString("# 可选命令等价参考：codex mcp add agenttoolgate --url http://127.0.0.1:")
 	b.WriteString(fmt.Sprintf("%d", cfg.Port))
 	b.WriteString("/mcp\n")
-	b.WriteString("# 如果需要手动桥接项目级 hook，可指向：" + commandName + " guard hook codex --input -\n")
+	b.WriteString("# 启动 Codex 后在 /hooks 中核对命令和 Hash，再由用户显式信任\n")
 	return b.String()
 }
 
-func renderCodexHooksSnippet(cfg projectRunConfig) string {
-	commandName := currentAgentToolGateCommandName()
-	doc := map[string]any{
-		"hooks": map[string]any{
-			"PreToolUse": []any{
-				map[string]any{
-					"matcher": localActionHookMatcher,
-					"hooks": []any{
-						map[string]any{
-							"type":    "command",
-							"command": commandName + " guard hook codex --input -",
-							"timeout": 30,
-						},
-					},
-				},
-			},
-		},
-	}
-	return mustJSONLine(doc)
+func renderCodexProjectHookConfig() string {
+	var b strings.Builder
+	b.WriteString("# AgentToolGate 项目级 Codex Hook；用户仍需在 Codex 中信任项目和 Hook 内容\n")
+	b.WriteString("[features]\n")
+	b.WriteString("hooks = true\n\n")
+	b.WriteString("[hooks]\n\n")
+	b.WriteString("[[hooks.PreToolUse]]\n")
+	b.WriteString("matcher = " + fmt.Sprintf("%q", localActionHookMatcher) + "\n\n")
+	b.WriteString("[[hooks.PreToolUse.hooks]]\n")
+	b.WriteString("type = \"command\"\n")
+	b.WriteString("command = '" + codexUnixHookCommand + "'\n")
+	b.WriteString("commandWindows = '" + codexWinHookCommand + "'\n")
+	b.WriteString("timeout = 30\n")
+	b.WriteString("statusMessage = \"AgentToolGate 正在检查工具调用\"\n")
+	return b.String()
 }
 
 func renderClaudeMCPSnippet(cfg projectRunConfig) string {
@@ -803,14 +917,23 @@ func mustJSONLine(v any) string {
 	return buf.String()
 }
 
-func writeFileIfMissing(path string, data []byte, perm os.FileMode) (bool, error) {
-	if _, err := os.Stat(path); err == nil {
+func writeFileIfMissing(root, path string, data []byte, perm os.FileMode) (bool, error) {
+	if err := validateProjectWritePath(root, path); err != nil {
+		return false, err
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return false, fmt.Errorf("拒绝写入符号链接：%s", path)
+		}
 		return false, nil
 	} else if !os.IsNotExist(err) {
 		return false, err
 	}
 	// init 只创建缺失文件：用户手工改过的项目配置不能被静默覆盖。
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return false, err
+	}
+	if err := validateProjectWritePath(root, path); err != nil {
 		return false, err
 	}
 	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
@@ -835,11 +958,249 @@ func writeFileIfMissing(path string, data []byte, perm os.FileMode) (bool, error
 	if err := temp.Close(); err != nil {
 		return false, err
 	}
-	if err := os.Rename(tempPath, path); err != nil {
+	if err := os.Link(tempPath, path); err != nil {
+		if os.IsExist(err) {
+			return false, nil
+		}
 		return false, err
 	}
-	cleanup = false
 	return true, nil
+}
+
+func rejectCodexHookSourceConflict(root string) error {
+	path := projectCodexHooksJSONPath(root)
+	if _, err := os.Lstat(path); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("检查 Codex Hook 来源失败：%w", err)
+	}
+	return fmt.Errorf("检测到 %s；Codex 会合并同层 hooks.json 与 config.toml Hook。请先人工保留一种来源：迁移到 ATG 默认 TOML 时备份并移除 hooks.json 后重试，继续使用 JSON 时仅用 init codex --refresh-hooks 更新运行文件", path)
+}
+
+func writeCodexRuntimeFile(root, path string, data []byte, refresh bool) (bool, bool, error) {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		created, writeErr := writeFileIfMissing(root, path, data, 0o600)
+		return created, false, writeErr
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, false, fmt.Errorf("拒绝写入符号链接：%s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return false, false, fmt.Errorf("Codex Hook 路径不是普通文件：%s", path)
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return false, false, err
+	}
+	if bytes.Equal(current, data) || !refresh {
+		return false, false, nil
+	}
+	if err := replaceProjectFile(root, path, data, 0o600); err != nil {
+		return false, false, err
+	}
+	return false, true, nil
+}
+
+func writeCodexRuntimeFiles(root string, report *projectInitReport, refresh bool) error {
+	if report == nil {
+		return fmt.Errorf("Codex init report 不能为空")
+	}
+	if err := validateCodexRuntimeFiles(root); err != nil {
+		return err
+	}
+	bundle := hookassets.Codex()
+	for _, file := range []struct {
+		path    string
+		content []byte
+	}{
+		{path: projectCodexHookCorePath(root), content: bundle.Core},
+		{path: projectCodexHookAdapterPath(root), content: bundle.Adapter},
+	} {
+		created, refreshed, err := writeCodexRuntimeFile(root, file.path, file.content, refresh)
+		if err != nil {
+			return err
+		}
+		switch {
+		case created:
+			report.Created = append(report.Created, file.path)
+		case refreshed:
+			report.Refreshed = append(report.Refreshed, file.path)
+		default:
+			report.Skipped = append(report.Skipped, file.path)
+		}
+		report.CodexFiles = append(report.CodexFiles, file.path)
+	}
+	return nil
+}
+
+func validateCodexRuntimeFiles(root string) error {
+	for _, path := range []string{projectCodexHookCorePath(root), projectCodexHookAdapterPath(root)} {
+		if err := validateProjectWritePath(root, path); err != nil {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("拒绝刷新非普通 Codex Hook 文件：%s", path)
+		}
+	}
+	return nil
+}
+
+func replaceProjectFile(root, path string, data []byte, perm os.FileMode) error {
+	return writeProjectFileAtomically(root, path, data, perm)
+}
+
+func writeProjectFileAtomically(root, path string, data []byte, perm os.FileMode) error {
+	if err := validateProjectWritePath(root, path); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if err := validateProjectWritePath(root, path); err != nil {
+		return err
+	}
+	if err := validateProjectFileTarget(root, path); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := temp.Chmod(perm); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := validateProjectWritePath(root, path); err != nil {
+		return err
+	}
+	if err := validateProjectFileTarget(root, path); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
+func removeFileIfUnchanged(root, path string, expected []byte) error {
+	if err := validateProjectFileTarget(root, path); err != nil {
+		return err
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(current, expected) {
+		return fmt.Errorf("文件已被并发修改：%s", path)
+	}
+	return os.Remove(path)
+}
+
+func validateProjectFileTarget(root, path string) error {
+	if err := validateProjectWritePath(root, path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("拒绝访问非普通项目文件：%s", path)
+	}
+	return nil
+}
+
+func validateProjectWritePath(root, path string) error {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		return fmt.Errorf("解析项目目录失败：%w", err)
+	}
+	targetAbs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	if !pathWithinProjectRoot(rootAbs, targetAbs) {
+		return fmt.Errorf("拒绝写入项目目录外路径：%s", targetAbs)
+	}
+
+	parent := filepath.Dir(targetAbs)
+	relativeParent, err := filepath.Rel(rootAbs, parent)
+	if err != nil {
+		return err
+	}
+	current := rootAbs
+	if relativeParent != "." {
+		for _, part := range strings.Split(relativeParent, string(filepath.Separator)) {
+			current = filepath.Join(current, part)
+			info, statErr := os.Lstat(current)
+			if os.IsNotExist(statErr) {
+				break
+			}
+			if statErr != nil {
+				return statErr
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("拒绝沿符号链接写入项目文件：%s", current)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("项目文件父路径不是目录：%s", current)
+			}
+		}
+	}
+
+	if _, err := os.Stat(parent); err == nil {
+		resolvedParent, resolveErr := filepath.EvalSymlinks(parent)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		if !pathWithinProjectRoot(resolvedRoot, resolvedParent) {
+			return fmt.Errorf("拒绝沿项目外目录写入：%s", parent)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func pathWithinProjectRoot(root, candidate string) bool {
+	relative, err := filepath.Rel(root, candidate)
+	if err != nil || filepath.IsAbs(relative) {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func sortPaths(paths *[]string) {
@@ -885,7 +1246,273 @@ func formatProjectUpSummary(root, configPath, hookMode, hookControlPath string, 
 	b.WriteString("Hook control: " + hookControlPath + "\n")
 	b.WriteString("启动后 UI: 查看随后启动摘要里的“访问地址”。\n")
 	b.WriteString("MCP: Codex / Claude Code 默认使用 /mcp；/mcp/sse 仅作为旧客户端 fallback。\n")
-	b.WriteString("客户端片段: .agenttoolgate/clients/ 可复制到 Codex / Claude / ccswitch。\n")
-	b.WriteString("本地诊断: " + commandName + " doctor\n\n")
+	b.WriteString("Codex 项目 Hook: .codex/config.toml；首次使用需在 Codex 中完成项目和 Hook 信任。Hook 命令依赖 Git 与 Python 3。\n")
+	if codexProjectRuntimeMetadataSupported(root) {
+		b.WriteString("Hook runtime: 服务启动后把回环 endpoint 和当前 executable 写入 repo-local control。\n")
+	} else {
+		b.WriteString("Hook runtime: Codex adapter 未确认为 current，control 保持旧版兼容字段；请先用 doctor 核对，必要时用 init codex --refresh-hooks 更新后重启 up。\n")
+	}
+	b.WriteString("客户端片段: .agenttoolgate/clients/ 提供用户级 Codex / Claude / ccswitch 配置。\n")
+	b.WriteString("本地诊断: " + commandName + " doctor --dir <project>\n\n")
 	return b.String()
+}
+
+func formatProjectCodexDiagnostics(root string) string {
+	bundle := hookassets.Codex()
+	configStatus := codexProjectConfigStatus(projectCodexProjectConfigPath(root))
+	hooksJSONStatus := projectFilePresenceStatus(projectCodexHooksJSONPath(root))
+	adapterStatus := embeddedFileStatus(projectCodexHookAdapterPath(root), bundle.Adapter)
+	coreStatus := embeddedFileStatus(projectCodexHookCorePath(root), bundle.Core)
+	var b strings.Builder
+	b.WriteString("Codex 项目接入诊断\n")
+	b.WriteString("====================\n")
+	b.WriteString("项目目录: " + root + "\n")
+	b.WriteString("Codex 项目配置: " + configStatus + "\n")
+	b.WriteString("Codex hooks.json: " + hooksJSONStatus + "\n")
+	b.WriteString("Codex Hook adapter: " + adapterStatus + "\n")
+	b.WriteString("Codex Hook core: " + coreStatus + "\n")
+	b.WriteString("Codex Git: " + commandAvailabilityStatus("git") + "\n")
+	b.WriteString("Codex Python 3: " + codexPythonStatus() + "\n")
+	b.WriteString("ATG Hook mode: " + projectHookControlStatus(root) + "\n")
+	b.WriteString("ATG Hook endpoint: " + projectHookEndpointStatus(root) + "\n")
+	b.WriteString("Codex 项目信任: 需在用户 config.toml 中显式确认\n")
+	b.WriteString("Codex Hook 信任: 需在 Codex /hooks 中确认 trusted\n")
+	b.WriteString("说明: ATG 不会自动写入或信任用户级 Codex 配置。\n")
+	if configStatus == "configured" && hooksJSONStatus != "missing" {
+		b.WriteString("警告: config.toml 与 hooks.json 同层并存，Codex 会合并执行；请人工保留一种 Hook 来源。\n")
+	} else if configStatus != "missing" && hooksJSONStatus != "missing" {
+		b.WriteString("检查: hooks.json 已存在，config.toml 无法确认是否也声明 Hook；请人工核对并只保留一种来源。\n")
+	}
+	if adapterStatus != "current" || coreStatus != "current" {
+		b.WriteString("Hook 文件更新: 审查自定义内容后，可用 init codex --refresh-hooks 仅覆盖 adapter/Core；随后重新运行 up。\n")
+	}
+	return b.String()
+}
+
+func projectFilePresenceStatus(path string) string {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return "missing"
+	}
+	if err != nil {
+		return "unreadable"
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "present (symlink)"
+	}
+	if !info.Mode().IsRegular() {
+		return "present (not a file)"
+	}
+	return "present"
+}
+
+func codexProjectConfigStatus(path string) string {
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "missing"
+	}
+	if err != nil {
+		return "unreadable"
+	}
+	if codexProjectHookConfigured(string(raw)) {
+		return "configured"
+	}
+	return "custom"
+}
+
+func codexProjectHookConfigured(text string) bool {
+	section := ""
+	featureHooksSeen := false
+	featureHooksEnabled := true
+	matcherMatches := false
+	handler := map[string]string{}
+	configured := false
+
+	finishHandler := func() {
+		if matcherMatches && handler["type"] == "command" &&
+			handler["command"] == codexUnixHookCommand &&
+			(handler["commandWindows"] == codexWinHookCommand || handler["command_windows"] == codexWinHookCommand) {
+			configured = true
+		}
+		handler = map[string]string{}
+	}
+
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(stripTOMLComment(rawLine))
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			if section == "hooks.PreToolUse.hooks" {
+				finishHandler()
+			}
+			switch line {
+			case "[features]":
+				section = "features"
+				matcherMatches = false
+			case "[[hooks.PreToolUse]]":
+				section = "hooks.PreToolUse"
+				matcherMatches = false
+			case "[[hooks.PreToolUse.hooks]]":
+				section = "hooks.PreToolUse.hooks"
+				handler = map[string]string{}
+			default:
+				section = "other"
+				matcherMatches = false
+			}
+			continue
+		}
+
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if section == "" && key == "features.hooks" {
+			if featureHooksSeen {
+				return false
+			}
+			featureHooksSeen = true
+			if value == "true" {
+				featureHooksEnabled = true
+			} else if value == "false" {
+				featureHooksEnabled = false
+			} else {
+				return false
+			}
+			continue
+		}
+		switch section {
+		case "features":
+			if key != "hooks" {
+				continue
+			}
+			if featureHooksSeen {
+				return false
+			}
+			featureHooksSeen = true
+			if value == "true" {
+				featureHooksEnabled = true
+			} else if value == "false" {
+				featureHooksEnabled = false
+			} else {
+				return false
+			}
+		case "hooks.PreToolUse":
+			if key == "matcher" {
+				matcher, valid := parseTOMLString(value)
+				matcherMatches = valid && matcher == localActionHookMatcher
+			}
+		case "hooks.PreToolUse.hooks":
+			if key == "type" || key == "command" || key == "commandWindows" || key == "command_windows" {
+				parsed, valid := parseTOMLString(value)
+				if !valid {
+					return false
+				}
+				handler[key] = parsed
+			}
+		}
+	}
+	if section == "hooks.PreToolUse.hooks" {
+		finishHandler()
+	}
+	return featureHooksEnabled && configured
+}
+
+func stripTOMLComment(line string) string {
+	var quote rune
+	escaped := false
+	for index, char := range line {
+		if quote == '"' && escaped {
+			escaped = false
+			continue
+		}
+		if quote == '"' && char == '\\' {
+			escaped = true
+			continue
+		}
+		if quote != 0 {
+			if char == quote {
+				quote = 0
+			}
+			continue
+		}
+		if char == '"' || char == '\'' {
+			quote = char
+			continue
+		}
+		if char == '#' {
+			return line[:index]
+		}
+	}
+	return line
+}
+
+func parseTOMLString(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 {
+		return "", false
+	}
+	if value[0] == '\'' && value[len(value)-1] == '\'' {
+		return value[1 : len(value)-1], !strings.Contains(value[1:len(value)-1], "'")
+	}
+	if value[0] != '"' || value[len(value)-1] != '"' {
+		return "", false
+	}
+	parsed, err := strconv.Unquote(value)
+	return parsed, err == nil
+}
+
+func codexPythonStatus() string {
+	command := "python3"
+	if runtime.GOOS == "windows" {
+		command = "python"
+	}
+	return commandAvailabilityStatus(command)
+}
+
+func commandAvailabilityStatus(command string) string {
+	if _, err := exec.LookPath(command); err != nil {
+		return "missing (" + command + ")"
+	}
+	return "available (" + command + ")"
+}
+
+func projectHookControlStatus(root string) string {
+	doc, err := readHookControlDocument(root)
+	if err != nil {
+		return "invalid"
+	}
+	return doc.Mode
+}
+
+func projectHookEndpointStatus(root string) string {
+	doc, err := readHookControlDocument(root)
+	if err != nil {
+		return "invalid"
+	}
+	if doc.Endpoint == "" {
+		return "missing"
+	}
+	return doc.Endpoint
+}
+
+func embeddedFileStatus(path string, expected []byte) string {
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "missing"
+	}
+	if err != nil {
+		return "unreadable"
+	}
+	if bytes.Equal(raw, expected) {
+		return "current"
+	}
+	return "modified"
+}
+
+func codexProjectRuntimeMetadataSupported(root string) bool {
+	bundle := hookassets.Codex()
+	return embeddedFileStatus(projectCodexHookAdapterPath(root), bundle.Adapter) == "current"
 }
