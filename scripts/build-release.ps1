@@ -211,7 +211,14 @@ function Invoke-EvaluatorSmoke {
     catch {
         throw "$TargetPlatform evaluator validate 未返回合法 JSON"
     }
-    if ($summary.schemaVersion -ne "v1" -or $summary.caseCount -ne 18) {
+    $expectedCaseCount = @(
+        Get-Content -LiteralPath $SuitePath |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    ).Count
+    if ($expectedCaseCount -le 0) {
+        throw "$TargetPlatform evaluator smoke suite 为空"
+    }
+    if ($summary.schemaVersion -ne "v1" -or $summary.caseCount -ne $expectedCaseCount) {
         throw "$TargetPlatform evaluator validate 摘要不符合预期"
     }
 }
