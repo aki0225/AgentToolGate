@@ -202,6 +202,7 @@ ticket TTL 是 10 分钟，并且只能消费一次。审批后，带相同 tick
 
 - Hook 覆盖取决于客户端 runtime 和 runtime 暴露给 hook 的工具。
 - PreToolUse 校验到真实执行之间存在 TOCTOU。
+- `up` 启动失败时会在确认控制文件仍是本进程发布的内容后尝试恢复旧值，但该比较与恢复不是跨进程原子 CAS；极窄并发窗口内的其他控制命令可能与回滚竞争。
 - 路径规范化能降低绕过风险，但不能替代所有平台上的 OS-level file identity enforcement。
 - 后端离线或配置错误时，敏感落点必须保守处理。
 - 项目规则依赖 Hook/API 能看到真实目标；绕过 Hook 的进程、socket 和第三方工具不在覆盖范围内。
