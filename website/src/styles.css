@@ -776,6 +776,12 @@ pre {
   font-weight: 700;
 }
 
+.evaluation-invariants small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+}
+
 .evaluation-invariants i {
   margin-inline: 9px;
   color: #60758e;

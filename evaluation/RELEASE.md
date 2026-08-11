@@ -19,7 +19,7 @@ Linux：
 ./atg-eval validate --input ./evaluation/suites/pr-quick-v1.jsonl
 ```
 
-成功时应返回 `schemaVersion=v1` 和 `caseCount=18`。
+成功时应返回 `schemaVersion=v1` 和 `caseCount=20`。
 
 ## 运行完整评估
 

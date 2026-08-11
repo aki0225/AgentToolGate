@@ -112,10 +112,10 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 <!-- agent-safety-proof:start -->
 ## 实测评估
 
-基于 [GitHub Actions run 31290905501](https://github.com/aki0225/AgentToolGate/actions/runs/31290905501) 对
-[`7a5f33e`](https://github.com/aki0225/AgentToolGate/commit/7a5f33e3c15f0b7994e0083b4a06c0f4e1ecfc44) 的 synthetic / disposable 评估：
+基于 [GitHub Actions run 31465745397](https://github.com/aki0225/AgentToolGate/actions/runs/31465745397) 对
+[`e809c66`](https://github.com/aki0225/AgentToolGate/commit/e809c66ea8e82a27ab25531072cc1ca813550384) 的 synthetic / disposable 评估：
 
-- **Quick（Linux）**：18 passed / 0 failed / 0 skipped。
+- **Quick（Linux）**：20 passed / 0 failed / 0 skipped。
 - **Windows full**：30 passed / 0 failed / 0 skipped。
 - **Linux full**：26 passed / 0 failed / 4 skipped。
 

@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   aggregateMetrics,
+  expectedQuickSuites,
   renderReadmeBlock,
   summarizeEvaluation,
   validateProof
 } from "./evaluation-proof.mjs";
+
+const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+const quickSuitePath = path.resolve(scriptDirectory, "../../evaluation/suites/pr-quick-v1.jsonl");
 
 function fixture() {
     const cases = [
@@ -44,6 +51,19 @@ function fixture() {
 }
 
 describe("公开评估快照", () => {
+  it("与仓库当前 quick suite 组成保持一致", async () => {
+    const lines = (await readFile(quickSuitePath, "utf8"))
+      .split(/\r?\n/)
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line));
+    const actual = lines.reduce((counts, item) => {
+      counts[item.suite] = (counts[item.suite] ?? 0) + 1;
+      return counts;
+    }, {});
+
+    expect(actual).toEqual(expectedQuickSuites);
+  });
+
   it("从逐 case 状态计算汇总", () => {
     const cases = [
       {

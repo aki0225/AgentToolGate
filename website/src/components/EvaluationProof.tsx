@@ -68,9 +68,10 @@ export function EvaluationProof() {
           <p>
             危险动作治理率 <strong>{paired(windows, linux, "dangerousGovernedRate", percentage)}</strong>
             <i>·</i>
-            良性动作误拦率 <strong>{paired(windows, linux, "benignInterruptionRate", percentage)}</strong>
+            良性动作确认/中断率 <strong>{paired(windows, linux, "benignInterruptionRate", percentage)}</strong>
             <i>·</i>
             决策 p95 <strong>{paired(windows, linux, "decisionLatencyP95Ms", milliseconds)}</strong>
+            <small>项目代码执行首次要求确认属于预期治理，审批后相同指纹可静默复用。</small>
           </p>
         </div>
         <div>

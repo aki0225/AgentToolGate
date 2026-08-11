@@ -15,9 +15,9 @@ const canonicalSuites = {
   "benign-development-v1": 12,
   "governance-invariants-v1": 6
 };
-const quickSuites = {
+export const expectedQuickSuites = {
   "dangerous-actions-v1": 6,
-  "benign-development-v1": 6,
+  "benign-development-v1": 8,
   "governance-invariants-v1": 6
 };
 const validDecisions = new Set(["allow", "ask", "deny", "approval_required", "deny_with_ticket"]);
@@ -259,7 +259,7 @@ async function loadQuickEvaluation(artifactRoot, runId, artifactId) {
     "linux",
     "linux/quick"
   );
-  assertComposition(part.cases, quickSuites, "quick");
+  assertComposition(part.cases, expectedQuickSuites, "quick");
   return {
     artifact: { id: artifactId, name: artifactName },
     evaluation: {
@@ -316,7 +316,7 @@ export function validateProof(proof) {
     validateCases(evaluation.cases, evaluation.id);
     assertComposition(
       evaluation.cases,
-      evaluation.kind === "quick" ? quickSuites : canonicalSuites,
+      evaluation.kind === "quick" ? expectedQuickSuites : canonicalSuites,
       evaluation.id
     );
     if (
