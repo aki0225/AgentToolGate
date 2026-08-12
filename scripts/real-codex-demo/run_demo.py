@@ -188,7 +188,12 @@ def prepare_managed_directory(path: Path, role: str) -> None:
     if path.exists() and not marker.is_file() and any(path.iterdir()):
         raise DemoFailure(f"{role}目录缺少所有权标记且非空，拒绝清理")
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("AgentToolGate 真实 Codex 演示专用目录\n", encoding="utf-8", newline="\n")
+    if not marker.is_file():
+        marker.write_text(
+            "AgentToolGate 真实 Codex 演示专用目录\n",
+            encoding="utf-8",
+            newline="\n",
+        )
     path.mkdir(parents=True, exist_ok=True)
     os.chmod(path, 0o700 if role == "私有" else 0o755)
     for child in path.iterdir():

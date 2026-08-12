@@ -218,6 +218,17 @@ class RealCodexDemoTest(unittest.TestCase):
             self.assertFalse((private / "stale.txt").exists())
             self.assertTrue(marker.exists())
 
+    def test_prepare_managed_directory_does_not_rewrite_existing_marker(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="real-codex-demo-test-") as temp_dir:
+            root = Path(temp_dir)
+            private = root / "private"
+            private.mkdir()
+            marker = RUN_DEMO.ownership_marker(private)
+            marker.write_text("existing-owner\n", encoding="utf-8")
+            marker.chmod(0o400)
+            RUN_DEMO.prepare_managed_directory(private, "私有")
+            self.assertEqual(marker.read_text(encoding="utf-8"), "existing-owner\n")
+
     def test_finalize_contract_requires_complete_success_or_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
