@@ -1,0 +1,234 @@
+name: 真实 Codex CLI 演示
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-codex-demo
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: 隔离运行真实 Codex 与 AgentToolGate
+    if: github.repository == 'aki0225/AgentToolGate' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: real-codex-demo
+    env:
+      ATG_DEMO_OUTPUT: ${{ github.workspace }}/.tmp/real-codex-demo/public
+      ATG_DEMO_ATG_PORT: "18090"
+      ATG_DEMO_TUNNEL_PORT: "18081"
+      ATG_DEMO_RELEASE_TAG: "v0.3.1"
+      ATG_DEMO_CODEX_VERSION: "0.146.0"
+      ATG_DEMO_MODEL: "gpt-5.6-luna"
+    steps:
+      - name: 检出受信任主分支代码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: 安装 Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装固定版本 Codex CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ATG_DEMO_PRIVATE=$RUNNER_TEMP/agenttoolgate-real-codex-private" >> "$GITHUB_ENV"
+          npm install --global "@openai/codex@${ATG_DEMO_CODEX_VERSION}"
+          codex --version
+
+      - name: 准备 AgentToolGate 正式发布包
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_dir="$RUNNER_TEMP/agenttoolgate-release"
+          mkdir -p "$runtime_dir"
+          curl --fail --location --silent --show-error \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ATG_DEMO_RELEASE_TAG}/agenttoolgate-linux-amd64.tar.gz" \
+            --output "$runtime_dir/agenttoolgate-linux-amd64.tar.gz"
+          curl --fail --location --silent --show-error \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ATG_DEMO_RELEASE_TAG}/SHA256SUMS" \
+            --output "$runtime_dir/SHA256SUMS"
+          (
+            cd "$runtime_dir"
+            grep ' agenttoolgate-linux-amd64.tar.gz$' SHA256SUMS | sha256sum --check -
+            tar -xzf agenttoolgate-linux-amd64.tar.gz
+            chmod 700 agenttoolgate
+          )
+          echo "ATG_DEMO_BINARY=$runtime_dir/agenttoolgate" >> "$GITHUB_ENV"
+
+      - name: 建立受校验的临时 SSH 隧道
+        shell: bash
+        env:
+          ATG_DEMO_SSH_HOST: ${{ secrets.ATG_DEMO_SSH_HOST }}
+          ATG_DEMO_SSH_USER: ${{ secrets.ATG_DEMO_SSH_USER }}
+          ATG_DEMO_SSH_PASSWORD: ${{ secrets.ATG_DEMO_SSH_PASSWORD }}
+          ATG_DEMO_SSH_KNOWN_HOSTS: ${{ secrets.ATG_DEMO_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          ssh_dir="$RUNNER_TEMP/agenttoolgate-demo-ssh"
+          mkdir -p "$ssh_dir"
+          password_file="$ssh_dir/password"
+          askpass_file="$ssh_dir/askpass.sh"
+          known_hosts_file="$ssh_dir/known_hosts"
+          control_path="$ssh_dir/control"
+
+          printf '%s' "$ATG_DEMO_SSH_PASSWORD" > "$password_file"
+          printf '%s\n' "$ATG_DEMO_SSH_KNOWN_HOSTS" > "$known_hosts_file"
+          cat > "$askpass_file" <<EOF
+          #!/bin/sh
+          cat "$password_file"
+          EOF
+          chmod 700 "$askpass_file"
+
+          echo "ATG_DEMO_SSH_CONTROL=$control_path" >> "$GITHUB_ENV"
+          echo "ATG_DEMO_SSH_KNOWN_HOSTS_FILE=$known_hosts_file" >> "$GITHUB_ENV"
+          echo "::add-mask::$ATG_DEMO_SSH_HOST"
+          echo "::add-mask::$ATG_DEMO_SSH_USER"
+
+          env \
+            -u ATG_DEMO_SSH_PASSWORD \
+            -u ATG_DEMO_SSH_KNOWN_HOSTS \
+            -u GITHUB_TOKEN \
+            DISPLAY=:0 \
+            SSH_ASKPASS_REQUIRE=force \
+            SSH_ASKPASS="$askpass_file" \
+            setsid ssh \
+              -M -S "$control_path" -fNT \
+              -p 2222 \
+              -o BatchMode=no \
+              -o ConnectTimeout=20 \
+              -o ExitOnForwardFailure=yes \
+              -o IdentitiesOnly=yes \
+              -o PreferredAuthentications=password \
+              -o PubkeyAuthentication=no \
+              -o ServerAliveCountMax=3 \
+              -o ServerAliveInterval=15 \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$known_hosts_file" \
+              -L "127.0.0.1:${ATG_DEMO_TUNNEL_PORT}:127.0.0.1:8080" \
+              "${ATG_DEMO_SSH_USER}@${ATG_DEMO_SSH_HOST}" </dev/null
+
+          rm -f "$password_file" "$askpass_file"
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              "http://127.0.0.1:${ATG_DEMO_TUNNEL_PORT}/health" >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "SSH 隧道已建立，但远端健康检查未就绪。" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: 写入隔离模型认证
+        shell: bash
+        env:
+          ATG_DEMO_API_KEY: ${{ secrets.ATG_DEMO_API_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$ATG_DEMO_PRIVATE"
+          printf '%s\n' 'AgentToolGate 真实 Codex 演示专用目录' \
+            > "$(dirname "$ATG_DEMO_PRIVATE")/.$(basename "$ATG_DEMO_PRIVATE").agenttoolgate-real-codex-owned"
+          printf '%s' "$ATG_DEMO_API_KEY" > "$ATG_DEMO_PRIVATE/provider.key"
+
+      - name: 运行真实 Codex CLI 验收
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/real-codex-demo/run_demo.py \
+            --agenttoolgate "$ATG_DEMO_BINARY" \
+            --codex codex \
+            --model "$ATG_DEMO_MODEL" \
+            --release-tag "$ATG_DEMO_RELEASE_TAG" \
+            --atg-port "$ATG_DEMO_ATG_PORT" \
+            --provider-port "$ATG_DEMO_TUNNEL_PORT" \
+            --api-key-file "$ATG_DEMO_PRIVATE/provider.key" \
+            --private-root "$ATG_DEMO_PRIVATE" \
+            --output "$ATG_DEMO_OUTPUT"
+
+      - name: 停止 SSH 隧道并删除私有工作目录
+        if: always()
+        shell: bash
+        env:
+          ATG_DEMO_SSH_HOST: ${{ secrets.ATG_DEMO_SSH_HOST }}
+          ATG_DEMO_SSH_USER: ${{ secrets.ATG_DEMO_SSH_USER }}
+        run: |
+          set +e
+          cleanup_failed=0
+          if [ -n "${ATG_DEMO_SSH_CONTROL:-}" ] && [ -S "$ATG_DEMO_SSH_CONTROL" ]; then
+            ssh \
+              -S "$ATG_DEMO_SSH_CONTROL" \
+              -p 2222 \
+              -o UserKnownHostsFile="$ATG_DEMO_SSH_KNOWN_HOSTS_FILE" \
+              -O exit \
+              "${ATG_DEMO_SSH_USER}@${ATG_DEMO_SSH_HOST}" >/dev/null 2>&1 || cleanup_failed=1
+          fi
+          rm -rf "$RUNNER_TEMP/agenttoolgate-demo-ssh" "$ATG_DEMO_PRIVATE"
+          rm -f "$(dirname "$ATG_DEMO_PRIVATE")/.$(basename "$ATG_DEMO_PRIVATE").agenttoolgate-real-codex-owned"
+          if timeout 2 bash -c "cat </dev/null >/dev/tcp/127.0.0.1/${ATG_DEMO_TUNNEL_PORT}" 2>/dev/null; then
+            echo "SSH 隧道端口清理失败。" >&2
+            cleanup_failed=1
+          fi
+          exit "$cleanup_failed"
+
+      - name: 写入清理后置条件
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/real-codex-demo/finalize_public_artifacts.py \
+            --input "$ATG_DEMO_OUTPUT" \
+            --private-root "$ATG_DEMO_PRIVATE" \
+            --ssh-dir "$RUNNER_TEMP/agenttoolgate-demo-ssh" \
+            --tunnel-port "$ATG_DEMO_TUNNEL_PORT"
+
+      - name: 扫描公开产物中的敏感值
+        if: always()
+        id: sensitive-scan
+        shell: bash
+        env:
+          ATG_DEMO_API_KEY: ${{ secrets.ATG_DEMO_API_KEY }}
+          ATG_DEMO_SSH_HOST: ${{ secrets.ATG_DEMO_SSH_HOST }}
+          ATG_DEMO_SSH_USER: ${{ secrets.ATG_DEMO_SSH_USER }}
+          ATG_DEMO_SSH_PASSWORD: ${{ secrets.ATG_DEMO_SSH_PASSWORD }}
+          ATG_DEMO_SSH_KNOWN_HOSTS: ${{ secrets.ATG_DEMO_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          python scripts/real-codex-demo/scan_public_artifacts.py \
+            --input "$ATG_DEMO_OUTPUT"
+
+      - name: 上传脱敏演示证据
+        if: always() && steps.sensitive-scan.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: real-codex-demo-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 3
+          include-hidden-files: false
+          path: |
+            ${{ env.ATG_DEMO_OUTPUT }}/summary.json
+            ${{ env.ATG_DEMO_OUTPUT }}/failure.json
+            ${{ env.ATG_DEMO_OUTPUT }}/hook-trust.json
+            ${{ env.ATG_DEMO_OUTPUT }}/audit.json
+            ${{ env.ATG_DEMO_OUTPUT }}/postconditions.json
+            ${{ env.ATG_DEMO_OUTPUT }}/cleanup.json
+            ${{ env.ATG_DEMO_OUTPUT }}/transcript.txt
+            ${{ env.ATG_DEMO_OUTPUT }}/codex-real-demo.cast
+            ${{ env.ATG_DEMO_OUTPUT }}/manifest.json
