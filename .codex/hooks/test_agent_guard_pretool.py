@@ -32,6 +32,9 @@ HOOK = load_hook_module()
 
 
 class CodexHookBridgeTest(unittest.TestCase):
+    def test_adapter_disables_bytecode_cache(self) -> None:
+        self.assertTrue(HOOK.sys.dont_write_bytecode)
+
     def write_project_protection(self, repo: Path, body: dict[str, Any] | str) -> None:
         config_path = repo / ".agenttoolgate" / "protected.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)

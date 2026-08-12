@@ -17,6 +17,10 @@ import ssl
 from pathlib import Path
 from typing import Any
 
+# 产品 Hook 直接从项目目录加载本地 Core。禁止生成 __pycache__，避免一次
+# Codex 调用就在用户仓库中制造未跟踪运行产物。
+sys.dont_write_bytecode = True
+
 DEFAULT_HOOK_TIMEOUT_SECONDS = 1.0
 DEFAULT_GO_CLI_TIMEOUT_SECONDS = 1.5
 MIN_HOOK_TIMEOUT_MS = 50

@@ -126,6 +126,8 @@ func TestInitCodexDoesNotOverwriteRuntimeFiles(t *testing.T) {
 func TestInitCodexRejectsExistingHooksJSONBeforeWriting(t *testing.T) {
 	project := t.TempDir()
 	initTestGitRepository(t, project)
+	excludePath := testGitExcludePath(t, project)
+	excludeBefore := readTestFile(t, excludePath)
 	hooksPath := projectCodexHooksJSONPath(project)
 	if err := os.MkdirAll(filepath.Dir(hooksPath), 0o700); err != nil {
 		t.Fatalf("create .codex: %v", err)
@@ -158,6 +160,9 @@ func TestInitCodexRejectsExistingHooksJSONBeforeWriting(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("conflicting init must not write %s: %v", path, err)
 		}
+	}
+	if excludeAfter := readTestFile(t, excludePath); excludeAfter != excludeBefore {
+		t.Fatalf("conflicting init must not update Git local exclude:\nbefore=%s\nafter=%s", excludeBefore, excludeAfter)
 	}
 }
 

@@ -79,10 +79,6 @@ func runInitCommand(opts commandOptions, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, err)
 			return 2
 		}
-		if err := ensureProjectRuntimeGitExclude(root); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
 	}
 	report, err := writeProjectInitFilesWithOptions(root, initTarget, opts.RefreshHooks)
 	if err != nil {
@@ -1238,6 +1234,9 @@ func writeCodexRuntimeFiles(root string, report *projectInitReport, refresh bool
 		return fmt.Errorf("Codex init report 不能为空")
 	}
 	if err := validateCodexRuntimeFiles(root); err != nil {
+		return err
+	}
+	if err := ensureProjectRuntimeGitExclude(root); err != nil {
 		return err
 	}
 	bundle := hookassets.Codex()
