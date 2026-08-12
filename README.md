@@ -68,7 +68,9 @@ flowchart TD
 
 从 [GitHub Release](https://github.com/aki0225/AgentToolGate/releases) 下载 Windows amd64 或 Linux amd64 包，解压后在要保护的项目根目录运行：
 
-下面新版 `init codex`、配套 `doctor` 检查、项目 TOML 和自包含 Hook 要求 `v0.3.1+`。当前 `v0.3.0` 不包含这些命令语义；如果 Release 页面最新仍是 `v0.3.0`，请先从当前 `main` 构建，或继续按该版本随附的旧接入说明操作。
+下面新版 `init codex`、配套 `doctor` 检查、项目 TOML 和自包含 Hook 已在
+`v0.3.1-rc1` 候选版提供。当前稳定版 `v0.3.0` 不包含这些命令语义；要试用新版可下载
+候选包，稳定使用则继续按 `v0.3.0` 随附的旧接入说明操作。
 
 如果普通 serve 已通过 `agenttoolgate.exe --open` 等方式运行，先在原终端按 `Ctrl+C` 停止，再执行下面的项目初始化流程；否则 `up` 会与原进程争用默认 `8080` 端口。
 
@@ -142,6 +144,9 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 
 - **正式发布验收**：[v0.3.0 发布验收](docs/v0.3.0-release-acceptance.md)记录正式附件
   SHA256、Windows / Linux 启动 smoke、MCP 调用和脱离源码仓库的评估附件复跑结果。
+- **候选发布验收**：[v0.3.1-rc1 发布验收](docs/v0.3.1-rc1-release-acceptance.md)
+  记录新版 Codex 项目 Hook 接入、真实附件 SHA256、Windows allow/deny 后置条件和
+  30-case 评估复跑结果。
 - **真实客户端验收**：[Codex CLI 与 Claude Code 验收](evaluation/client-acceptance/README.md)
   保存 MCP Audit、Hook 生命周期、文件系统后置条件和同步脱敏录屏。该证据来自历史源提交
   `0ee86ef`，用于证明真实客户端集成路径，不冒充 `v0.3.0` Release 二进制重跑。
@@ -188,6 +193,7 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 - [安全评审说明](docs/security-review-notes.md)：安全评审视角的控制与剩余风险。
 - [Daily Use Acceptance](docs/daily-use-acceptance.md)：日常开发低噪音验收证据。
 - [v0.3.0 发布验收](docs/v0.3.0-release-acceptance.md)：项目保护规则、跨平台评估附件和正式 Release 的可追溯验收记录。
+- [v0.3.1-rc1 发布验收](docs/v0.3.1-rc1-release-acceptance.md)：Codex 项目 Hook 接入候选版的真实下载、运行和评估记录。
 - [Agent Guard Synthetic Demo](examples/agent-demo/windows-startup-poisoning.md)：Windows Startup poisoning synthetic demo。
 - [ATG 管理的 Connector Secret 外传 Synthetic Demo](examples/agent-demo/secret-exfiltration-blocked.md)：本机验证这类 Secret 不直接暴露给 Agent，并对危险 header 与响应做脱敏。
 - [GitHub 写审批 Synthetic Demo](examples/agent-demo/github-write-approval.md)：本机验证审批前不触达上游和独立 reviewer 放行。

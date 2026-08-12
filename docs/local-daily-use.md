@@ -3,7 +3,9 @@
 > 目标：让个人在 Windows / Linux amd64 上下载或构建一个二进制后，就能清楚知道怎么启动、数据在哪里、如何自检，以及下一步如何接入 Codex / Claude Code。
 
 > [!IMPORTANT]
-> 本文所述新版 `init codex`、配套 `doctor` 检查、项目 TOML 和自包含 Hook 要求 AgentToolGate `v0.3.1+`。当前 `v0.3.0` 不包含这些命令语义；请从当前 `main` 构建，或继续按 `v0.3.0` 随附的旧接入说明操作。
+> 本文所述新版 `init codex`、配套 `doctor` 检查、项目 TOML 和自包含 Hook 已在
+> AgentToolGate `v0.3.1-rc1` 候选版提供。当前稳定版 `v0.3.0` 不包含这些命令语义；
+> 要试用新版可下载候选包，稳定使用则继续按 `v0.3.0` 随附的旧接入说明操作。
 
 ## 适合谁
 

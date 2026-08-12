@@ -3,7 +3,9 @@
 > 目标：让本地 AI 编程客户端先接入 AgentToolGate，再通过网关调用数据库、GitHub、HTTP 和 MCP 工具。AgentToolGate 是工具治理网关 / 防火墙，不是操作系统级强制沙箱。
 
 > [!IMPORTANT]
-> 本文所述新版 `init codex`、配套 `doctor` 检查、项目 TOML 和自包含 Hook 要求 AgentToolGate `v0.3.1+`。当前 `v0.3.0` 不包含这些命令语义；请从当前 `main` 构建，或继续按 `v0.3.0` 随附的旧接入说明操作。
+> 本文所述新版 `init codex`、配套 `doctor` 检查、项目 TOML 和自包含 Hook 已在
+> AgentToolGate `v0.3.1-rc1` 候选版提供。当前稳定版 `v0.3.0` 不包含这些命令语义；
+> 要试用新版可下载候选包，稳定使用则继续按 `v0.3.0` 随附的旧接入说明操作。
 
 ## 1. 选择启动方式
 
