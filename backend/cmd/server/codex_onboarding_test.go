@@ -226,6 +226,73 @@ func TestInitCodexAcceptsLinkedGitWorktreeRoot(t *testing.T) {
 	if _, err := os.Stat(projectCodexHookAdapterPath(worktree)); err != nil {
 		t.Fatalf("linked worktree init did not install Codex adapter: %v", err)
 	}
+	assertProjectRuntimeIgnored(t, worktree)
+}
+
+func TestInitCodexAddsProjectRuntimeToLocalGitExclude(t *testing.T) {
+	project := t.TempDir()
+	initTestGitRepository(t, project)
+	excludePath := testGitExcludePath(t, project)
+	original := "# 用户本地规则\n/local-only.txt\n"
+	if err := os.WriteFile(excludePath, []byte(original), 0o600); err != nil {
+		t.Fatalf("write existing exclude: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"init", "codex", "--dir", project}, &stdout, &stderr); code != 0 {
+		t.Fatalf("init codex returned %d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	raw := readTestFile(t, excludePath)
+	if !strings.Contains(raw, original) || strings.Count(raw, projectRuntimeExclude) != 1 {
+		t.Fatalf("local exclude did not preserve content or add one ATG rule:\n%s", raw)
+	}
+	if err := writeProjectHookControl(project, projectHookModeDryRun); err != nil {
+		t.Fatalf("write hook control: %v", err)
+	}
+	if err := ensureProjectRuntimeGitExclude(project); err != nil {
+		t.Fatalf("repeat exclude update: %v", err)
+	}
+	if raw = readTestFile(t, excludePath); strings.Count(raw, projectRuntimeExclude) != 1 {
+		t.Fatalf("local exclude rule is not idempotent:\n%s", raw)
+	}
+	assertProjectRuntimeIgnored(t, project)
+}
+
+func TestProjectRuntimeGitExcludeRejectsSymlinkTarget(t *testing.T) {
+	project := t.TempDir()
+	initTestGitRepository(t, project)
+	excludePath := testGitExcludePath(t, project)
+	outside := filepath.Join(t.TempDir(), "outside-exclude")
+	original := []byte("outside must stay unchanged\n")
+	if err := os.WriteFile(outside, original, 0o600); err != nil {
+		t.Fatalf("write outside exclude: %v", err)
+	}
+	if err := os.Remove(excludePath); err != nil {
+		t.Fatalf("remove original exclude: %v", err)
+	}
+	if err := os.Symlink(outside, excludePath); err != nil {
+		t.Skipf("当前平台无法创建文件符号链接: %v", err)
+	}
+	resolvedExclude, err := projectGitExcludePath(project)
+	if err != nil {
+		t.Fatalf("locate exclude after symlink setup: %v", err)
+	}
+	if !sameHookPath(resolvedExclude, excludePath) {
+		t.Fatalf("exclude path drifted: got=%s want=%s", resolvedExclude, excludePath)
+	}
+	info, err := os.Lstat(excludePath)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("test setup did not create an exclude symlink: info=%v err=%v", info, err)
+	}
+
+	if err := ensureProjectRuntimeGitExclude(project); err == nil {
+		t.Fatal("local exclude update should reject symlink target")
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("rejected exclude update changed outside file: err=%v content=%q", err, got)
+	}
 }
 
 func TestInitCodexRefreshHooksReplacesOnlyRuntimeFiles(t *testing.T) {
@@ -1099,5 +1166,38 @@ func runTestGit(t *testing.T, repository string, args ...string) {
 	commandArgs := append([]string{"-C", repository}, args...)
 	if output, err := exec.Command("git", commandArgs...).CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
+}
+
+func testGitExcludePath(t *testing.T, repository string) string {
+	t.Helper()
+	command := exec.Command("git", "-C", repository, "rev-parse", "--git-common-dir")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("locate Git local exclude: %v: %s", err, output)
+	}
+	gitDir := strings.TrimSpace(string(output))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(repository, gitDir)
+	}
+	return filepath.Clean(filepath.Join(gitDir, "info", "exclude"))
+}
+
+func assertProjectRuntimeIgnored(t *testing.T, repository string) {
+	t.Helper()
+	control := projectHookControlPath(repository)
+	if err := os.MkdirAll(filepath.Dir(control), 0o700); err != nil {
+		t.Fatalf("create project runtime: %v", err)
+	}
+	if err := os.WriteFile(control, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write project runtime fixture: %v", err)
+	}
+	command := exec.Command("git", "-C", repository, "status", "--porcelain", "--untracked-files=all")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v: %s", err, output)
+	}
+	if strings.Contains(string(output), ".tmp/agenttoolgate/") {
+		t.Fatalf("project runtime leaked into git status:\n%s", output)
 	}
 }

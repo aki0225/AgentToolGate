@@ -115,7 +115,7 @@ agenttoolgate.exe up --dir <project> --open
 agenttoolgate.exe up --dir <project> --port 8090
 ```
 
-`init` 默认不覆盖已有文件，重复执行会跳过用户已修改的文件。项目已有 `.codex/hooks.json` 时，普通 `init codex` / `init all` 会在写入前停止，避免 JSON 与 TOML Hook 同层重复执行；请先人工保留一种来源。继续使用 JSON，或升级后 `doctor` 显示 adapter/Core 为 `modified` 时，先审查差异，再用 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 只安装或刷新 adapter/Core。旧运行文件会保留到 Git 忽略的 `.tmp/agenttoolgate/recovery/` 并打印路径；确认新 Hook 稳定后再手工清理。刷新后重新运行 `up`，才能把非默认 endpoint 和当前 executable 写回 control。`up` 会读取 `.agenttoolgate/config.json`，服务启动成功后写入 repo-local `.tmp/agenttoolgate/hook-control.json`，默认 hook mode 是 `dry-run`。这一步不会修改用户全局 Codex / Claude Code 配置、系统策略或注册表。
+`init` 默认不覆盖已有文件，重复执行会跳过用户已修改的文件。项目已有 `.codex/hooks.json` 时，普通 `init codex` / `init all` 会在写入前停止，避免 JSON 与 TOML Hook 同层重复执行；请先人工保留一种来源。继续使用 JSON，或升级后 `doctor` 显示 adapter/Core 为 `modified` 时，先审查差异，再用 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 只安装或刷新 adapter/Core。ATG 会在目标 Git 仓库的本地 `info/exclude` 中按需追加 `/.tmp/agenttoolgate/`，保留用户已有规则且不改项目 `.gitignore`；普通仓库和 linked worktree 都不会把 control、SQLite 或 recovery 暴露到 `git status`。旧运行文件会保留到 `.tmp/agenttoolgate/recovery/` 并打印路径；确认新 Hook 稳定后再手工清理。刷新后重新运行 `up`，才能把非默认 endpoint 和当前 executable 写回 control。`up` 会读取 `.agenttoolgate/config.json`，服务启动成功后写入 repo-local `.tmp/agenttoolgate/hook-control.json`，默认 hook mode 是 `dry-run`。这一步不会修改用户全局 Codex / Claude Code 配置、系统策略或注册表。
 
 `hook control` 当前不接受 `--dir`；从任意目录执行 `up --dir <project>` 后，切换 `off` / `dry-run` / `live` 前仍需进入目标项目或其子目录，避免作用到另一个仓库。
 

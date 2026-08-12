@@ -27,6 +27,7 @@ const (
 	projectHookModeOff    = "off"
 	projectHookModeDryRun = "dry-run"
 	projectHookModeLive   = "live"
+	projectRuntimeExclude = "/.tmp/agenttoolgate/"
 	codexUnixHookCommand  = `python3 "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
 	codexWinHookCommand   = `python "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
 )
@@ -77,6 +78,10 @@ func runInitCommand(opts commandOptions, stdout, stderr io.Writer) int {
 		if err := validateCodexProjectGitRoot(root); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 2
+		}
+		if err := ensureProjectRuntimeGitExclude(root); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
 		}
 	}
 	report, err := writeProjectInitFilesWithOptions(root, initTarget, opts.RefreshHooks)
@@ -202,6 +207,144 @@ func validateCodexProjectGitRoot(root string) error {
 	if err != nil || !sameHookPath(root, resolved) {
 		return fmt.Errorf("Codex 项目 Hook 必须在目标 Git 仓库根目录初始化")
 	}
+	return nil
+}
+
+func ensureProjectRuntimeGitExclude(root string) error {
+	path, err := projectGitExcludePath(root)
+	if err != nil {
+		if !isGitWorkTree(root) {
+			// 部分内部调用和单元测试只使用仓库形状的临时目录。只有真实 Git
+			// worktree 才存在 status 污染问题；真实仓库定位失败仍必须显式报错。
+			return nil
+		}
+		return err
+	}
+	if err := validateProjectGitExcludePath(path); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("读取 Git 本地 exclude 失败：%w", err)
+	}
+	if gitExcludeContainsPattern(raw, projectRuntimeExclude) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("创建 Git 本地 exclude 目录失败：%w", err)
+	}
+	if err := validateProjectGitExcludePath(path); err != nil {
+		return err
+	}
+	updated := append([]byte(nil), raw...)
+	if len(updated) > 0 && updated[len(updated)-1] != '\n' {
+		updated = append(updated, '\n')
+	}
+	updated = append(updated, []byte(projectRuntimeExclude+"\n")...)
+	if err := writeFileAtomicallyOutsideProject(path, updated, 0o600); err != nil {
+		return fmt.Errorf("写入 Git 本地 exclude 失败：%w", err)
+	}
+	return nil
+}
+
+func isGitWorkTree(root string) bool {
+	command := exec.Command("git", "-C", root, "rev-parse", "--is-inside-work-tree")
+	output, err := command.Output()
+	return err == nil && strings.TrimSpace(string(output)) == "true"
+}
+
+func projectGitExcludePath(root string) (string, error) {
+	command := exec.Command("git", "-C", root, "rev-parse", "--git-common-dir")
+	output, err := command.Output()
+	if err != nil {
+		return "", fmt.Errorf("无法定位 Git 本地 exclude：%w", err)
+	}
+	gitDir := strings.TrimSpace(string(output))
+	if gitDir == "" {
+		return "", fmt.Errorf("Git 本地 exclude 路径为空")
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(root, gitDir)
+	}
+	return filepath.Clean(filepath.Join(gitDir, "info", "exclude")), nil
+}
+
+func validateProjectGitExcludePath(path string) error {
+	parent := filepath.Dir(path)
+	current := filepath.VolumeName(parent) + string(filepath.Separator)
+	relative := strings.TrimPrefix(parent, current)
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		if part == "" {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("检查 Git 本地 exclude 路径失败：%w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("拒绝沿非普通目录写入 Git 本地 exclude：%s", current)
+		}
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("检查 Git 本地 exclude 失败：%w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("拒绝写入非普通 Git 本地 exclude：%s", path)
+	}
+	return nil
+}
+
+func gitExcludeContainsPattern(raw []byte, pattern string) bool {
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) == pattern {
+			return true
+		}
+	}
+	return false
+}
+
+func writeFileAtomicallyOutsideProject(path string, data []byte, perm os.FileMode) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := temp.Chmod(perm); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := validateProjectGitExcludePath(path); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+	cleanup = false
 	return nil
 }
 
@@ -630,6 +773,9 @@ func marshalProjectHookControlPayload(mode, endpoint, executable string) ([]byte
 }
 
 func writeProjectHookControlPayload(root, path string, payload []byte) error {
+	if err := ensureProjectRuntimeGitExclude(root); err != nil {
+		return err
+	}
 	return writeProjectFileAtomically(root, path, payload, 0o600)
 }
 
@@ -1498,6 +1644,9 @@ func unusedSiblingPath(path, purpose string) (string, error) {
 
 func archiveCodexRecoveryFile(root, path, purpose string) (string, error) {
 	if err := validateProjectFileTarget(root, path); err != nil {
+		return "", err
+	}
+	if err := ensureProjectRuntimeGitExclude(root); err != nil {
 		return "", err
 	}
 	recoveryDir := filepath.Join(root, ".tmp", "agenttoolgate", "recovery")

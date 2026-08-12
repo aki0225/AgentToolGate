@@ -95,7 +95,7 @@ Linux 用不带 `.exe` 的 `./agenttoolgate`，参数一样。`init codex` 和 `
 2. 从该项目启动 Codex，在 `/hooks` 中核对 Hook 命令和当前 Hash，再显式信任。
 3. 用 `agenttoolgate.exe doctor --dir <project>` 核对项目配置和 Hook 文件；`doctor` 不会替代 Codex 运行时的信任检查。
 
-如果项目已有 `.codex/hooks.json`，普通 `init codex` 会在写入前停止，避免它和 `.codex/config.toml` 的 Hook 被同层重复加载；请先人工保留一种来源。继续使用 JSON 时可用 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 单独安装或更新 adapter/Core，不会创建项目 TOML。刷新会把旧运行文件保留到 Git 忽略的 `.tmp/agenttoolgate/recovery/` 并打印路径；确认新 Hook 稳定后再手工清理。随后重新运行 `up` 发布本次 endpoint 和二进制路径，再在 `/hooks` 中复核信任状态。
+如果项目已有 `.codex/hooks.json`，普通 `init codex` 会在写入前停止，避免它和 `.codex/config.toml` 的 Hook 被同层重复加载；请先人工保留一种来源。继续使用 JSON 时可用 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 单独安装或更新 adapter/Core，不会创建项目 TOML。ATG 会在目标 Git 仓库的本地 `info/exclude` 中按需追加 `/.tmp/agenttoolgate/`，不改项目 `.gitignore`，并避免 control、SQLite 和 recovery 污染 `git status`。刷新会把旧运行文件保留到该目录并打印路径；确认新 Hook 稳定后再手工清理。随后重新运行 `up` 发布本次 endpoint 和二进制路径，再在 `/hooks` 中复核信任状态。
 
 项目 Hook 需要 Git 与 Python 3。hook 默认 `dry-run`，不会一上来就真阻断。Full Access 模式本身不会禁用已加载的 Hook，但这不等于完整保护：只有 Hook 已启用并信任、ATG 处于 `live`、调用进入 Codex 支持的 `PreToolUse` 路径，且 Hook 成功返回有效 `deny` 或合法退出码 `2` 时，动作才会被实时阻断。Hook 失败、输出无效、被禁用或绕过、处于 `off` / `dry-run`，以及未覆盖的工具路径，都应视为没有 ATG 实时阻断。完整步骤见 [AI 客户端接入指南](docs/ai-client-integration.md#51-启用项目级本地动作-hook)。
 
