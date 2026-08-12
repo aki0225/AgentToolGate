@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Trellis local-action-firewall PreToolUse adapter for Claude Code.
+"""AgentToolGate 的 Claude Code PreToolUse 本地动作防火墙适配器。
 
 离线兜底只按路径段 / 路径序列识别高危落点，与后端
 isAgentGuardSensitiveTarget 保持一致，避免把只读命令或普通文档里的
@@ -486,8 +486,14 @@ def build_agent_guard_request(
     }
 
 
-def build_url() -> str:
-    base = os.environ.get("AGENTTOOLGATE_URL", "http://127.0.0.1:8080").strip().rstrip("/")
+def build_url(repo_root: str = "", control_endpoint: str = "") -> str:
+    base = os.environ.get("AGENTTOOLGATE_URL", "").strip().rstrip("/")
+    if not base and control_endpoint:
+        base = normalize_hook_control_endpoint(control_endpoint)
+    if not base and repo_root:
+        _, base, _ = read_hook_control(repo_root)
+    if not base:
+        base = "http://127.0.0.1:8080"
     return base + "/api/agent-guard/evaluate"
 
 
@@ -503,28 +509,92 @@ def repo_local_hook_ticket_dir(repo_root: str) -> Path:
     return Path(repo_root) / ".tmp" / "agenttoolgate" / "hook-tickets"
 
 
-def read_hook_control_mode(repo_root: str) -> str:
+def validate_hook_control_path(repo_root: str, path: Path) -> None:
+    try:
+        root = Path(repo_root).resolve(strict=True)
+        resolved = path.resolve(strict=False)
+        resolved.relative_to(root)
+        if path.is_symlink():
+            raise HookControlError("hook control invalid")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HookControlError("hook control invalid") from exc
+
+
+def read_hook_control(repo_root: str) -> tuple[str, str, str]:
     path = repo_local_hook_control_path(repo_root)
+    validate_hook_control_path(repo_root, path)
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return "off"
+        return "off", "", ""
     except (OSError, UnicodeError) as exc:
         raise HookControlError("hook control invalid") from exc
     try:
         data = json.loads(raw, object_pairs_hook=_reject_hook_control_duplicates)
-    except (json.JSONDecodeError, HookControlError) as exc:
+    except (json.JSONDecodeError, HookControlError, RecursionError) as exc:
         raise HookControlError("hook control invalid") from exc
-    if not isinstance(data, dict) or any(key not in {"mode", "updatedAt", "reason"} for key in data):
+    if not isinstance(data, dict) or any(
+        key not in {"mode", "updatedAt", "reason", "endpoint", "executable"} for key in data
+    ):
         raise HookControlError("hook control invalid")
     if not isinstance(data.get("mode"), str):
         raise HookControlError("hook control invalid")
-    if any(key in data and not isinstance(data[key], str) for key in ("updatedAt", "reason")):
+    if any(
+        key in data and not isinstance(data[key], str)
+        for key in ("updatedAt", "reason", "endpoint", "executable")
+    ):
         raise HookControlError("hook control invalid")
     mode = data["mode"].strip().lower()
     if mode not in HOOK_CONTROL_MODES:
         raise HookControlError("hook control invalid")
-    return mode
+    return (
+        mode,
+        normalize_hook_control_endpoint(data.get("endpoint", "")),
+        normalize_hook_control_executable(data.get("executable", "")),
+    )
+
+
+def read_hook_control_mode(repo_root: str) -> str:
+    return read_hook_control(repo_root)[0]
+
+
+def normalize_hook_control_endpoint(value: str) -> str:
+    endpoint = value.strip().rstrip("/")
+    if not endpoint:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(endpoint)
+        port = parsed.port
+    except ValueError as exc:
+        raise HookControlError("hook control invalid") from exc
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme.lower() != "http"
+        or parsed.username is not None
+        or parsed.password is not None
+        or host not in {"127.0.0.1", "localhost", "::1"}
+        or port is None
+        or port < 1
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise HookControlError("hook control invalid")
+    rendered_host = f"[{host}]" if host == "::1" else host
+    return f"http://{rendered_host}:{port}"
+
+
+def normalize_hook_control_executable(value: str) -> str:
+    executable = value.strip()
+    if not executable:
+        return ""
+    try:
+        path = Path(executable)
+        if not path.is_absolute() or not path.resolve(strict=True).is_file():
+            raise HookControlError("hook control invalid")
+        return str(path.resolve(strict=True))
+    except (OSError, RuntimeError) as exc:
+        raise HookControlError("hook control invalid") from exc
 
 
 def _reject_hook_control_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -806,10 +876,14 @@ def hook_timeout_seconds() -> float:
     return timeout_ms / 1000.0
 
 
-def agenttoolgate_executable() -> str:
+def agenttoolgate_executable(repo_root: str = "") -> str:
     configured = os.environ.get("AGENTTOOLGATE_EXE", "").strip()
     if configured:
         return configured
+    if repo_root:
+        _, _, configured = read_hook_control(repo_root)
+        if configured:
+            return configured
     return "agenttoolgate.exe" if os.name == "nt" else "agenttoolgate"
 
 
@@ -841,8 +915,9 @@ def is_valid_claude_hook_output(output: Any) -> bool:
 
 def call_agenttoolgate_guard_hook_claude(input_data: dict[str, Any]) -> dict[str, Any] | None:
     try:
+        repo_root = find_repo_root(get_text(input_data.get("cwd")) or os.getcwd()) or ""
         completed = subprocess.run(
-            [agenttoolgate_executable(), "guard", "hook", "claude", "--input", "-"],
+            [agenttoolgate_executable(repo_root), "guard", "hook", "claude", "--input", "-"],
             input=json.dumps(input_data, ensure_ascii=False),
             text=True,
             encoding="utf-8",
@@ -850,8 +925,9 @@ def call_agenttoolgate_guard_hook_claude(input_data: dict[str, Any]) -> dict[str
             capture_output=True,
             timeout=go_cli_timeout_seconds(),
             check=False,
+            env=agenttoolgate_subprocess_env(input_data),
         )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired, HookControlError):
         return None
     if completed.returncode != 0:
         return None
@@ -865,6 +941,18 @@ def call_agenttoolgate_guard_hook_claude(input_data: dict[str, Any]) -> dict[str
     if not is_valid_claude_hook_output(output):
         return None
     return output
+
+
+def agenttoolgate_subprocess_env(input_data: dict[str, Any]) -> dict[str, str]:
+    env = os.environ.copy()
+    if env.get("AGENTTOOLGATE_URL", "").strip():
+        return env
+    repo_root = find_repo_root(get_text(input_data.get("cwd")) or os.getcwd())
+    if repo_root:
+        _, endpoint, _ = read_hook_control(repo_root)
+        if endpoint:
+            env["AGENTTOOLGATE_URL"] = endpoint
+    return env
 
 
 def post_json(url: str, payload: dict[str, Any], timeout: float | None = None) -> tuple[int, dict[str, Any], str]:
@@ -1472,7 +1560,7 @@ def main() -> int:
     tool_input = get_tool_input(input_data)
     adapter = detect_adapter()
     try:
-        hook_mode = read_hook_control_mode(repo_root)
+        hook_mode, hook_endpoint, _ = read_hook_control(repo_root)
     except HookControlError:
         output = build_output(adapter, {"decision": "deny", "reason": "hook control invalid"}, tool_input)
         print(json.dumps(output, ensure_ascii=False), flush=True)
@@ -1501,7 +1589,7 @@ def main() -> int:
         output = build_output(adapter, decision, tool_input)
         print(json.dumps(output, ensure_ascii=False), flush=True)
         return 0
-    status, decision, raw = post_json(build_url(), request_payload)
+    status, decision, raw = post_json(build_url(repo_root, hook_endpoint), request_payload)
     if status == 0:
         if is_explicitly_low_risk_offline_action(repo_root, payload):
             reason = "ATG offline, local pending audit"

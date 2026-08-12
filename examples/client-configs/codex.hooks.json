@@ -1,13 +1,16 @@
 {
+  "description": "AgentToolGate Codex Hook JSON 兼容示例；请与项目 TOML Hook 二选一。",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "^(Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|command|powershell|pwsh|apply_patch)$",
+        "matcher": "^(Bash|Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|command|powershell|pwsh|apply_patch|http[.]request|network[.]request|mcp__.*)$",
         "hooks": [
           {
             "type": "command",
-            "command": "agenttoolgate.exe guard hook codex --input -",
-            "timeout": 30
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py\"",
+            "commandWindows": "python \"$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py\"",
+            "timeout": 30,
+            "statusMessage": "AgentToolGate 正在检查工具调用"
           }
         ]
       }

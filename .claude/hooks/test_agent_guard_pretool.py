@@ -12,6 +12,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1420,12 +1421,90 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             )
             self.assertEqual(raw, "")
 
+    def test_control_endpoint_reaches_both_hook_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            self.set_hook_control(
+                repo,
+                raw=json.dumps(
+                    {
+                        "mode": "live",
+                        "endpoint": "http://127.0.0.1:8090",
+                        "executable": sys.executable,
+                    }
+                ),
+            )
+            original = os.environ.pop("AGENTTOOLGATE_URL", None)
+            try:
+                for module in (HOOK, CODEX_HOOK):
+                    with self.subTest(module=module.__name__):
+                        self.assertEqual(
+                            module.build_url(str(repo)),
+                            "http://127.0.0.1:8090/api/agent-guard/evaluate",
+                        )
+                        cached_endpoint = module.read_hook_control(str(repo))[1]
+                        self.set_hook_control(repo, raw="{bad json")
+                        self.assertEqual(
+                            module.build_url(str(repo), cached_endpoint),
+                            "http://127.0.0.1:8090/api/agent-guard/evaluate",
+                        )
+                        self.set_hook_control(
+                            repo,
+                            raw=json.dumps(
+                                {
+                                    "mode": "live",
+                                    "endpoint": "http://127.0.0.1:8090",
+                                    "executable": sys.executable,
+                                }
+                            ),
+                        )
+                        env = module.agenttoolgate_subprocess_env({"cwd": str(repo)})
+                        self.assertEqual(env["AGENTTOOLGATE_URL"], "http://127.0.0.1:8090")
+                        self.assertEqual(
+                            Path(module.agenttoolgate_executable(str(repo))).resolve(),
+                            Path(sys.executable).resolve(),
+                        )
+            finally:
+                if original is not None:
+                    os.environ["AGENTTOOLGATE_URL"] = original
+
+    def test_control_path_must_stay_inside_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, tempfile.TemporaryDirectory() as outside_dir:
+            repo = Path(temp_dir)
+            outside = Path(outside_dir)
+            (repo / ".git").mkdir()
+            control = outside / "agenttoolgate" / "hook-control.json"
+            control.parent.mkdir()
+            control.write_text('{"mode":"live"}\n', encoding="utf-8")
+            link = repo / ".tmp"
+            if os.name == "nt":
+                completed = subprocess.run(
+                    ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(outside)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if completed.returncode != 0:
+                    self.skipTest(f"cannot create directory junction: {completed.stdout} {completed.stderr}")
+            else:
+                link.symlink_to(outside, target_is_directory=True)
+
+            for module in (HOOK, CODEX_HOOK):
+                with self.subTest(module=module.__name__):
+                    with self.assertRaises(module.HookControlError):
+                        module.read_hook_control(str(repo))
+
     def test_invalid_control_file_fails_closed(self) -> None:
         for control in (
             "{bad json",
             '{"mode":"preview"}',
             '{"mode":"live","mode":"off"}',
             '{"mode":"live","unknown":true}',
+            '{"mode":"live","endpoint":"https://example.com:443"}',
+            '{"mode":"live","endpoint":"http://127.0.0.1:0"}',
+            '{"mode":"live","executable":"relative-agenttoolgate.exe"}',
+            "[" * 3000 + "]" * 3000,
             '{"mode":true}',
             '[{"mode":"live"}]',
         ):

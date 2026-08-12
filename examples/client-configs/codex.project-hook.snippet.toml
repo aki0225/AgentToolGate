@@ -1,0 +1,16 @@
+# 已有项目 .codex/config.toml 时按键合并；不要重复定义同名表
+# Hook 命令从 Git 根目录定位脚本，可从仓库子目录启动 Codex
+[features]
+hooks = true
+
+[hooks]
+
+[[hooks.PreToolUse]]
+matcher = "^(Bash|Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|command|powershell|pwsh|apply_patch|http[.]request|network[.]request|mcp__.*)$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'python3 "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"'
+commandWindows = 'python "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"'
+timeout = 30
+statusMessage = "AgentToolGate 正在检查工具调用"

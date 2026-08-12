@@ -73,6 +73,103 @@ func TestParseCommandArgsRejectsInvalidPort(t *testing.T) {
 	}
 }
 
+func TestParseCommandArgsSupportsCodexHookRefresh(t *testing.T) {
+	opts, err := parseCommandArgs([]string{"init", "codex", "--refresh-hooks", "--dir", "project"})
+	if err != nil {
+		t.Fatalf("parse init refresh args: %v", err)
+	}
+	if opts.Command != "init" || opts.InitTarget != projectInitModeCodex || !opts.RefreshHooks || opts.Dir != "project" {
+		t.Fatalf("unexpected init refresh opts: %+v", opts)
+	}
+}
+
+func TestParseCommandArgsRejectsHookRefreshOutsideInit(t *testing.T) {
+	if _, err := parseCommandArgs([]string{"doctor", "--refresh-hooks"}); err == nil || !strings.Contains(err.Error(), "仅适用于 init codex") {
+		t.Fatalf("expected scoped refresh error, got %v", err)
+	}
+}
+
+func TestParseCommandArgsRejectsMultipleSubcommands(t *testing.T) {
+	for _, args := range [][]string{
+		{"doctor", "init", "codex"},
+		{"serve", "up"},
+		{"init", "codex", "doctor"},
+	} {
+		if _, err := parseCommandArgs(args); err == nil || !strings.Contains(err.Error(), "一次只能指定一个子命令") {
+			t.Fatalf("args=%v expected multiple command error, got %v", args, err)
+		}
+	}
+}
+
+func TestRunDoctorUsesProjectPort(t *testing.T) {
+	project := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(projectConfigPath(project)), 0o700); err != nil {
+		t.Fatalf("create project config dir: %v", err)
+	}
+	config := `{
+  "host": "127.0.0.1",
+  "port": 18091,
+  "workspace": {"name":"Demo","slug":"demo","orgId":"demo-org"},
+  "hookMode": "off",
+  "openBrowser": false
+}
+`
+	if err := os.WriteFile(projectConfigPath(project), []byte(config), 0o600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"doctor", "--dir", project}, &stdout, &stderr); code != 0 {
+		t.Fatalf("doctor returned %d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "http://127.0.0.1:18091") {
+		t.Fatalf("doctor did not use project port:\n%s", stdout.String())
+	}
+}
+
+func TestRunDoctorAppliesProjectPortBeforeValidatingEnvironment(t *testing.T) {
+	project := t.TempDir()
+	if err := os.MkdirAll(filepath.Dir(projectConfigPath(project)), 0o700); err != nil {
+		t.Fatalf("create project config dir: %v", err)
+	}
+	config := `{
+  "host": "127.0.0.1",
+  "port": 18093,
+  "workspace": {"name":"Demo","slug":"demo","orgId":"demo-org"},
+  "hookMode": "off",
+  "openBrowser": false
+}
+`
+	if err := os.WriteFile(projectConfigPath(project), []byte(config), 0o600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+	t.Setenv("PORT", "invalid")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"doctor", "--dir", project}, &stdout, &stderr); code != 0 {
+		t.Fatalf("doctor returned %d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "http://127.0.0.1:18093") {
+		t.Fatalf("doctor did not replace invalid environment port with project config:\n%s", stdout.String())
+	}
+}
+
+func TestRunDoctorWithoutProjectConfigKeepsEnvironmentPort(t *testing.T) {
+	project := t.TempDir()
+	t.Setenv("PORT", "18092")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"doctor", "--dir", project}, &stdout, &stderr); code != 0 {
+		t.Fatalf("doctor returned %d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "http://127.0.0.1:18092") {
+		t.Fatalf("doctor did not preserve environment port:\n%s", stdout.String())
+	}
+}
+
 func TestDiagnosticsAndStartupSummaryRedactSensitiveConfig(t *testing.T) {
 	cfg := config.Config{
 		Host:                       "127.0.0.1",
@@ -197,6 +294,8 @@ func TestRunHookControlStatusRejectsInvalidExistingControl(t *testing.T) {
 		{name: "case alias duplicate mode", raw: `{"mode":"live","Mode":"off"}`},
 		{name: "case alias mode", raw: `{"Mode":"live"}`},
 		{name: "unknown field", raw: `{"mode":"live","unexpected":true}`},
+		{name: "external endpoint", raw: `{"mode":"live","endpoint":"https://example.com:443"}`},
+		{name: "relative executable", raw: `{"mode":"live","executable":"agenttoolgate.exe"}`},
 		{name: "wrong mode type", raw: `{"mode":true}`},
 		{name: "array root", raw: `[{"mode":"live"}]`},
 	}
@@ -251,12 +350,18 @@ func TestRunHookControlOffRecoversInvalidControl(t *testing.T) {
 	if doc.Mode != projectHookModeOff || doc.Reason != "recover development" {
 		t.Fatalf("unexpected recovered control: %+v", doc)
 	}
+	if doc.Endpoint != "" || doc.Executable != "" {
+		t.Fatalf("off control must not retain runtime metadata: %+v", doc)
+	}
 }
 
 func TestRunHookControlWritesRepoLocalControlFile(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
 		t.Fatalf("create .git: %v", err)
+	}
+	if _, err := writeProjectInitFiles(repo, projectInitModeCodex); err != nil {
+		t.Fatalf("install current Codex adapter: %v", err)
 	}
 	subdir := filepath.Join(repo, "backend")
 	if err := os.Mkdir(subdir, 0o700); err != nil {
@@ -287,6 +392,49 @@ func TestRunHookControlWritesRepoLocalControlFile(t *testing.T) {
 		if doc.Mode != mode || doc.Reason != "test session" || strings.TrimSpace(doc.UpdatedAt) == "" {
 			t.Fatalf("unexpected hook control doc: %+v", doc)
 		}
+		if mode == projectHookModeOff && (doc.Endpoint != "" || doc.Executable != "") {
+			t.Fatalf("off control must not contain runtime metadata: %+v", doc)
+		}
+		if mode != projectHookModeOff && doc.Executable == "" {
+			t.Fatalf("enabled control must contain the current executable: %+v", doc)
+		}
+	}
+}
+
+func TestRunHookControlKeepsLegacyAdapterSchemaCompatible(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create .git: %v", err)
+	}
+	adapterPath := projectCodexHookAdapterPath(repo)
+	if err := os.MkdirAll(filepath.Dir(adapterPath), 0o700); err != nil {
+		t.Fatalf("create adapter directory: %v", err)
+	}
+	if err := os.WriteFile(adapterPath, []byte("# older adapter with strict three-field control schema\n"), 0o600); err != nil {
+		t.Fatalf("write older adapter: %v", err)
+	}
+	t.Chdir(repo)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"hook", "control", "live", "--reason", "upgrade compatibility"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("hook control live returned %d stderr=%s", code, stderr.String())
+	}
+	raw, err := os.ReadFile(projectHookControlPath(repo))
+	if err != nil {
+		t.Fatalf("read hook control: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("decode hook control: %v", err)
+	}
+	for _, field := range []string{"endpoint", "executable"} {
+		if _, ok := fields[field]; ok {
+			t.Fatalf("legacy adapter control must not contain %s: %s", field, raw)
+		}
+	}
+	if !strings.Contains(stdout.String(), "mode: live") {
+		t.Fatalf("unexpected hook control output: %s", stdout.String())
 	}
 }
 
@@ -1277,7 +1425,24 @@ func TestRunGuardHookCodexPrintsDenyForRootDelete(t *testing.T) {
 }
 
 func TestRunGuardHookCodexAllowBecomesNoop(t *testing.T) {
-	payload := []byte(`{"tool_name":"shell","cwd":"F:\\workspace\\AgentToolGate","project_root":"F:\\workspace\\AgentToolGate","args":{"command":"git status"}}`)
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+	if err := writeProjectHookControl(repo, projectHookModeLive); err != nil {
+		t.Fatalf("write live control: %v", err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"tool_name":    "shell",
+		"cwd":          repo,
+		"project_root": repo,
+		"args":         map[string]any{"command": "git status"},
+	})
+	if err != nil {
+		t.Fatalf("encode hook payload: %v", err)
+	}
+	t.Setenv("TRELLIS_HOOKS", "1")
+	t.Setenv("TRELLIS_DISABLE_HOOKS", "0")
 	oldStdin := os.Stdin
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -1646,6 +1811,7 @@ func TestRunGuardHookClaudeDoesNotLeakPayloadSecret(t *testing.T) {
 
 func TestRunInitGeneratesProjectFiles(t *testing.T) {
 	project := t.TempDir()
+	initTestGitRepository(t, project)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -1660,7 +1826,10 @@ func TestRunInitGeneratesProjectFiles(t *testing.T) {
 		projectReadmePath(project),
 		projectPromptPath(project),
 		projectCodexConfigSnippetPath(project),
-		projectCodexHooksPath(project),
+		projectCodexProjectSnippetPath(project),
+		projectCodexProjectConfigPath(project),
+		projectCodexHookAdapterPath(project),
+		projectCodexHookCorePath(project),
 		projectClaudeMCPPath(project),
 		projectClaudeSettingsPath(project),
 	}
@@ -1703,6 +1872,7 @@ func TestProjectClientSnippetsAreCopyReady(t *testing.T) {
 	}
 	codexText := string(codexConfig)
 	for _, want := range []string{
+		"[projects.'<repo>']",
 		"[mcp_servers.agenttoolgate]",
 		`url = "http://127.0.0.1:8080/mcp"`,
 		`default_tools_approval_mode = "approve"`,
@@ -1737,7 +1907,7 @@ func TestProjectClientSnippetsAreCopyReady(t *testing.T) {
 		t.Fatalf("claude mcp snippet missing workspace header: %+v", agentToolGateServer.Headers)
 	}
 
-	for _, path := range []string{projectCodexHooksPath(project), projectClaudeSettingsPath(project)} {
+	for _, path := range []string{projectClaudeSettingsPath(project)} {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read snippet %s: %v", path, err)
@@ -1788,7 +1958,6 @@ func TestProjectHookSnippetsUseCurrentPlatformCommand(t *testing.T) {
 		path string
 		want string
 	}{
-		{name: "codex", path: projectCodexHooksPath(project), want: wantCommand + " guard hook codex --input -"},
 		{name: "claude", path: projectClaudeSettingsPath(project), want: wantCommand + " guard hook claude --input -"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1809,13 +1978,22 @@ func TestProjectHookSnippetsUseCurrentPlatformCommand(t *testing.T) {
 func TestRunInitClientTargetsGenerateOnlyRequestedTemplates(t *testing.T) {
 	t.Run("codex only", func(t *testing.T) {
 		project := t.TempDir()
+		initTestGitRepository(t, project)
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer
 		code := run([]string{"init", "codex", "--dir", project}, &stdout, &stderr)
 		if code != 0 {
 			t.Fatalf("init codex returned %d stderr=%s", code, stderr.String())
 		}
-		for _, path := range []string{projectConfigPath(project), projectProtectedPath(project), projectCodexConfigSnippetPath(project), projectCodexHooksPath(project)} {
+		for _, path := range []string{
+			projectConfigPath(project),
+			projectProtectedPath(project),
+			projectCodexConfigSnippetPath(project),
+			projectCodexProjectSnippetPath(project),
+			projectCodexProjectConfigPath(project),
+			projectCodexHookAdapterPath(project),
+			projectCodexHookCorePath(project),
+		} {
 			if _, err := os.Stat(path); err != nil {
 				t.Fatalf("expected codex init file %s: %v", path, err)
 			}
@@ -1840,7 +2018,13 @@ func TestRunInitClientTargetsGenerateOnlyRequestedTemplates(t *testing.T) {
 				t.Fatalf("expected claude init file %s: %v", path, err)
 			}
 		}
-		for _, path := range []string{projectCodexConfigSnippetPath(project), projectCodexHooksPath(project)} {
+		for _, path := range []string{
+			projectCodexConfigSnippetPath(project),
+			projectCodexProjectSnippetPath(project),
+			projectCodexProjectConfigPath(project),
+			projectCodexHookAdapterPath(project),
+			projectCodexHookCorePath(project),
+		} {
 			if _, err := os.Stat(path); !os.IsNotExist(err) {
 				t.Fatalf("claude init must not generate codex file %s", path)
 			}
@@ -1850,6 +2034,7 @@ func TestRunInitClientTargetsGenerateOnlyRequestedTemplates(t *testing.T) {
 
 func TestRunInitDoesNotOverwriteExistingFiles(t *testing.T) {
 	project := t.TempDir()
+	initTestGitRepository(t, project)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	if code := run([]string{"init", "--dir", project}, &stdout, &stderr); code != 0 {
@@ -1921,7 +2106,7 @@ func TestPrepareProjectUpDoesNotWriteHookControlBeforeStart(t *testing.T) {
 	if _, err := os.Stat(hookControlPath); !os.IsNotExist(err) {
 		t.Fatalf("hook control should not exist before server start, got err=%v", err)
 	}
-	if err := writeProjectHookControlAtPath(hookControlPath, hookControlMode); err != nil {
+	if err := writeProjectHookControlAtPath(project, hookControlPath, hookControlMode); err != nil {
 		t.Fatalf("write hook control after simulated start: %v", err)
 	}
 	raw, err := os.ReadFile(hookControlPath)
@@ -1985,14 +2170,14 @@ func TestRunUpFailureRestoresPreviousHookControl(t *testing.T) {
 	}
 	// 使用系统分配的临时端口，确保本测试稳定进入启动后钩子失败与清理分支。
 	cfg.Port = "0"
-	if err := writeProjectHookControlAtPath(hookControlPath, projectHookModeOff); err != nil {
+	if err := writeProjectHookControlAtPath(repo, hookControlPath, projectHookModeOff); err != nil {
 		t.Fatalf("write previous hook control: %v", err)
 	}
 	previous, err := os.ReadFile(hookControlPath)
 	if err != nil {
 		t.Fatalf("read previous hook control: %v", err)
 	}
-	activation := projectHookControlActivation{path: hookControlPath, mode: hookControlMode}
+	activation := projectHookControlActivation{root: repo, path: hookControlPath, mode: hookControlMode}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -2027,8 +2212,9 @@ func TestRunUpFailureRestoresPreviousHookControl(t *testing.T) {
 }
 
 func TestHookControlActivationRollbackRemovesNewControl(t *testing.T) {
-	path := projectHookControlPath(t.TempDir())
-	activation := projectHookControlActivation{path: path, mode: projectHookModeLive}
+	root := t.TempDir()
+	path := projectHookControlPath(root)
+	activation := projectHookControlActivation{root: root, path: path, mode: projectHookModeLive}
 	if err := activation.publish(); err != nil {
 		t.Fatalf("publish hook control: %v", err)
 	}
@@ -2041,16 +2227,17 @@ func TestHookControlActivationRollbackRemovesNewControl(t *testing.T) {
 }
 
 func TestHookControlActivationRollbackPreservesConcurrentUpdate(t *testing.T) {
-	path := projectHookControlPath(t.TempDir())
-	if err := writeProjectHookControlAtPath(path, projectHookModeOff); err != nil {
+	root := t.TempDir()
+	path := projectHookControlPath(root)
+	if err := writeProjectHookControlAtPath(root, path, projectHookModeOff); err != nil {
 		t.Fatalf("write previous hook control: %v", err)
 	}
-	activation := projectHookControlActivation{path: path, mode: projectHookModeLive}
+	activation := projectHookControlActivation{root: root, path: path, mode: projectHookModeLive}
 	if err := activation.publish(); err != nil {
 		t.Fatalf("publish hook control: %v", err)
 	}
 	concurrent := []byte("{\n  \"mode\": \"dry-run\",\n  \"reason\": \"concurrent update\"\n}\n")
-	if err := writeProjectHookControlPayloadAtPath(path, concurrent); err != nil {
+	if err := writeProjectHookControlPayload(root, path, concurrent); err != nil {
 		t.Fatalf("write concurrent hook control: %v", err)
 	}
 	if err := activation.rollback(); err != nil {
@@ -2072,17 +2259,18 @@ func TestProjectGeneratedContentDoesNotLeakSensitiveValues(t *testing.T) {
 	if _, err := writeProjectInitFiles(project, projectInitModeAll); err != nil {
 		t.Fatalf("write init files: %v", err)
 	}
-	paths := []string{
+	configPaths := []string{
 		projectConfigPath(project),
 		projectProtectedPath(project),
 		projectReadmePath(project),
 		projectPromptPath(project),
 		projectCodexConfigSnippetPath(project),
-		projectCodexHooksPath(project),
+		projectCodexProjectSnippetPath(project),
+		projectCodexProjectConfigPath(project),
 		projectClaudeMCPPath(project),
 		projectClaudeSettingsPath(project),
 	}
-	for _, path := range paths {
+	for _, path := range configPaths {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read generated file %s: %v", path, err)
@@ -2091,6 +2279,18 @@ func TestProjectGeneratedContentDoesNotLeakSensitiveValues(t *testing.T) {
 		for _, leaked := range []string{"ghp_should_never_appear", "secret-password", "postgres://", "authorization", "e:\\workspace-new", "c:\\users"} {
 			if strings.Contains(text, leaked) {
 				t.Fatalf("generated file %s leaked %q:\n%s", path, leaked, string(raw))
+			}
+		}
+	}
+	for _, path := range []string{projectCodexHookAdapterPath(project), projectCodexHookCorePath(project)} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read generated hook %s: %v", path, err)
+		}
+		text := strings.ToLower(string(raw))
+		for _, leaked := range []string{"ghp_should_never_appear", "secret-password", "postgres://", "e:\\workspace-new", "c:\\users"} {
+			if strings.Contains(text, leaked) {
+				t.Fatalf("generated hook %s leaked %q", path, leaked)
 			}
 		}
 	}
