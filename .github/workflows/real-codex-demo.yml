@@ -173,11 +173,13 @@ jobs:
           set -euo pipefail
           python_bin="$(command -v python)"
           codex_bin="$(command -v codex)"
+          codex_runtime_path="$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin"
           sudo --non-interactive \
             --preserve-env=ATG_DEMO_CODEX_VERSION,GITHUB_REPOSITORY,GITHUB_RUN_ID,GITHUB_SHA \
             "$python_bin" scripts/real-codex-demo/run_demo.py \
             --agenttoolgate "$ATG_DEMO_BINARY" \
             --codex "$codex_bin" \
+            --codex-runtime-path "$codex_runtime_path" \
             --codex-user atg-codex-demo \
             --model "$ATG_DEMO_MODEL" \
             --release-tag "$ATG_DEMO_RELEASE_TAG" \

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,45 @@ ALLOWED_FILES = {
     "manifest.json",
 }
 MAX_PUBLIC_FILE_SIZE = 2 * 1024 * 1024
+SUCCESS_FILES = {
+    "summary.json",
+    "hook-trust.json",
+    "audit.json",
+    "postconditions.json",
+    "cleanup.json",
+    "transcript.txt",
+    "codex-real-demo.cast",
+    "manifest.json",
+}
+FAILURE_FILES = {"failure.json", "cleanup.json", "manifest.json"}
+
+
+def validate_manifest(root: Path, file_names: set[str]) -> list[str]:
+    failures: list[str] = []
+    manifest_path = root / "manifest.json"
+    try:
+        document = json.loads(manifest_path.read_text(encoding="utf-8"))
+        entries = document.get("files", [])
+        manifest_entries = {
+            str(item["path"]): item
+            for item in entries
+            if isinstance(item, dict) and "path" in item
+        }
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
+        return ["manifest.json: 格式无效"]
+
+    expected_names = file_names - {"manifest.json"}
+    if set(manifest_entries) != expected_names:
+        failures.append("manifest.json: 文件集合与实际产物不一致")
+        return failures
+    for name in sorted(expected_names):
+        content = (root / name).read_bytes()
+        entry = manifest_entries[name]
+        if entry.get("size") != len(content):
+            failures.append(f"manifest.json: {name} 大小不一致")
+        if entry.get("sha256") != hashlib.sha256(content).hexdigest():
+            failures.append(f"manifest.json: {name} 哈希不一致")
+    return failures
 
 
 def main() -> int:
@@ -93,6 +133,11 @@ def main() -> int:
         files.append(path)
     if not files:
         failures.append("公开产物目录为空")
+    file_names = {path.name for path in files}
+    if file_names not in (SUCCESS_FILES, FAILURE_FILES):
+        failures.append("公开产物文件集合不符合成功或失败契约")
+    elif "manifest.json" in file_names:
+        failures.extend(validate_manifest(root, file_names))
     for path in files:
         content = path.read_bytes()
         if any(value in content for value in encoded_values):

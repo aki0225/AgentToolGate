@@ -416,6 +416,7 @@ def trust_codex_hook(
         **identity,
     )
     stdout_queue: queue.Queue[str | None] = queue.Queue()
+    stderr_lines: list[str] = []
 
     def pump_stdout() -> None:
         if not process.stdout:
@@ -427,8 +428,8 @@ def trust_codex_hook(
 
     def drain_stderr() -> None:
         if process.stderr:
-            for _ in iter(process.stderr.readline, ""):
-                pass
+            for line in iter(process.stderr.readline, ""):
+                stderr_lines.append(line)
 
     threading.Thread(target=pump_stdout, daemon=True).start()
     threading.Thread(target=drain_stderr, daemon=True).start()
@@ -505,6 +506,14 @@ def trust_codex_hook(
             },
             replacements,
         )
+    except DemoFailure as error:
+        stop_process(process)
+        time.sleep(0.1)
+        diagnostic = sanitize_text("".join(stderr_lines), replacements).strip()
+        if diagnostic:
+            diagnostic = re.sub(r"\s+", " ", diagnostic)[-800:]
+            raise DemoFailure(f"{error}；Codex 诊断：{diagnostic}") from error
+        raise
     finally:
         if process.stdin:
             process.stdin.close()
@@ -898,6 +907,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agenttoolgate", required=True, type=Path)
     parser.add_argument("--codex", default="codex")
+    parser.add_argument("--codex-runtime-path")
     parser.add_argument("--model", required=True)
     parser.add_argument("--release-tag", required=True)
     parser.add_argument("--atg-port", required=True, type=int)
@@ -1013,6 +1023,8 @@ def main() -> int:
             }
         }
         codex_env["CODEX_HOME"] = str(codex_home)
+        if args.codex_runtime_path:
+            codex_env["PATH"] = args.codex_runtime_path
         hook_trust = trust_codex_hook(
             args.codex,
             codex_env,

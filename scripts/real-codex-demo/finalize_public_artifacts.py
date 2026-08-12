@@ -21,6 +21,7 @@ SUCCESS_FILES = {
 }
 FAILURE_FILES = {"failure.json"}
 MAX_PUBLIC_FILE_SIZE = 2 * 1024 * 1024
+ALLOWED_FILES = SUCCESS_FILES | FAILURE_FILES | {"cleanup.json", "manifest.json"}
 
 
 def port_is_listening(port: int) -> bool:
@@ -60,19 +61,22 @@ def refresh_manifest(root: Path) -> None:
     )
 
 
-def validate_public_artifact_contract(root: Path) -> None:
+def validate_public_artifact_contract(root: Path) -> str:
     regular_files: set[str] = set()
     for path in root.iterdir():
         if path.is_symlink() or not path.is_file():
             raise ValueError("公开产物目录包含非普通文件")
         if path.stat().st_size > MAX_PUBLIC_FILE_SIZE:
             raise ValueError(f"公开产物过大：{path.name}")
+        if path.name not in ALLOWED_FILES:
+            raise ValueError(f"公开产物不在白名单：{path.name}")
         regular_files.add(path.name)
 
     has_success = SUCCESS_FILES.issubset(regular_files)
     has_failure = FAILURE_FILES.issubset(regular_files)
     if has_success == has_failure:
         raise ValueError("公开产物必须且只能包含成功或失败证据契约")
+    return "success" if has_success else "failure"
 
 
 def main() -> int:
@@ -87,10 +91,14 @@ def main() -> int:
         print("公开演示产物目录不存在。", file=sys.stderr)
         return 2
     try:
-        validate_public_artifact_contract(args.input)
+        artifact_mode = validate_public_artifact_contract(args.input)
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 2
+    if artifact_mode == "failure":
+        for path in args.input.iterdir():
+            if path.name not in FAILURE_FILES:
+                path.unlink()
     checks = {
         "privateRootAbsent": not args.private_root.exists(),
         "sshWorkingDirectoryAbsent": not args.ssh_dir.exists(),
@@ -117,3 +125,7 @@ def main() -> int:
         return 1
     print("私有目录与 SSH 隧道清理后置条件通过。")
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

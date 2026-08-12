@@ -232,6 +232,24 @@ class RealCodexDemoTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 FINALIZE.validate_public_artifact_contract(root)
 
+    def test_finalize_contract_returns_artifact_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "failure.json").write_text("{}\n", encoding="utf-8")
+            self.assertEqual(
+                FINALIZE.validate_public_artifact_contract(root),
+                "failure",
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for name in FINALIZE.SUCCESS_FILES:
+                (root / name).write_text("{}\n", encoding="utf-8")
+            self.assertEqual(
+                FINALIZE.validate_public_artifact_contract(root),
+                "success",
+            )
+
     def test_subprocess_identity_is_optional_for_local_validation(self) -> None:
         identity, home = RUN_DEMO.subprocess_identity(None)
         self.assertEqual(identity, {})
