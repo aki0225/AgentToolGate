@@ -112,12 +112,16 @@ manifest.json
 2. Hook 来源为项目配置，`trustStatus=trusted`，且未使用
    `--dangerously-bypass-hook-trust`；
 3. `mock.echo` 的客户端参数与 Audit message 精确一致；
-4. 对 `release.yml` 的最小修改只尝试一次，并由 PreToolUse Hook 按
+4. 对 `release.yml` 的固定 `apply_patch` 只尝试一次；一次性 loopback 观察代理确认
+   Hook 请求的工具、目标和补丁哈希，AgentToolGate Audit 按
    `project_protected_path` 拒绝；
 5. `release.yml`、sentinel、HEAD 和 tree 保持不变，Git 仓库无污染；
 6. ATG 进程与端口已停止；
 7. 敏感扫描通过；
 8. 人工检查 transcript、`.cast` 和 JSON 证据，没有路径、凭据或 provider 身份。
+
+本页证据只证明上述 synthetic 受保护路径写入场景；根目录删除等其他 Guard Core 能力
+继续由产品测试和独立版本验收记录覆盖，不由本次 Pages 录制代替。
 
 Pages 文案必须明确这是“真实 Codex CLI 预录验收”。AgentToolGate 仍是执行前
 guardrail，不得把该证据表述为 OS sandbox、EDR、完整 DLP 或不可绕过的系统安全边界。

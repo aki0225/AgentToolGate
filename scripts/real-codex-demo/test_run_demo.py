@@ -91,6 +91,9 @@ class RealCodexDemoTest(unittest.TestCase):
                 "inputRedactedJson": {
                     "target": RUN_DEMO.PROTECTED_RELEASE_FILE,
                     "targets": [RUN_DEMO.PROTECTED_RELEASE_FILE],
+                    "adapter": "codex",
+                    "tool": "apply_patch",
+                    "actionType": "write",
                     "guardDecision": "deny",
                     "guardRiskLevel": "high",
                     "riskLevel": "high",
@@ -101,6 +104,32 @@ class RealCodexDemoTest(unittest.TestCase):
                 },
                 "explanation": {"matchedRule": "project_protected_path"},
                 "errorMessage": RUN_DEMO.PROTECTED_RELEASE_REASON,
+            },
+        ]
+        observed_requests = [
+            {
+                "adapter": "codex",
+                "tool": "Bash",
+                "actionType": "exec",
+                "target": "git status --short",
+                "content": "git status --short",
+            },
+            {
+                "adapter": "codex",
+                "tool": "Bash",
+                "actionType": "exec",
+                "target": "tool-output.txt",
+                "content": "cat tool-output.txt",
+            },
+            {
+                "adapter": "codex",
+                "tool": "apply_patch",
+                "actionType": "write",
+                "target": RUN_DEMO.PROTECTED_RELEASE_FILE,
+                "targets": [RUN_DEMO.PROTECTED_RELEASE_FILE],
+                "isScript": False,
+                "contentEncoding": "plain",
+                "content": RUN_DEMO.expected_release_patch_content(),
             },
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -131,6 +160,7 @@ class RealCodexDemoTest(unittest.TestCase):
             result = RUN_DEMO.validate_results(
                 events,
                 audits,
+                observed_requests,
                 repo,
                 unique_message,
                 0,
@@ -141,9 +171,51 @@ class RealCodexDemoTest(unittest.TestCase):
                 ),
             )
         self.assertTrue(result["checks"]["protectedReleaseWriteDeniedOnce"])
+        self.assertTrue(result["checks"]["hookObservedProtectedWriteOnce"])
+        self.assertTrue(result["checks"]["guardWriteAuditRecordedOnce"])
         self.assertTrue(result["checks"]["protectedReleaseContentPreserved"])
         self.assertTrue(result["checks"]["sentinelFilePreserved"])
         self.assertTrue(result["checks"]["repositoryClean"])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            RUN_DEMO.run_checked(["git", "init", "--initial-branch=main"], cwd=repo)
+            RUN_DEMO.run_checked(["git", "config", "user.name", "Test"], cwd=repo)
+            RUN_DEMO.run_checked(["git", "config", "user.email", "test@example.invalid"], cwd=repo)
+            (repo / "README.md").write_text("test\n", encoding="utf-8")
+            (repo / RUN_DEMO.SYNTHETIC_SENTINEL).write_text("preserved\n", encoding="utf-8")
+            (repo / RUN_DEMO.PROTECTED_RELEASE_FILE).write_text(
+                RUN_DEMO.PROTECTED_RELEASE_CONTENT,
+                encoding="utf-8",
+            )
+            RUN_DEMO.run_checked(["git", "add", "."], cwd=repo)
+            RUN_DEMO.run_checked(["git", "commit", "-m", "初始化"], cwd=repo)
+            repeated_baseline = {
+                "head": RUN_DEMO.run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip(),
+                "tree": RUN_DEMO.run_checked(
+                    ["git", "rev-parse", "HEAD^{tree}"], cwd=repo
+                ).stdout.strip(),
+                "sentinelSha256": hashlib.sha256(
+                    (repo / RUN_DEMO.SYNTHETIC_SENTINEL).read_bytes()
+                ).hexdigest(),
+                "protectedReleaseSha256": hashlib.sha256(
+                    (repo / RUN_DEMO.PROTECTED_RELEASE_FILE).read_bytes()
+                ).hexdigest(),
+            }
+            with self.assertRaises(RUN_DEMO.DemoFailure):
+                RUN_DEMO.validate_results(
+                    events,
+                    audits,
+                    [*observed_requests, observed_requests[-1]],
+                    repo,
+                    unique_message,
+                    0,
+                    repeated_baseline,
+                    (
+                        "Command blocked by PreToolUse hook: "
+                        f"{RUN_DEMO.PROTECTED_RELEASE_REASON}\n"
+                    ),
+                )
 
     def test_write_cast_preserves_event_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -187,6 +259,9 @@ class RealCodexDemoTest(unittest.TestCase):
             "inputRedactedJson": {
                 "target": RUN_DEMO.PROTECTED_RELEASE_FILE,
                 "targets": [RUN_DEMO.PROTECTED_RELEASE_FILE],
+                "adapter": "codex",
+                "tool": "apply_patch",
+                "actionType": "write",
                 "isScript": False,
                 "content": "[REDACTED]",
                 "contentHash": "redacted-public-hash",
@@ -231,6 +306,89 @@ class RealCodexDemoTest(unittest.TestCase):
             RUN_DEMO.is_protected_release_write(traversal, repo),
             "父目录跳转不能被归一化成受保护文件",
         )
+        case_variant = {
+            **base,
+            "inputRedactedJson": {
+                **base["inputRedactedJson"],
+                "target": "Release.yml",
+                "targets": ["Release.yml"],
+            },
+        }
+        self.assertFalse(
+            RUN_DEMO.is_protected_release_write(case_variant, repo),
+            "Ubuntu runner 上路径大小写必须精确匹配",
+        )
+
+    def test_observed_release_write_requires_exact_patch(self) -> None:
+        repo = Path("/tmp/disposable-repo")
+        request = {
+            "adapter": "codex",
+            "tool": "apply_patch",
+            "actionType": "write",
+            "target": RUN_DEMO.PROTECTED_RELEASE_FILE,
+            "targets": [RUN_DEMO.PROTECTED_RELEASE_FILE],
+            "isScript": False,
+            "contentEncoding": "plain",
+            "content": RUN_DEMO.expected_release_patch_content(),
+        }
+        self.assertTrue(
+            RUN_DEMO.is_expected_observed_release_write(request, repo)
+        )
+        for changed in (
+            {**request, "tool": "Edit"},
+            {**request, "actionType": "delete"},
+            {
+                **request,
+                "content": RUN_DEMO.expected_release_patch_content().replace(
+                    RUN_DEMO.PROTECTED_RELEASE_REPLACEMENT.rstrip(),
+                    "release: different",
+                ),
+            },
+        ):
+            self.assertFalse(
+                RUN_DEMO.is_expected_observed_release_write(changed, repo)
+            )
+
+    def test_public_audit_summary_uses_allowlist(self) -> None:
+        call = {
+            "toolKey": "agent_guard.evaluate",
+            "status": "denied",
+            "policyDecision": "deny",
+            "riskLevel": "high",
+            "errorMessage": RUN_DEMO.PROTECTED_RELEASE_REASON,
+            "actorEmail": "private@example.invalid",
+            "futureOpaqueField": "must-not-be-published",
+            "inputRedactedJson": {
+                "adapter": "codex",
+                "tool": "apply_patch",
+                "actionType": "write",
+                "target": RUN_DEMO.PROTECTED_RELEASE_FILE,
+                "targets": [RUN_DEMO.PROTECTED_RELEASE_FILE],
+                "isScript": False,
+                "content": "[REDACTED]",
+                "futureOpaqueField": "must-not-be-published",
+            },
+            "explanation": {
+                "targetCategory": "workspace",
+                "riskLevel": "high",
+                "matchedRule": "project_protected_path",
+                "signals": ["High-risk local action"],
+            },
+        }
+        summary = RUN_DEMO.public_audit_summary(call)
+        serialized = __import__("json").dumps(summary)
+        self.assertNotIn("must-not-be-published", serialized)
+        self.assertNotIn("private@example.invalid", serialized)
+        self.assertEqual(summary["input"]["content"], "[REDACTED]")
+        mcp_summary = RUN_DEMO.public_audit_summary(
+            {
+                "toolKey": "mock.echo",
+                "status": "success",
+                "policyDecision": "allow",
+                "inputRedactedJson": {"message": "synthetic-message"},
+            }
+        )
+        self.assertEqual(mcp_summary["input"]["message"], "synthetic-message")
 
     def test_expected_command_matching_rejects_echo_and_extra_commands(self) -> None:
         self.assertTrue(
