@@ -89,10 +89,18 @@ class RealCodexDemoTest(unittest.TestCase):
                 "status": "denied",
                 "policyDecision": "deny",
                 "inputRedactedJson": {
-                    "target": ".",
+                    "target": RUN_DEMO.PROTECTED_RELEASE_FILE,
+                    "targets": [RUN_DEMO.PROTECTED_RELEASE_FILE],
                     "guardDecision": "deny",
-                    "guardRiskLevel": "critical",
+                    "guardRiskLevel": "high",
+                    "riskLevel": "high",
+                    "isScript": False,
+                    "content": "[REDACTED]",
+                    "contentHash": "redacted-public-hash",
+                    "scriptHash": "",
                 },
+                "explanation": {"matchedRule": "project_protected_path"},
+                "errorMessage": RUN_DEMO.PROTECTED_RELEASE_REASON,
             },
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -102,6 +110,10 @@ class RealCodexDemoTest(unittest.TestCase):
             RUN_DEMO.run_checked(["git", "config", "user.email", "test@example.invalid"], cwd=repo)
             (repo / "README.md").write_text("test\n", encoding="utf-8")
             (repo / RUN_DEMO.SYNTHETIC_SENTINEL).write_text("preserved\n", encoding="utf-8")
+            (repo / RUN_DEMO.PROTECTED_RELEASE_FILE).write_text(
+                RUN_DEMO.PROTECTED_RELEASE_CONTENT,
+                encoding="utf-8",
+            )
             RUN_DEMO.run_checked(["git", "add", "."], cwd=repo)
             RUN_DEMO.run_checked(["git", "commit", "-m", "初始化"], cwd=repo)
             baseline = {
@@ -112,6 +124,9 @@ class RealCodexDemoTest(unittest.TestCase):
                 "sentinelSha256": hashlib.sha256(
                     (repo / RUN_DEMO.SYNTHETIC_SENTINEL).read_bytes()
                 ).hexdigest(),
+                "protectedReleaseSha256": hashlib.sha256(
+                    (repo / RUN_DEMO.PROTECTED_RELEASE_FILE).read_bytes()
+                ).hexdigest(),
             }
             result = RUN_DEMO.validate_results(
                 events,
@@ -120,9 +135,13 @@ class RealCodexDemoTest(unittest.TestCase):
                 unique_message,
                 0,
                 baseline,
-                "Command blocked by PreToolUse hook: 命中根目录删除\n",
+                (
+                    "Command blocked by PreToolUse hook: "
+                    f"{RUN_DEMO.PROTECTED_RELEASE_REASON}\n"
+                ),
             )
-        self.assertTrue(result["checks"]["workspaceRootDeleteDeniedOnce"])
+        self.assertTrue(result["checks"]["protectedReleaseWriteDeniedOnce"])
+        self.assertTrue(result["checks"]["protectedReleaseContentPreserved"])
         self.assertTrue(result["checks"]["sentinelFilePreserved"])
         self.assertTrue(result["checks"]["repositoryClean"])
 
@@ -159,17 +178,59 @@ class RealCodexDemoTest(unittest.TestCase):
         self.assertEqual(invoked.call_args_list[0].kwargs["cwd"], Path("/tmp/repo"))
         self.assertEqual(invoked.call_args_list[1].kwargs["cwd"], Path("/tmp/repo"))
 
-    def test_workspace_root_delete_matching_is_exact(self) -> None:
-        repo = Path("/tmp/disposable-repo")
-        self.assertTrue(RUN_DEMO.is_workspace_root_delete({"target": "."}, repo))
-        self.assertTrue(
-            RUN_DEMO.is_workspace_root_delete({"target": str(repo)}, repo)
-        )
-        for target in ("./cache", ".agenttoolgate", "echo rm -rf ."):
+    def test_protected_release_write_matching_is_exact(self) -> None:
+        repo = Path.cwd() / ".tmp" / "disposable-repo"
+        base = {
+            "toolKey": "agent_guard.evaluate",
+            "status": "denied",
+            "policyDecision": "deny",
+            "inputRedactedJson": {
+                "target": RUN_DEMO.PROTECTED_RELEASE_FILE,
+                "targets": [RUN_DEMO.PROTECTED_RELEASE_FILE],
+                "isScript": False,
+                "content": "[REDACTED]",
+                "contentHash": "redacted-public-hash",
+                "scriptHash": "",
+                "riskLevel": "high",
+            },
+            "explanation": {"matchedRule": "project_protected_path"},
+            "errorMessage": RUN_DEMO.PROTECTED_RELEASE_REASON,
+        }
+        self.assertTrue(RUN_DEMO.is_protected_release_write(base, repo))
+        absolute = {
+            **base,
+            "inputRedactedJson": {
+                **base["inputRedactedJson"],
+                "target": str(repo / RUN_DEMO.PROTECTED_RELEASE_FILE),
+                "targets": [str(repo / RUN_DEMO.PROTECTED_RELEASE_FILE)],
+            },
+        }
+        self.assertTrue(RUN_DEMO.is_protected_release_write(absolute, repo))
+        for target in ("release-copy.yml", "./cache", ".agenttoolgate"):
+            candidate = {
+                **base,
+                "inputRedactedJson": {
+                    **base["inputRedactedJson"],
+                    "target": target,
+                    "targets": [target],
+                },
+            }
             self.assertFalse(
-                RUN_DEMO.is_workspace_root_delete({"target": target}, repo),
+                RUN_DEMO.is_protected_release_write(candidate, repo),
                 target,
             )
+        traversal = {
+            **base,
+            "inputRedactedJson": {
+                **base["inputRedactedJson"],
+                "target": "../release.yml",
+                "targets": ["../release.yml"],
+            },
+        }
+        self.assertFalse(
+            RUN_DEMO.is_protected_release_write(traversal, repo),
+            "父目录跳转不能被归一化成受保护文件",
+        )
 
     def test_expected_command_matching_rejects_echo_and_extra_commands(self) -> None:
         self.assertTrue(
