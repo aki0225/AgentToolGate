@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "v1",
+  "artifactType": "rc_client_acceptance_manifest",
+  "runId": "codex-windows-v031-rc1-20260812",
+  "status": "passed",
+  "productCommit": "c6799c39061c05e35b54a348a6e293032edf94b4",
+  "packageSha256": "db1a6ed14ad3d423ba5a165d58101610146bc4b7274187b2856ecaf56e67368d",
+  "files": [
+    {
+      "path": "README.md",
+      "sizeBytes": 1652,
+      "sha256": "4a540e794b9ae39b10a0567f57c411fdf1d2576d03cae6f9b10fd5e57c85bdc2",
+      "mediaType": "text/markdown; charset=utf-8"
+    },
+    {
+      "path": "summary.json",
+      "sizeBytes": 1712,
+      "sha256": "ccb140912acf2e32b8d6e6beca58b32976b203f8c6e361dd4cfa7994f91b8a12",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "hook-trust.json",
+      "sizeBytes": 653,
+      "sha256": "0d90627c43442da04aeb61011672a1d3558338c3e9244b631ae6a60128f73dc3",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "transcript.txt",
+      "sizeBytes": 1964,
+      "sha256": "8a9fe48263d3f10fd8b78664aec1ba621dbe8e5a3f9854c8d5f303151d58cd0f",
+      "mediaType": "text/plain; charset=utf-8"
+    },
+    {
+      "path": "audit.json",
+      "sizeBytes": 1943,
+      "sha256": "a4db617e5fb021c30737505de779b720b5bede0d3d9efbc7af2a023b71161788",
+      "mediaType": "application/json"
+    },
+    {
+      "path": "postconditions.json",
+      "sizeBytes": 741,
+      "sha256": "edbabfe479b24880617951774150e352252a8b8292080790b7f836c6da4d68ec",
+      "mediaType": "application/json"
+    }
+  ]
+}

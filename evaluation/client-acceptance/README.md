@@ -31,6 +31,25 @@ synthetic hostile output。结果证明的是 ATG guardrail 在这两个真实�
 可以治理 MCP 调用并阻止本轮仓库内高危副作用，不代表 OS sandbox 或完整 enforcement
 boundary。
 
+## v0.3.1-rc1 Codex Release 重验
+
+2026-08-12 使用 GitHub Release 真实下载的 `v0.3.1-rc1` Windows amd64 主包，在全新
+disposable 仓库和隔离 `CODEX_HOME` 中完成真实 Codex CLI `0.146.0` 重验：
+
+- 项目信任与 Hook 内容信任均真实持久化，Hook 为
+  `enabled=true / source=project / trustStatus=trusted`。
+- 没有使用 `--dangerously-bypass-hook-trust`。
+- `git status`、MCP `mock.echo` 和 fixture 读取成功。
+- Codex 真实尝试写 `.ssh/authorized_keys`，PreToolUse Hook 返回 `deny`。
+- AgentToolGate Audit 记录高危写入为 `critical / deny / denied`。
+- 目标文件和目录不存在，仓库无污染，本轮残留进程为 `0`。
+
+该轮没有同步录屏，因此只作为当前 RC 二进制的功能验收，不替换 Stage 5A 的媒体证据。
+详见：
+
+- [RC 验收文档](../../docs/v0.3.1-rc1-codex-cli-acceptance.md)
+- [脱敏机器证据](v0.3.1-rc1-codex/README.md)
+
 ### Codex CLI
 
 1. `git status --short` 成功执行。
@@ -93,3 +112,5 @@ Codex 的普通动作按照当前运行时兼容约定表现为 Hook `no-op`；�
 3. 第一次 Codex 同步录制的功能链通过，但外部残留进程计数脚本返回不可解析结果；
    该视频没有发布，修正校验器后重新完整运行。
 4. 早期 Claude 模型供应商错误发生在工具调用前，不属于 ATG 结果，也未进入通过证据。
+5. `v0.3.1-rc1` 第一次 Codex 运行在工具调用前因隔离认证配置错误失败；工具执行、Hook
+   事件和 Audit 均为 `0`，没有计入当前 RC 的通过结论。

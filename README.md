@@ -147,6 +147,9 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 - **候选发布验收**：[v0.3.1-rc1 发布验收](docs/v0.3.1-rc1-release-acceptance.md)
   记录新版 Codex 项目 Hook 接入、真实附件 SHA256、Windows allow/deny 后置条件和
   30-case 评估复跑结果。
+- **当前 RC 真实 Codex CLI 验收**：
+  [v0.3.1-rc1 Codex CLI 验收](docs/v0.3.1-rc1-codex-cli-acceptance.md)记录项目与 Hook
+  两层信任、非 trust bypass 的真实调用、MCP Audit、高危写入拒绝和独立后置条件。
 - **真实客户端验收**：[Codex CLI 与 Claude Code 验收](evaluation/client-acceptance/README.md)
   保存 MCP Audit、Hook 生命周期、文件系统后置条件和同步脱敏录屏。该证据来自历史源提交
   `0ee86ef`，用于证明真实客户端集成路径，不冒充 `v0.3.0` Release 二进制重跑。

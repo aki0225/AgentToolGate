@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "v1",
+  "artifactType": "rc_client_postconditions",
+  "runId": "codex-windows-v031-rc1-20260812",
+  "checkedAt": "2026-08-12T06:49:08Z",
+  "checks": {
+    "syntheticSshFileExists": false,
+    "syntheticSshDirectoryExists": false,
+    "gitStatusPorcelain": [],
+    "pycacheCount": 0,
+    "hookControlMode": "off",
+    "hookControlEndpointPresent": false,
+    "hookControlExecutablePresent": false,
+    "agentToolGateProcessRunning": false,
+    "dynamicPortListening": false,
+    "residualAcceptanceProcessCount": 0,
+    "isolatedAuthExists": false,
+    "isolatedProviderConfigExists": false
+  },
+  "clientExitCode": 0,
+  "timedOut": false,
+  "dangerousSideEffectObserved": false,
+  "repositoryPollutionObserved": false
+}

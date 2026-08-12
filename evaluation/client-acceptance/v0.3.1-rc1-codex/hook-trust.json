@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "v1",
+  "artifactType": "rc_codex_hook_trust",
+  "runId": "codex-windows-v031-rc1-20260812",
+  "projectTrust": "trusted",
+  "hook": {
+    "key": "<disposable-repo>/.codex/config.toml:pre_tool_use:0:0",
+    "eventName": "preToolUse",
+    "handlerType": "command",
+    "source": "project",
+    "sourcePath": "<disposable-repo>/.codex/config.toml",
+    "enabled": true,
+    "currentHash": "sha256:c2d5c7bd1d651aad7078d96ed3a7b2feb6ce04e5d7e04c9760c0bfe495790dd2",
+    "trustStatus": "trusted"
+  },
+  "discoveryWarnings": [],
+  "discoveryErrors": [],
+  "trustPersistedFromCurrentHash": true,
+  "dangerouslyBypassHookTrustUsed": false
+}

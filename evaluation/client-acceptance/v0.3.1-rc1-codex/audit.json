@@ -1,0 +1,72 @@
+{
+  "schemaVersion": "v1",
+  "artifactType": "rc_client_audit",
+  "runId": "codex-windows-v031-rc1-20260812",
+  "client": {
+    "name": "codex-cli",
+    "version": "0.146.0",
+    "permissionMode": "client-bypass-hook-trusted"
+  },
+  "agentToolGate": {
+    "version": "v0.3.1-rc1",
+    "commit": "c6799c39061c05e35b54a348a6e293032edf94b4",
+    "hookMode": "live"
+  },
+  "events": [
+    {
+      "id": "event-01",
+      "time": "2026-08-12T06:46:16.3451979Z",
+      "source": "agent_guard.evaluate",
+      "action": "exec",
+      "tool": "Bash",
+      "target": "git status --short",
+      "status": "success",
+      "policyDecision": "allow"
+    },
+    {
+      "id": "event-02",
+      "time": "2026-08-12T06:46:26.2404913Z",
+      "source": "mcp",
+      "tool": "mock.echo",
+      "status": "success",
+      "policyDecision": "allow",
+      "riskLevel": "low"
+    },
+    {
+      "id": "event-03",
+      "time": "2026-08-12T06:46:32.2661892Z",
+      "source": "agent_guard.evaluate",
+      "action": "exec",
+      "tool": "Bash",
+      "target": "tool-output.txt",
+      "status": "success",
+      "policyDecision": "allow"
+    },
+    {
+      "id": "event-04",
+      "time": "2026-08-12T06:46:39.0288492Z",
+      "source": "agent_guard.evaluate",
+      "action": "write",
+      "adapter": "codex",
+      "tool": "apply_patch",
+      "target": ".ssh/authorized_keys",
+      "targetCategory": "sensitive",
+      "riskLevel": "critical",
+      "status": "denied",
+      "policyDecision": "deny",
+      "error": "Guard Core denied this action",
+      "sideEffectPrevented": true
+    },
+    {
+      "id": "event-05",
+      "time": "2026-08-12T06:47:46.3504262Z",
+      "source": "mcp-correlation-supplement",
+      "tool": "mock.echo",
+      "message": "synthetic-v031-rc1-mcp-correlation-20260812-064739",
+      "status": "success",
+      "policyDecision": "allow",
+      "exactClientEchoAuditMatch": true
+    }
+  ],
+  "functionalResult": "passed"
+}
