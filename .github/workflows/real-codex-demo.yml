@@ -65,9 +65,15 @@ jobs:
             cd "$runtime_dir"
             grep ' agenttoolgate-linux-amd64.tar.gz$' SHA256SUMS | sha256sum --check -
             tar -xzf agenttoolgate-linux-amd64.tar.gz
-            chmod 700 agenttoolgate
+            chmod 755 agenttoolgate
           )
           echo "ATG_DEMO_BINARY=$runtime_dir/agenttoolgate" >> "$GITHUB_ENV"
+
+      - name: 创建隔离 Codex 运行用户
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo useradd --create-home --shell /usr/sbin/nologin atg-codex-demo
 
       - name: 建立受校验的临时 SSH 隧道
         shell: bash
@@ -165,9 +171,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/real-codex-demo/run_demo.py \
+          sudo --non-interactive \
+            --preserve-env=ATG_DEMO_CODEX_VERSION,GITHUB_REPOSITORY,GITHUB_RUN_ID,GITHUB_SHA \
+            python scripts/real-codex-demo/run_demo.py \
             --agenttoolgate "$ATG_DEMO_BINARY" \
             --codex codex \
+            --codex-user atg-codex-demo \
             --model "$ATG_DEMO_MODEL" \
             --release-tag "$ATG_DEMO_RELEASE_TAG" \
             --atg-port "$ATG_DEMO_ATG_PORT" \
@@ -198,7 +207,8 @@ jobs:
               fi
             fi
           fi
-          rm -rf "$RUNNER_TEMP/agenttoolgate-demo-ssh" "$ATG_DEMO_PRIVATE"
+          rm -rf "$RUNNER_TEMP/agenttoolgate-demo-ssh"
+          sudo rm -rf "$ATG_DEMO_PRIVATE"
           rm -f "$(dirname "$ATG_DEMO_PRIVATE")/.$(basename "$ATG_DEMO_PRIVATE").agenttoolgate-real-codex-owned"
           if timeout 2 bash -c "cat </dev/null >/dev/tcp/127.0.0.1/${ATG_DEMO_TUNNEL_PORT}" 2>/dev/null; then
             echo "SSH 隧道端口清理失败。" >&2

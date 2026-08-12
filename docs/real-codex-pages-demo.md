@@ -26,6 +26,8 @@ AgentToolGate 后端或模型上游。
 - Codex CLI 固定为 `0.146.0`，首版不接受自由文本版本或模型输入。
 - 默认使用 `gpt-5.6-luna` 和 `low` reasoning，控制真实上游用量。
 - 仓库、SQLite、`CODEX_HOME`、认证文件和进程都位于 disposable runner。
+- SSH 隧道运行在 Runner 默认账号下；Codex app-server、CLI 和项目 Hook 使用独立的
+  `atg-codex-demo` 低权限账号。两者不共享 UID。
 - Codex 自身 approvals 与 sandbox 在该一次性环境中关闭，避免把客户端阻断误记为
   AgentToolGate；Hook 内容信任不绕过。
 - hostile fixture、项目根目录、sentinel 文件和 MCP message 全部是 synthetic。
@@ -54,11 +56,15 @@ Secret 只在所需步骤中注入：
 
 - SSH 密码只用于建立隧道，通过临时 `SSH_ASKPASS` 文件传给 OpenSSH；认证完成后立即
   删除，不出现在 SSH 命令参数或后续 Codex 步骤环境中。
+- SSH 只建立普通本地端口转发，不启用 `ControlMaster`，Codex 无法复用控制套接字创建
+  新 SSH 会话。SSH 配置文件和 Host Key 文件在 Codex 启动前删除。
 - API Key 在单独步骤写入 Runner 私有文件；该步骤结束后，后续编排器不继承 Secret 环境
   变量。编排器把它复制到隔离 `CODEX_HOME/auth.json` 后删除源文件，且 Codex 子进程
   环境中不包含该值；验收结束后删除整个私有目录。
 - 固定 `known_hosts`，禁止 `StrictHostKeyChecking=no`。
 - Artifact 上传前同时扫描已知 Secret、VPS 标识、私钥头和 Authorization Bearer 格式。
+- 公开证据目录位于 Runner 私有临时区，由编排账号持有且 Codex 账号不可写；上传前拒绝
+  符号链接、非普通文件、未知文件和超限文件。
 
 ## 真实链路
 

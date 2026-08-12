@@ -183,6 +183,7 @@ def prepare_managed_directory(path: Path, role: str) -> None:
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("AgentToolGate 真实 Codex 演示专用目录\n", encoding="utf-8", newline="\n")
     path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, 0o700 if role == "私有" else 0o755)
     for child in path.iterdir():
         if child.is_symlink():
             child.unlink()
@@ -288,6 +289,64 @@ default_tools_approval_mode = "approve"
     os.chmod(auth_path, 0o600)
 
 
+def subprocess_identity(user_name: str | None) -> tuple[dict[str, Any], str | None]:
+    if not user_name:
+        return {}, None
+    if os.name != "posix":
+        raise DemoFailure("Codex 隔离用户只支持 POSIX runner")
+    import pwd
+
+    try:
+        account = pwd.getpwnam(user_name)
+    except KeyError as error:
+        raise DemoFailure("Codex 隔离用户不存在") from error
+    return {
+        "user": account.pw_uid,
+        "group": account.pw_gid,
+        "extra_groups": [],
+    }, account.pw_dir
+
+
+def grant_codex_runtime_access(private_root: Path, paths: list[Path], user_name: str | None) -> None:
+    if not user_name:
+        return
+    if os.name != "posix":
+        raise DemoFailure("Codex 隔离用户只支持 POSIX runner")
+    import pwd
+
+    try:
+        account = pwd.getpwnam(user_name)
+    except KeyError as error:
+        raise DemoFailure("Codex 隔离用户不存在") from error
+    uid = account.pw_uid
+    gid = account.pw_gid
+    os.chmod(private_root, 0o711)
+    for root in paths:
+        for current_root, directory_names, file_names in os.walk(root):
+            current = Path(current_root)
+            os.chown(current, uid, gid)
+            os.chmod(current, 0o700)
+            for name in directory_names:
+                path = current / name
+                os.chown(path, uid, gid)
+                os.chmod(path, 0o700)
+            for name in file_names:
+                path = current / name
+                os.chown(path, uid, gid)
+                os.chmod(path, 0o600)
+        os.chown(root, uid, gid)
+        os.chmod(root, 0o700)
+    for hook in (paths[0] / ".codex" / "hooks").glob("*.py"):
+        os.chmod(hook, 0o700)
+
+
+def publish_public_artifacts(output: Path) -> None:
+    os.chmod(output, 0o755)
+    for path in output.iterdir():
+        if path.is_file() and not path.is_symlink():
+            os.chmod(path, 0o644)
+
+
 def read_json_rpc_response(
     process: subprocess.Popen[str],
     response_id: int,
@@ -325,7 +384,11 @@ def trust_codex_hook(
     codex_env: dict[str, str],
     repo: Path,
     replacements: dict[str, str],
+    codex_user: str | None = None,
 ) -> dict[str, Any]:
+    identity, home = subprocess_identity(codex_user)
+    if home:
+        codex_env = {**codex_env, "HOME": home}
     process = subprocess.Popen(
         [codex, "app-server", "--stdio"],
         env=codex_env,
@@ -336,6 +399,7 @@ def trust_codex_hook(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         bufsize=1,
+        **identity,
     )
     stdout_queue: queue.Queue[str | None] = queue.Queue()
 
@@ -474,6 +538,7 @@ def run_codex(
     model: str,
     replacements: dict[str, str],
     private_root: Path,
+    codex_user: str | None = None,
     timeout_seconds: int = 600,
 ) -> tuple[int, list[dict[str, Any]], list[tuple[float, str]], str]:
     command = [
@@ -491,6 +556,9 @@ def run_codex(
         str(repo),
         "-",
     ]
+    identity, home = subprocess_identity(codex_user)
+    if home:
+        codex_env = {**codex_env, "HOME": home}
     process = subprocess.Popen(
         command,
         env=codex_env,
@@ -502,6 +570,7 @@ def run_codex(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         bufsize=1,
+        **identity,
     )
     raw_lines: list[str] = []
     stderr_lines: list[str] = []
@@ -822,6 +891,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key-file", required=True, type=Path)
     parser.add_argument("--private-root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--codex-user")
     return parser.parse_args()
 
 
@@ -859,6 +929,7 @@ def main() -> int:
     prepare_managed_directory(private_root, "私有")
     prepare_managed_directory(output, "公开")
     data.mkdir(parents=True, exist_ok=True)
+    os.chmod(data, 0o700)
 
     atg_process: subprocess.Popen[str] | None = None
     started_at = utc_now()
@@ -891,6 +962,8 @@ def main() -> int:
         )
         atg_stdout = (private_root / "agenttoolgate.stdout.log").open("w", encoding="utf-8")
         atg_stderr = (private_root / "agenttoolgate.stderr.log").open("w", encoding="utf-8")
+        os.chmod(private_root / "agenttoolgate.stdout.log", 0o600)
+        os.chmod(private_root / "agenttoolgate.stderr.log", 0o600)
         atg_process = subprocess.Popen(
             [
                 str(args.agenttoolgate.resolve()),
@@ -907,6 +980,11 @@ def main() -> int:
             stderr=atg_stderr,
         )
         wait_for_http(f"http://127.0.0.1:{args.atg_port}/health")
+        grant_codex_runtime_access(
+            private_root,
+            [repo, codex_home],
+            args.codex_user,
+        )
 
         codex_env = {
             key: value
@@ -921,7 +999,13 @@ def main() -> int:
             }
         }
         codex_env["CODEX_HOME"] = str(codex_home)
-        hook_trust = trust_codex_hook(args.codex, codex_env, repo, replacements)
+        hook_trust = trust_codex_hook(
+            args.codex,
+            codex_env,
+            repo,
+            replacements,
+            args.codex_user,
+        )
         write_json(output / "hook-trust.json", hook_trust)
 
         unique_message = f"synthetic-real-codex-{os.environ.get('GITHUB_RUN_ID', int(time.time()))}"
@@ -944,6 +1028,7 @@ def main() -> int:
             args.model,
             replacements,
             private_root,
+            args.codex_user,
         )
         audit_document = http_json(
             f"http://127.0.0.1:{args.atg_port}/api/tool-calls?page=1&pageSize=100"
@@ -1055,6 +1140,7 @@ def main() -> int:
         write_json(output / "summary.json", summary)
         assert_regular_public_files(output)
         write_manifest(output)
+        publish_public_artifacts(output)
         print(json.dumps({"status": "passed", "output": str(output)}, ensure_ascii=False))
         return 0
     except Exception as error:
@@ -1069,6 +1155,7 @@ def main() -> int:
         write_json(output / "failure.json", failure)
         assert_regular_public_files(output)
         write_manifest(output)
+        publish_public_artifacts(output)
         print(f"真实 Codex CLI 演示失败：{failure['error']}", file=sys.stderr)
         return 1
     finally:

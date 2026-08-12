@@ -232,6 +232,11 @@ class RealCodexDemoTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 FINALIZE.validate_public_artifact_contract(root)
 
+    def test_subprocess_identity_is_optional_for_local_validation(self) -> None:
+        identity, home = RUN_DEMO.subprocess_identity(None)
+        self.assertEqual(identity, {})
+        self.assertIsNone(home)
+
 
 if __name__ == "__main__":
     unittest.main()
