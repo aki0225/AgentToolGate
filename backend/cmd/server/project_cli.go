@@ -1322,8 +1322,16 @@ func archiveCodexRuntimeBackups(root string, outcomes []codexRuntimeFileOutcome)
 		if !outcome.refreshed || strings.TrimSpace(outcome.backup) == "" {
 			continue
 		}
-		if err := ensureCodexRuntimeFileMatchesSnapshot(outcome.backup, outcome.previous); err != nil {
+		// 原子交换后，其他进程仍可能通过交换前已打开的句柄继续写 displaced
+		// 文件。这里必须绑定文件身份而不是旧内容，否则会把应当保留到 recovery
+		// 的真实并发写入误判成刷新失败。
+		backupInfo, err := codexRuntimeRegularFileInfo(outcome.backup)
+		if err != nil {
 			archiveErrors = append(archiveErrors, err)
+			continue
+		}
+		if outcome.previous.info == nil || !os.SameFile(outcome.previous.info, backupInfo) {
+			archiveErrors = append(archiveErrors, fmt.Errorf("Codex Hook 备份已被并发替换：%s", outcome.backup))
 			continue
 		}
 		archivedPath, err := archiveCodexRecoveryFile(root, outcome.backup, "refresh")
@@ -1331,9 +1339,28 @@ func archiveCodexRuntimeBackups(root string, outcomes []codexRuntimeFileOutcome)
 			archiveErrors = append(archiveErrors, err)
 			continue
 		}
+		archivedInfo, err := codexRuntimeRegularFileInfo(archivedPath)
+		if err != nil || !os.SameFile(backupInfo, archivedInfo) {
+			if err == nil {
+				err = fmt.Errorf("Codex Hook 备份归档后文件身份不一致：%s", archivedPath)
+			}
+			archiveErrors = append(archiveErrors, err)
+			continue
+		}
 		archivedPaths = append(archivedPaths, archivedPath)
 	}
 	return archivedPaths, errors.Join(archiveErrors...)
+}
+
+func codexRuntimeRegularFileInfo(path string) (os.FileInfo, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("拒绝归档非普通 Codex Hook 备份：%s", path)
+	}
+	return info, nil
 }
 
 func validateCodexRuntimeFiles(root string) error {

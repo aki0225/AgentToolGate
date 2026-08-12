@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"testing"
 
@@ -45,22 +46,32 @@ func TestCodexRefreshRetainsWritesThroughOldOpenHandle(t *testing.T) {
 		t.Fatalf("seek old core handle: %v", err)
 	}
 
+	appendix := []byte("# write through old handle\n")
+	originalReplace := replaceCodexRuntimeFile
+	replaceCodexRuntimeFile = func(root, path string, data []byte, perm os.FileMode, snapshot codexRuntimeFileSnapshot) (string, codexRuntimeFileSnapshot, error) {
+		backup, installed, err := replaceCodexRuntimeFileFromSnapshot(root, path, data, perm, snapshot)
+		if err != nil || path != corePath {
+			return backup, installed, err
+		}
+		var written uint32
+		if err := windows.WriteFile(handle, appendix, &written, nil); err != nil {
+			return "", codexRuntimeFileSnapshot{}, err
+		}
+		if written != uint32(len(appendix)) {
+			return "", codexRuntimeFileSnapshot{}, io.ErrShortWrite
+		}
+		if err := windows.FlushFileBuffers(handle); err != nil {
+			return "", codexRuntimeFileSnapshot{}, err
+		}
+		return backup, installed, nil
+	}
+	t.Cleanup(func() { replaceCodexRuntimeFile = originalReplace })
+
 	report := &projectInitReport{}
 	if err := writeCodexRuntimeFiles(project, report, true); err != nil {
 		t.Fatalf("refresh hooks: %v", err)
 	}
-	backupPath := backupContaining(t, report.Backups, oldCore)
-	appendix := []byte("# write through old handle\n")
-	var written uint32
-	if err := windows.WriteFile(handle, appendix, &written, nil); err != nil {
-		t.Fatalf("write through old core handle: %v", err)
-	}
-	if written != uint32(len(appendix)) {
-		t.Fatalf("short old-handle write: %d", written)
-	}
-	if err := windows.FlushFileBuffers(handle); err != nil {
-		t.Fatalf("flush old core handle: %v", err)
-	}
+	backupPath := backupContaining(t, report.Backups, bytes.Join([][]byte{oldCore, appendix}, nil))
 	got, err := os.ReadFile(backupPath)
 	if err != nil {
 		t.Fatalf("read retained core backup: %v", err)
