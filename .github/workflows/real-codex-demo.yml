@@ -44,8 +44,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "ATG_DEMO_PRIVATE=$RUNNER_TEMP/agenttoolgate-real-codex-private" >> "$GITHUB_ENV"
-          echo "ATG_DEMO_OUTPUT=$RUNNER_TEMP/real-codex-demo-${GITHUB_RUN_ID}/public" >> "$GITHUB_ENV"
+          echo "ATG_DEMO_PRIVATE=/tmp/agenttoolgate-real-codex-private" >> "$GITHUB_ENV"
+          echo "ATG_DEMO_OUTPUT=/tmp/real-codex-demo-${GITHUB_RUN_ID}/public" >> "$GITHUB_ENV"
           npm install --global "@openai/codex@${ATG_DEMO_CODEX_VERSION}"
           codex --version
 
@@ -53,8 +53,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          runtime_dir="$RUNNER_TEMP/agenttoolgate-release"
+          runtime_dir="/tmp/agenttoolgate-release-${GITHUB_RUN_ID}"
           mkdir -p "$runtime_dir"
+          chmod 755 "$runtime_dir"
           curl --fail --location --silent --show-error \
             "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ATG_DEMO_RELEASE_TAG}/agenttoolgate-linux-amd64.tar.gz" \
             --output "$runtime_dir/agenttoolgate-linux-amd64.tar.gz"
@@ -213,6 +214,7 @@ jobs:
           fi
           rm -rf "$RUNNER_TEMP/agenttoolgate-demo-ssh"
           sudo rm -rf "$ATG_DEMO_PRIVATE"
+          sudo rm -rf "$(dirname "$ATG_DEMO_BINARY")"
           rm -f "$(dirname "$ATG_DEMO_PRIVATE")/.$(basename "$ATG_DEMO_PRIVATE").agenttoolgate-real-codex-owned"
           if timeout 2 bash -c "cat </dev/null >/dev/tcp/127.0.0.1/${ATG_DEMO_TUNNEL_PORT}" 2>/dev/null; then
             echo "SSH 隧道端口清理失败。" >&2
