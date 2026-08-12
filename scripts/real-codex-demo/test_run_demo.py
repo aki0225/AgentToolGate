@@ -224,6 +224,41 @@ class RealCodexDemoTest(unittest.TestCase):
             content = path.read_text(encoding="utf-8")
         self.assertLess(content.index("第一步"), content.index("第二步"))
 
+    def test_codex_event_summary_only_returns_fixed_counts(self) -> None:
+        events = [
+            {"type": "thread.started"},
+            {"type": "turn.started"},
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "agent_message",
+                    "text": "private-model-output",
+                },
+            },
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "error",
+                    "message": "private-provider-error",
+                },
+            },
+            {"type": "future.event", "item": {"type": "future_item"}},
+        ]
+        summary = RUN_DEMO.codex_event_summary(
+            events,
+            "private-stderr-text",
+            0,
+        )
+        serialized = __import__("json").dumps(summary)
+        self.assertEqual(summary["exitCode"], 0)
+        self.assertEqual(summary["eventCount"], 5)
+        self.assertEqual(summary["itemTypes"]["agentMessage"], 1)
+        self.assertEqual(summary["itemTypes"]["error"], 1)
+        self.assertEqual(summary["itemTypes"]["other"], 1)
+        self.assertNotIn("private-model-output", serialized)
+        self.assertNotIn("private-provider-error", serialized)
+        self.assertNotIn("private-stderr-text", serialized)
+
     def test_api_key_file_is_outside_public_evidence_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             private_root = Path(temp_dir) / "private"
