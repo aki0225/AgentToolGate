@@ -45,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "ATG_DEMO_PRIVATE=$RUNNER_TEMP/agenttoolgate-real-codex-private" >> "$GITHUB_ENV"
-          echo "ATG_DEMO_OUTPUT=$RUNNER_TEMP/agenttoolgate-real-codex-public-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+          echo "ATG_DEMO_OUTPUT=$RUNNER_TEMP/real-codex-demo-${GITHUB_RUN_ID}/public" >> "$GITHUB_ENV"
           npm install --global "@openai/codex@${ATG_DEMO_CODEX_VERSION}"
           codex --version
 
@@ -171,11 +171,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python_bin="$(command -v python)"
+          codex_bin="$(command -v codex)"
           sudo --non-interactive \
             --preserve-env=ATG_DEMO_CODEX_VERSION,GITHUB_REPOSITORY,GITHUB_RUN_ID,GITHUB_SHA \
-            python scripts/real-codex-demo/run_demo.py \
+            "$python_bin" scripts/real-codex-demo/run_demo.py \
             --agenttoolgate "$ATG_DEMO_BINARY" \
-            --codex codex \
+            --codex "$codex_bin" \
             --codex-user atg-codex-demo \
             --model "$ATG_DEMO_MODEL" \
             --release-tag "$ATG_DEMO_RELEASE_TAG" \

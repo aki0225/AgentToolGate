@@ -62,6 +62,13 @@ def run_checked(
     return result
 
 
+def run_git_checked(repo: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return run_checked(
+        ["git", "-c", f"safe.directory={repo.resolve()}", *args],
+        cwd=repo,
+    )
+
+
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -208,9 +215,9 @@ def remove_managed_child(path: Path, parent: Path) -> None:
 
 def initialize_repo(repo: Path, agenttoolgate: Path, atg_port: int) -> dict[str, str]:
     repo.mkdir(parents=True, exist_ok=True)
-    run_checked(["git", "init", "--initial-branch=main"], cwd=repo)
-    run_checked(["git", "config", "user.name", "AgentToolGate Demo"], cwd=repo)
-    run_checked(["git", "config", "user.email", "demo@agenttoolgate.local"], cwd=repo)
+    run_git_checked(repo, ["init", "--initial-branch=main"])
+    run_git_checked(repo, ["config", "user.name", "AgentToolGate Demo"])
+    run_git_checked(repo, ["config", "user.email", "demo@agenttoolgate.local"])
 
     (repo / "README.md").write_text(
         "# AgentToolGate 真实 Codex CLI 演示\n\n"
@@ -240,11 +247,11 @@ def initialize_repo(repo: Path, agenttoolgate: Path, atg_port: int) -> dict[str,
     project_config["port"] = atg_port
     write_json(config_path, project_config)
 
-    run_checked(["git", "add", "."], cwd=repo)
-    run_checked(["git", "commit", "-m", "准备 synthetic 真实客户端验收"], cwd=repo)
+    run_git_checked(repo, ["add", "."])
+    run_git_checked(repo, ["commit", "-m", "准备 synthetic 真实客户端验收"])
     return {
-        "head": run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip(),
-        "tree": run_checked(["git", "rev-parse", "HEAD^{tree}"], cwd=repo).stdout.strip(),
+        "head": run_git_checked(repo, ["rev-parse", "HEAD"]).stdout.strip(),
+        "tree": run_git_checked(repo, ["rev-parse", "HEAD^{tree}"]).stdout.strip(),
         "sentinelSha256": hashlib.sha256((repo / SYNTHETIC_SENTINEL).read_bytes()).hexdigest(),
     }
 
@@ -341,10 +348,17 @@ def grant_codex_runtime_access(private_root: Path, paths: list[Path], user_name:
 
 
 def publish_public_artifacts(output: Path) -> None:
-    os.chmod(output, 0o755)
+    sudo_uid = os.environ.get("SUDO_UID", "").strip()
+    sudo_gid = os.environ.get("SUDO_GID", "").strip()
+    owner = (int(sudo_uid), int(sudo_gid)) if sudo_uid.isdigit() and sudo_gid.isdigit() else None
+    os.chmod(output, 0o700)
+    if owner:
+        os.chown(output, *owner)
     for path in output.iterdir():
         if path.is_file() and not path.is_symlink():
-            os.chmod(path, 0o644)
+            os.chmod(path, 0o600)
+            if owner:
+                os.chown(path, *owner)
 
 
 def read_json_rpc_response(
@@ -716,9 +730,9 @@ def validate_results(
         and not is_expected_command(item.get("command", ""), "fixture-read")
     ]
     sentinel = repo / SYNTHETIC_SENTINEL
-    git_status = run_checked(["git", "status", "--porcelain"], cwd=repo).stdout.splitlines()
-    current_head = run_checked(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
-    current_tree = run_checked(["git", "rev-parse", "HEAD^{tree}"], cwd=repo).stdout.strip()
+    git_status = run_git_checked(repo, ["status", "--porcelain"]).stdout.splitlines()
+    current_head = run_git_checked(repo, ["rev-parse", "HEAD"]).stdout.strip()
+    current_tree = run_git_checked(repo, ["rev-parse", "HEAD^{tree}"]).stdout.strip()
     sentinel_sha256 = hashlib.sha256(sentinel.read_bytes()).hexdigest() if sentinel.is_file() else ""
 
     checks = {
