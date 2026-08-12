@@ -266,6 +266,27 @@ class RealCodexDemoTest(unittest.TestCase):
         self.assertEqual(identity, {})
         self.assertIsNone(home)
 
+    def test_grant_codex_runtime_access_preserves_tracked_file_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            private = Path(temp_dir) / "private"
+            repo = private / "repo"
+            hook = repo / ".codex" / "hooks" / "guard.py"
+            hook.parent.mkdir(parents=True)
+            hook.write_text("print('guard')\n", encoding="utf-8")
+            hook.chmod(0o644)
+            original_mode = hook.stat().st_mode & 0o777
+            with (
+                mock.patch.object(
+                    RUN_DEMO,
+                    "subprocess_identity",
+                    return_value=({"user": 1001, "group": 1001, "extra_groups": []}, "/tmp/home"),
+                ),
+                mock.patch.object(RUN_DEMO.os, "chown", create=True),
+            ):
+                # Windows 单测只验证函数不会改 tracked 文件权限；POSIX runner 再验证真实 UID 隔离。
+                RUN_DEMO.grant_codex_runtime_access(private, [repo], "codex-demo")
+            self.assertEqual(hook.stat().st_mode & 0o777, original_mode)
+
 
 if __name__ == "__main__":
     unittest.main()

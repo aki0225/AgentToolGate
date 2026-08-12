@@ -320,36 +320,24 @@ def subprocess_identity(user_name: str | None) -> tuple[dict[str, Any], str | No
 
 
 def grant_codex_runtime_access(private_root: Path, paths: list[Path], user_name: str | None) -> None:
-    if not user_name:
+    identity, _ = subprocess_identity(user_name)
+    if not identity:
         return
-    if os.name != "posix":
-        raise DemoFailure("Codex 隔离用户只支持 POSIX runner")
-    import pwd
-
-    try:
-        account = pwd.getpwnam(user_name)
-    except KeyError as error:
-        raise DemoFailure("Codex 隔离用户不存在") from error
-    uid = account.pw_uid
-    gid = account.pw_gid
+    uid = int(identity["user"])
+    gid = int(identity["group"])
     os.chmod(private_root, 0o711)
     for root in paths:
         for current_root, directory_names, file_names in os.walk(root):
             current = Path(current_root)
             os.chown(current, uid, gid)
-            os.chmod(current, 0o700)
             for name in directory_names:
                 path = current / name
                 os.chown(path, uid, gid)
-                os.chmod(path, 0o700)
             for name in file_names:
                 path = current / name
                 os.chown(path, uid, gid)
-                os.chmod(path, 0o600)
         os.chown(root, uid, gid)
         os.chmod(root, 0o700)
-    for hook in (paths[0] / ".codex" / "hooks").glob("*.py"):
-        os.chmod(hook, 0o700)
 
 
 def publish_public_artifacts(output: Path) -> None:
