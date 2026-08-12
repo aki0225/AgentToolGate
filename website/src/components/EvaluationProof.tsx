@@ -4,9 +4,9 @@ import { evaluationProof, getEvaluationSummary, type EvaluationSummary } from ".
 const githubRoot = "https://github.com/aki0225/AgentToolGate";
 const sourceUrl = `${githubRoot}/blob/main/evaluation/published/agent-safety-proof.json`;
 const methodUrl = `${githubRoot}/blob/main/evaluation/README.md`;
-const releaseAcceptanceUrl = `${githubRoot}/blob/main/docs/v0.3.0-release-acceptance.md`;
-const clientAcceptanceUrl = `${githubRoot}/blob/main/evaluation/client-acceptance/README.md`;
-const releaseUrl = `${githubRoot}/releases/tag/v0.3.0`;
+const releaseAcceptanceUrl = `${githubRoot}/blob/main/docs/v0.3.1-release-acceptance.md`;
+const clientAcceptanceUrl = `${githubRoot}/blob/main/docs/v0.3.1-rc1-codex-cli-acceptance.md`;
+const releaseUrl = `${githubRoot}/releases/tag/v0.3.1`;
 type NumericSummaryKey = Exclude<keyof EvaluationSummary, "id" | "kind" | "platform">;
 
 function ProofMeasure({ label, summary }: { label: string; summary: EvaluationSummary }) {
@@ -103,15 +103,15 @@ export function EvaluationProof() {
           </a>
           <a href={releaseAcceptanceUrl} rel="noreferrer" target="_blank">
             <span>02 · 正式发布</span>
-            <strong>v0.3.0 下载后验收</strong>
-            <p>Windows / Linux 包、校验和、启动 smoke 与独立评估附件均已验收。</p>
-            <small>tag v0.3.0 · commit 7a375e0</small>
+            <strong>v0.3.1 下载后验收</strong>
+            <p>双平台构建、校验和、Windows 正式包 smoke 与 Release 元数据均已验收。</p>
+            <small>tag v0.3.1 · commit c6799c3</small>
           </a>
           <a href={clientAcceptanceUrl} rel="noreferrer" target="_blank">
             <span>03 · 真实客户端</span>
-            <strong>Codex 与 Claude Code</strong>
-            <p>disposable repo 中验证 MCP allow、高危写入阻断、后置条件和同步脱敏录屏。</p>
-            <small>历史源提交 0ee86ef · 不冒充 v0.3.0 重跑</small>
+            <strong>Codex CLI 真实调用</strong>
+            <p>项目与 Hook 两层信任、MCP allow、高危写入拒绝和独立后置条件均可核对。</p>
+            <small>RC 与正式版同提交 c6799c3 · 未绕过 Hook 信任</small>
           </a>
         </div>
       </div>
