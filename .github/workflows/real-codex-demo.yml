@@ -18,7 +18,6 @@ jobs:
     timeout-minutes: 20
     environment: real-codex-demo
     env:
-      ATG_DEMO_OUTPUT: ${{ github.workspace }}/.tmp/real-codex-demo/public
       ATG_DEMO_ATG_PORT: "18090"
       ATG_DEMO_TUNNEL_PORT: "18081"
       ATG_DEMO_RELEASE_TAG: "v0.3.1"
@@ -46,6 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "ATG_DEMO_PRIVATE=$RUNNER_TEMP/agenttoolgate-real-codex-private" >> "$GITHUB_ENV"
+          echo "ATG_DEMO_OUTPUT=$RUNNER_TEMP/agenttoolgate-real-codex-public-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
           npm install --global "@openai/codex@${ATG_DEMO_CODEX_VERSION}"
           codex --version
 
@@ -84,8 +84,14 @@ jobs:
           password_file="$ssh_dir/password"
           askpass_file="$ssh_dir/askpass.sh"
           known_hosts_file="$ssh_dir/known_hosts"
-          control_path="$ssh_dir/control"
+          ssh_config_file="$ssh_dir/config"
+          pid_file="$ssh_dir/tunnel.pid"
 
+          if [[ "$ATG_DEMO_SSH_HOST" =~ [[:space:]] ]] ||
+             [[ "$ATG_DEMO_SSH_USER" =~ [[:space:]] ]]; then
+            echo "SSH 主机或用户格式无效。" >&2
+            exit 1
+          fi
           printf '%s' "$ATG_DEMO_SSH_PASSWORD" > "$password_file"
           printf '%s\n' "$ATG_DEMO_SSH_KNOWN_HOSTS" > "$known_hosts_file"
           cat > "$askpass_file" <<EOF
@@ -93,36 +99,41 @@ jobs:
           cat "$password_file"
           EOF
           chmod 700 "$askpass_file"
+          cat > "$ssh_config_file" <<EOF
+          Host agenttoolgate-demo-tunnel
+            HostName $ATG_DEMO_SSH_HOST
+            User $ATG_DEMO_SSH_USER
+            Port 2222
+            BatchMode no
+            ConnectTimeout 20
+            ExitOnForwardFailure yes
+            IdentitiesOnly yes
+            PreferredAuthentications password
+            PubkeyAuthentication no
+            ServerAliveCountMax 3
+            ServerAliveInterval 15
+            StrictHostKeyChecking yes
+            UserKnownHostsFile $known_hosts_file
+            LocalForward 127.0.0.1:${ATG_DEMO_TUNNEL_PORT} 127.0.0.1:8080
+          EOF
 
-          echo "ATG_DEMO_SSH_CONTROL=$control_path" >> "$GITHUB_ENV"
-          echo "ATG_DEMO_SSH_KNOWN_HOSTS_FILE=$known_hosts_file" >> "$GITHUB_ENV"
+          echo "ATG_DEMO_SSH_PID_FILE=$pid_file" >> "$GITHUB_ENV"
           echo "::add-mask::$ATG_DEMO_SSH_HOST"
           echo "::add-mask::$ATG_DEMO_SSH_USER"
 
-          env \
-            -u ATG_DEMO_SSH_PASSWORD \
-            -u ATG_DEMO_SSH_KNOWN_HOSTS \
-            -u GITHUB_TOKEN \
+          env -i \
+            HOME="$HOME" \
+            PATH="/usr/bin:/bin" \
             DISPLAY=:0 \
             SSH_ASKPASS_REQUIRE=force \
             SSH_ASKPASS="$askpass_file" \
             setsid ssh \
-              -M -S "$control_path" -fNT \
-              -p 2222 \
-              -o BatchMode=no \
-              -o ConnectTimeout=20 \
-              -o ExitOnForwardFailure=yes \
-              -o IdentitiesOnly=yes \
-              -o PreferredAuthentications=password \
-              -o PubkeyAuthentication=no \
-              -o ServerAliveCountMax=3 \
-              -o ServerAliveInterval=15 \
-              -o StrictHostKeyChecking=yes \
-              -o UserKnownHostsFile="$known_hosts_file" \
-              -L "127.0.0.1:${ATG_DEMO_TUNNEL_PORT}:127.0.0.1:8080" \
-              "${ATG_DEMO_SSH_USER}@${ATG_DEMO_SSH_HOST}" </dev/null
-
-          rm -f "$password_file" "$askpass_file"
+              -F "$ssh_config_file" \
+              -NT \
+              agenttoolgate-demo-tunnel </dev/null \
+              >"$ssh_dir/tunnel.log" 2>&1 &
+          tunnel_pid=$!
+          printf '%s\n' "$tunnel_pid" > "$pid_file"
 
           for attempt in $(seq 1 30); do
             if curl --fail --silent --show-error \
@@ -135,6 +146,7 @@ jobs:
             fi
             sleep 1
           done
+          rm -f "$password_file" "$askpass_file" "$known_hosts_file" "$ssh_config_file"
 
       - name: 写入隔离模型认证
         shell: bash
@@ -149,6 +161,7 @@ jobs:
           printf '%s' "$ATG_DEMO_API_KEY" > "$ATG_DEMO_PRIVATE/provider.key"
 
       - name: 运行真实 Codex CLI 验收
+        id: real-demo
         shell: bash
         run: |
           set -euo pipefail
@@ -164,21 +177,26 @@ jobs:
             --output "$ATG_DEMO_OUTPUT"
 
       - name: 停止 SSH 隧道并删除私有工作目录
+        id: ssh-cleanup
         if: always()
         shell: bash
-        env:
-          ATG_DEMO_SSH_HOST: ${{ secrets.ATG_DEMO_SSH_HOST }}
-          ATG_DEMO_SSH_USER: ${{ secrets.ATG_DEMO_SSH_USER }}
         run: |
           set +e
           cleanup_failed=0
-          if [ -n "${ATG_DEMO_SSH_CONTROL:-}" ] && [ -S "$ATG_DEMO_SSH_CONTROL" ]; then
-            ssh \
-              -S "$ATG_DEMO_SSH_CONTROL" \
-              -p 2222 \
-              -o UserKnownHostsFile="$ATG_DEMO_SSH_KNOWN_HOSTS_FILE" \
-              -O exit \
-              "${ATG_DEMO_SSH_USER}@${ATG_DEMO_SSH_HOST}" >/dev/null 2>&1 || cleanup_failed=1
+          if [ -n "${ATG_DEMO_SSH_PID_FILE:-}" ] && [ -f "$ATG_DEMO_SSH_PID_FILE" ]; then
+            tunnel_pid="$(cat "$ATG_DEMO_SSH_PID_FILE")"
+            if kill -0 "$tunnel_pid" 2>/dev/null; then
+              kill "$tunnel_pid" 2>/dev/null || cleanup_failed=1
+              for _ in $(seq 1 20); do
+                if ! kill -0 "$tunnel_pid" 2>/dev/null; then
+                  break
+                fi
+                sleep 0.25
+              done
+              if kill -0 "$tunnel_pid" 2>/dev/null; then
+                kill -KILL "$tunnel_pid" 2>/dev/null || cleanup_failed=1
+              fi
+            fi
           fi
           rm -rf "$RUNNER_TEMP/agenttoolgate-demo-ssh" "$ATG_DEMO_PRIVATE"
           rm -f "$(dirname "$ATG_DEMO_PRIVATE")/.$(basename "$ATG_DEMO_PRIVATE").agenttoolgate-real-codex-owned"
@@ -189,6 +207,7 @@ jobs:
           exit "$cleanup_failed"
 
       - name: 写入清理后置条件
+        id: finalize
         if: always()
         shell: bash
         run: |
@@ -215,7 +234,12 @@ jobs:
             --input "$ATG_DEMO_OUTPUT"
 
       - name: 上传脱敏演示证据
-        if: always() && steps.sensitive-scan.outcome == 'success'
+        if: >-
+          always() &&
+          steps.real-demo.outcome == 'success' &&
+          steps.ssh-cleanup.outcome == 'success' &&
+          steps.finalize.outcome == 'success' &&
+          steps.sensitive-scan.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: real-codex-demo-${{ github.run_id }}
@@ -231,4 +255,22 @@ jobs:
             ${{ env.ATG_DEMO_OUTPUT }}/cleanup.json
             ${{ env.ATG_DEMO_OUTPUT }}/transcript.txt
             ${{ env.ATG_DEMO_OUTPUT }}/codex-real-demo.cast
+            ${{ env.ATG_DEMO_OUTPUT }}/manifest.json
+
+      - name: 上传脱敏失败证据
+        if: >-
+          always() &&
+          steps.real-demo.outcome == 'failure' &&
+          steps.ssh-cleanup.outcome == 'success' &&
+          steps.finalize.outcome == 'success' &&
+          steps.sensitive-scan.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: real-codex-demo-failure-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 3
+          include-hidden-files: false
+          path: |
+            ${{ env.ATG_DEMO_OUTPUT }}/failure.json
+            ${{ env.ATG_DEMO_OUTPUT }}/cleanup.json
             ${{ env.ATG_DEMO_OUTPUT }}/manifest.json

@@ -47,21 +47,23 @@ def main() -> int:
     ]
     encoded_values: list[bytes] = []
     for value in known_values:
-        if len(value) < 4:
-            continue
-        raw = value.encode("utf-8")
-        encoded_values.extend(
-            [
-                raw,
-                base64.b64encode(raw),
-                base64.b64encode(raw).rstrip(b"="),
-                base64.urlsafe_b64encode(raw),
-                base64.urlsafe_b64encode(raw).rstrip(b"="),
-                raw.hex().encode("ascii"),
-                urllib.parse.quote(value, safe="").encode("utf-8"),
-                json.dumps(value).encode("utf-8")[1:-1],
-            ]
-        )
+        candidates = [value, *(line.strip() for line in value.splitlines())]
+        for candidate in candidates:
+            if len(candidate) < 4:
+                continue
+            raw = candidate.encode("utf-8")
+            encoded_values.extend(
+                [
+                    raw,
+                    base64.b64encode(raw),
+                    base64.b64encode(raw).rstrip(b"="),
+                    base64.urlsafe_b64encode(raw),
+                    base64.urlsafe_b64encode(raw).rstrip(b"="),
+                    raw.hex().encode("ascii"),
+                    urllib.parse.quote(candidate, safe="").encode("utf-8"),
+                    json.dumps(candidate).encode("utf-8")[1:-1],
+                ]
+            )
     forbidden_patterns = [
         re.compile(rb"(?i)\bsk-[A-Za-z0-9_-]{16,}\b"),
         re.compile(rb"(?i)\b(?:github_pat_|gh[pousr]_)[A-Za-z0-9_-]{12,}\b"),
