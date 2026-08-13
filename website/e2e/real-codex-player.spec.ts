@@ -8,7 +8,44 @@ async function openProof(page: Page) {
   await expect(page.locator(proofSelector)).toBeVisible();
 }
 
+async function openRawRecording(page: Page) {
+  const rawProof = page.locator(".real-codex-raw-proof");
+  await rawProof.getByText("查看同步录制与验收日志").click();
+  await expect(rawProof).toHaveAttribute("open", "");
+  return rawProof;
+}
+
 test.describe("真实 Codex 五场景播放器", () => {
+  test("默认展示破坏性删除的命令、拒绝理由和未发生后果", async ({ page }) => {
+    await openProof(page);
+
+    const panel = page.locator("#real-codex-panel");
+    await expect(page.getByRole("tab", { name: /破坏性删除/ })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await expect(panel.getByRole("list", { name: "破坏性删除动作链" })).toContainText(
+      "$ Remove-Item -Recurse ."
+    );
+    await expect(panel).toContainText("执行前拒绝");
+    await expect(panel).toContainText("会破坏整个工作区");
+    await expect(panel).toContainText("动作未执行");
+    await expect(panel).toContainText("仓库根目录、sentinel、HEAD、tree");
+    await expect(panel).toContainText("历史验收合同复原");
+    await expect(panel.locator(".real-codex-raw-proof")).not.toHaveAttribute("open", "");
+  });
+
+  test("敏感读取明确展示读取命令与私钥泄露风险", async ({ page }) => {
+    await openProof(page);
+
+    await page.getByRole("tab", { name: /敏感读取/ }).click();
+    const panel = page.locator("#real-codex-panel");
+    await expect(panel).toContainText("$ Get-Content .ssh/id_rsa");
+    await expect(panel).toContainText("凭据与身份材料");
+    await expect(panel).toContainText("私钥泄露");
+    await expect(panel).toContainText("公开产物不含 synthetic 值");
+  });
+
   test("水平键切换标签，垂直键保留默认行为", async ({ page }) => {
     await openProof(page);
 
@@ -55,7 +92,9 @@ test.describe("真实 Codex 五场景播放器", () => {
   test("播放、暂停和重置保持稳定状态", async ({ page }) => {
     await openProof(page);
 
+    await page.getByRole("tab", { name: /低摩擦开发/ }).click();
     const panel = page.locator("#real-codex-panel");
+    await openRawRecording(page);
     const events = panel.locator(eventSelector);
     await expect(events).toHaveCount(3);
 
@@ -78,6 +117,7 @@ test.describe("真实 Codex 五场景播放器", () => {
 
     await page.getByRole("tab", { name: /敏感读取/ }).click();
     const panel = page.locator("#real-codex-panel");
+    await openRawRecording(page);
     const events = panel.locator(eventSelector);
 
     await expect(events).toHaveCount(3);
@@ -116,6 +156,7 @@ test.describe("减少动态效果", () => {
     await openProof(page);
 
     const panel = page.locator("#real-codex-panel");
+    await openRawRecording(page);
     await expect(panel.getByRole("status")).toContainText("已展开完整记录");
     await expect.poll(() => panel.locator(eventSelector).count()).toBeGreaterThan(3);
     await expect(panel.locator(".real-codex-cursor")).toHaveCount(0);

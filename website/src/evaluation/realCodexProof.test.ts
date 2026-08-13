@@ -44,6 +44,16 @@ describe("真实 Codex 多场景证据", () => {
     expect(getRealCodexScenario("sensitive-read").matchedRule).toBe(
       "guard-core-deny-floor"
     );
+    expect(getRealCodexScenario("sensitive-read").actionEvidence).toMatchObject({
+      source: "validated_contract_reconstruction",
+      display: "$ Get-Content .ssh/id_rsa",
+      execution: "blocked_before_execution",
+      observed: false,
+      riskExplanationSource: "scenario_contract"
+    });
+    expect(getRealCodexScenario("destructive-delete").actionEvidence.display).toBe(
+      "$ Remove-Item -Recurse ."
+    );
   });
 
   it("每个场景的同步录制都与派生摘要一致", () => {
@@ -110,6 +120,32 @@ describe("真实 Codex 多场景证据", () => {
     interactiveAsk.boundaries.codexAskMapping = "interactive_ask" as "conservative_deny";
     expect(() => parseRealCodexProofDocument(interactiveAsk)).toThrow(
       /codexAskMapping 必须为 conservative_deny/
+    );
+
+    const forgedAction = cloneProof();
+    forgedAction.scenarios[2].actionEvidence.source =
+      "codex_event" as "hook_request_match";
+    expect(() => parseRealCodexProofDocument(forgedAction)).toThrow(
+      /source 不在允许范围内/
+    );
+
+    const inconsistentExecution = cloneProof();
+    inconsistentExecution.scenarios[1].actionEvidence.execution = "completed";
+    expect(() => parseRealCodexProofDocument(inconsistentExecution)).toThrow(
+      /execution 与 Guard 决策不一致/
+    );
+
+    const inconsistentSource = cloneProof();
+    inconsistentSource.scenarios[2].actionEvidence.source = "hook_request_match";
+    expect(() => parseRealCodexProofDocument(inconsistentSource)).toThrow(
+      /observed 与来源不一致/
+    );
+
+    const forgedRiskSource = cloneProof();
+    forgedRiskSource.scenarios[2].actionEvidence.riskExplanationSource =
+      "backend_reason" as "scenario_contract";
+    expect(() => parseRealCodexProofDocument(forgedRiskSource)).toThrow(
+      /riskExplanationSource 必须为 scenario_contract/
     );
   });
 

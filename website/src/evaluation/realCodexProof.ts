@@ -17,6 +17,23 @@ export type RealCodexScenarioId = (typeof realCodexScenarioIds)[number];
 export type RealCodexDecision = "allow" | "deny";
 export type RealCodexRiskLevel = "low" | "high" | "critical";
 export type RealCodexAuditStatus = "correlated" | "not-applicable";
+export type RealCodexActionExecution =
+  | "completed"
+  | "blocked_before_execution";
+export type RealCodexActionEvidenceSource =
+  | "hook_request_match"
+  | "validated_contract_reconstruction";
+
+export interface RealCodexActionEvidence {
+  intent: string;
+  source: RealCodexActionEvidenceSource;
+  tool: string;
+  display: string;
+  observed: boolean;
+  execution: RealCodexActionExecution;
+  riskExplanation: string;
+  riskExplanationSource: "scenario_contract";
+}
 
 export interface RealCodexScenario {
   id: RealCodexScenarioId;
@@ -25,6 +42,7 @@ export interface RealCodexScenario {
   label: string;
   title: string;
   description: string;
+  actionEvidence: RealCodexActionEvidence;
   decision: RealCodexDecision;
   riskLevel: RealCodexRiskLevel;
   matchedRule: string;
@@ -222,6 +240,7 @@ function parseScenario(value: unknown, index: number): RealCodexScenario {
       "label",
       "title",
       "description",
+      "actionEvidence",
       "decision",
       "riskLevel",
       "matchedRule",
@@ -275,6 +294,55 @@ function parseScenario(value: unknown, index: number): RealCodexScenario {
     invalid(`${path}.auditStatus 与拒绝场景的证据语义不一致`);
   }
 
+  const actionEvidence = requireRecord(
+    scenario.actionEvidence,
+    `${path}.actionEvidence`
+  );
+  requireExactKeys(
+    actionEvidence,
+    [
+      "intent",
+      "source",
+      "tool",
+      "display",
+      "observed",
+      "execution",
+      "riskExplanation",
+      "riskExplanationSource"
+    ],
+    `${path}.actionEvidence`
+  );
+  const execution = requireString(
+    actionEvidence.execution,
+    `${path}.actionEvidence.execution`
+  );
+  if (execution !== "completed" && execution !== "blocked_before_execution") {
+    invalid(`${path}.actionEvidence.execution 不在允许范围内`);
+  }
+  if (
+    (decision === "allow" && execution !== "completed") ||
+    (decision === "deny" && execution !== "blocked_before_execution")
+  ) {
+    invalid(`${path}.actionEvidence.execution 与 Guard 决策不一致`);
+  }
+  const actionSource = requireString(
+    actionEvidence.source,
+    `${path}.actionEvidence.source`
+  );
+  if (
+    actionSource !== "hook_request_match" &&
+    actionSource !== "validated_contract_reconstruction"
+  ) {
+    invalid(`${path}.actionEvidence.source 不在允许范围内`);
+  }
+  if (
+    (actionSource === "hook_request_match" && actionEvidence.observed !== true) ||
+    (actionSource === "validated_contract_reconstruction" &&
+      actionEvidence.observed !== false)
+  ) {
+    invalid(`${path}.actionEvidence.observed 与来源不一致`);
+  }
+
   const recording = requireRecord(scenario.recording, `${path}.recording`);
   requireExactKeys(
     recording,
@@ -293,6 +361,32 @@ function parseScenario(value: unknown, index: number): RealCodexScenario {
     label: requireString(scenario.label, `${path}.label`),
     title: requireString(scenario.title, `${path}.title`),
     description: requireString(scenario.description, `${path}.description`),
+    actionEvidence: {
+      intent: requireString(
+        actionEvidence.intent,
+        `${path}.actionEvidence.intent`
+      ),
+      source: actionSource as RealCodexActionEvidenceSource,
+      tool: requireString(
+        actionEvidence.tool,
+        `${path}.actionEvidence.tool`
+      ),
+      display: requireString(
+        actionEvidence.display,
+        `${path}.actionEvidence.display`
+      ),
+      observed: actionEvidence.observed as boolean,
+      execution: execution as RealCodexActionExecution,
+      riskExplanation: requireString(
+        actionEvidence.riskExplanation,
+        `${path}.actionEvidence.riskExplanation`
+      ),
+      riskExplanationSource: requireLiteral(
+        actionEvidence.riskExplanationSource,
+        "scenario_contract",
+        `${path}.actionEvidence.riskExplanationSource`
+      )
+    },
     decision,
     riskLevel: riskLevel as RealCodexRiskLevel,
     matchedRule: requireString(scenario.matchedRule, `${path}.matchedRule`),
