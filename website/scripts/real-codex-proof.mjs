@@ -831,6 +831,24 @@ function validateV2Audit(files, summary) {
     ) {
       fail(`${label} 缺少成功的 MCP Audit`);
     }
+    if (contract.id === "low-friction") {
+      const allowedGuardAudits = entry.entries.filter(
+        (auditEntry) =>
+          auditEntry.toolKey === "agent_guard.evaluate" &&
+          auditEntry.status === "success" &&
+          auditEntry.policyDecision === "allow" &&
+          auditEntry.input.guardDecision === "allow" &&
+          auditEntry.input.guardRiskLevel === "low" &&
+          auditEntry.riskLevel === "medium" &&
+          auditEntry.input.riskLevel === "medium" &&
+          auditEntry.explanation.riskLevel === "medium"
+      );
+      if (allowedGuardAudits.length !== 3) {
+        fail(
+          `${label} 必须关联三条 Guard low 输入、后端 medium 有效风险的允许 Audit`
+        );
+      }
+    }
   });
   return document;
 }

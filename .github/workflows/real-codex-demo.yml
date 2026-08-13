@@ -23,7 +23,7 @@ jobs:
       ATG_DEMO_COLLECTOR_PORT: "18092"
       ATG_DEMO_RELEASE_TAG: "v0.3.1"
       ATG_DEMO_CODEX_VERSION: "0.146.0"
-      ATG_DEMO_MODEL: "gpt-5.4-mini"
+      ATG_DEMO_MODEL: "gpt-5.5"
     steps:
       - name: 检出受信任主分支代码
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

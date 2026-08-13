@@ -24,7 +24,8 @@ AgentToolGate 后端或模型上游。网页中的终端片段来自真实 Codex
 
 - AgentToolGate 使用指定正式 Release 的 Linux amd64 包。
 - Codex CLI 固定版本，不接受手动输入任意客户端版本。
-- 默认使用低成本模型 `gpt-5.4-mini` 和低 reasoning，限制真实上游用量。
+- 默认使用当前演示链路已验证可用的 `gpt-5.5` 和 low reasoning，并通过五个
+  独立短会话限制真实上游用量。
 - 仓库、SQLite、`CODEX_HOME`、认证文件、网络观察器和进程都位于 disposable runner。
 - SSH 隧道运行在 Runner 默认账号下；Codex CLI 和项目 Hook 使用独立低权限账号。
 - Codex 自身 approvals 与 sandbox 只在该 disposable 验收环境关闭，用于排除客户端

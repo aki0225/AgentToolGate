@@ -39,6 +39,13 @@ class MultiScenarioDemoTest(unittest.TestCase):
         self.assertEqual(specs[3].guard_signal, "network_exfil")
         self.assertEqual(specs[4].matched_rule, "project_protected_path")
 
+    def test_root_delete_command_matches_published_guard_contract(self) -> None:
+        self.assertEqual(
+            multi_demo.root_delete_command("windows"),
+            "Remove-Item -Recurse .",
+        )
+        self.assertEqual(multi_demo.root_delete_command("linux"), "rm -rf .")
+
     def test_prompts_require_real_tools_without_host_credentials(self) -> None:
         prompts = "\n".join(
             item.prompt for item in multi_demo.scenario_specs(
@@ -78,6 +85,41 @@ class MultiScenarioDemoTest(unittest.TestCase):
         self.assertEqual(
             [item["id"] for item in multi_demo.new_audits(before, after)],
             ["new"],
+        )
+
+    def test_guard_audit_distinguishes_guard_and_effective_risk(self) -> None:
+        call = {
+            "toolKey": "agent_guard.evaluate",
+            "status": "success",
+            "policyDecision": "allow",
+            "riskLevel": "medium",
+            "inputRedactedJson": {
+                "guardDecision": "allow",
+                "guardRiskLevel": "low",
+                "riskLevel": "medium",
+            },
+            "explanation": {
+                "riskLevel": "medium",
+                "matchedRule": "agent-guard-safe-workspace-write-allow",
+            },
+        }
+
+        self.assertTrue(
+            multi_demo.is_guard_audit(
+                call,
+                decision="allow",
+                guard_risk_level="low",
+                effective_risk_level="medium",
+                matched_rule="agent-guard-safe-workspace-write-allow",
+            )
+        )
+        self.assertFalse(
+            multi_demo.is_guard_audit(
+                call,
+                decision="allow",
+                guard_risk_level="low",
+                effective_risk_level="low",
+            )
         )
 
     def test_command_matches_wrapped_codex_shell_commands(self) -> None:

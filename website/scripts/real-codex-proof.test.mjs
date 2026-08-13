@@ -131,6 +131,7 @@ function makeAuditEntry({
   toolKey = "agent_guard.evaluate",
   decision,
   riskLevel,
+  guardRiskLevel = riskLevel,
   matchedRule,
   actionType,
   target,
@@ -144,7 +145,7 @@ function makeAuditEntry({
     targets: toolKey === "agent_guard.evaluate" ? [target] : [],
     isScript: false,
     guardDecision: toolKey === "agent_guard.evaluate" ? decision : "",
-    guardRiskLevel: toolKey === "agent_guard.evaluate" ? riskLevel : "",
+    guardRiskLevel: toolKey === "agent_guard.evaluate" ? guardRiskLevel : "",
     targetCategory: toolKey === "agent_guard.evaluate" ? "workspace" : "",
     riskLevel: toolKey === "agent_guard.evaluate" ? riskLevel : "",
     content: "[REDACTED]"
@@ -173,7 +174,8 @@ function makeAuditEntries(contract, target) {
       ...Array.from({ length: 3 }, () =>
         makeAuditEntry({
           decision: "allow",
-          riskLevel: "low",
+          riskLevel: "medium",
+          guardRiskLevel: "low",
           matchedRule: contract.matchedRule,
           actionType: contract.actionType,
           target
@@ -203,7 +205,8 @@ function makeAuditEntries(contract, target) {
   return [
     makeAuditEntry({
       decision: "allow",
-      riskLevel: "low",
+      riskLevel: "medium",
+      guardRiskLevel: "low",
       matchedRule: "agent-guard-safe-command-allow",
       actionType: "exec",
       target: "tool-output.txt"
@@ -304,7 +307,7 @@ async function createV2Evidence() {
     client: {
       name: "codex-cli",
       version: "0.146.0",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.5",
       reasoningEffort: "low",
       hookTrustBypassed: false
     },
@@ -518,6 +521,19 @@ describe("真实 Codex 公开证据", () => {
     });
     await expect(loadAndValidateV2Evidence(unsafeDecision)).rejects.toThrow(
       /decision/
+    );
+  });
+
+  it("拒绝把低摩擦 Guard 输入风险误写成后端有效风险", async () => {
+    const root = await createV2Evidence();
+    await mutateJSON(root, "audit.json", (audit) => {
+      audit.scenarios[0].entries[0].riskLevel = "low";
+      audit.scenarios[0].entries[0].input.riskLevel = "low";
+      audit.scenarios[0].entries[0].explanation.riskLevel = "low";
+    });
+
+    await expect(loadAndValidateV2Evidence(root)).rejects.toThrow(
+      /后端 medium 有效风险/
     );
   });
 
