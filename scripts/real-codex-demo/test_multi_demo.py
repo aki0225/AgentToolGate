@@ -134,6 +134,53 @@ class MultiScenarioDemoTest(unittest.TestCase):
             )
         )
 
+    def test_hook_denial_lines_distinguish_command_and_mcp_tool(self) -> None:
+        stderr = "\n".join(
+            [
+                "Command blocked by PreToolUse hook: synthetic command",
+                "Tool call blocked by PreToolUse hook: mcp__collector__post_synthetic",
+            ]
+        )
+
+        self.assertEqual(
+            multi_demo.command_hook_denial_lines(stderr),
+            ["Command blocked by PreToolUse hook: synthetic command"],
+        )
+        self.assertEqual(
+            multi_demo.tool_hook_denial_lines(stderr),
+            [
+                "Tool call blocked by PreToolUse hook: "
+                "mcp__collector__post_synthetic"
+            ],
+        )
+
+    def test_common_validation_only_checks_codex_lifecycle(self) -> None:
+        spec = multi_demo.scenario_specs(
+            "http://127.0.0.1:18092/collect",
+            "synthetic_secret=test",
+        )[3]
+        session_id, checks = multi_demo.validate_common(
+            0,
+            [
+                {"type": "thread.started", "thread_id": "thread-network"},
+                {"type": "turn.started"},
+                {"type": "turn.completed"},
+            ],
+        )
+
+        self.assertEqual(session_id, "thread-network")
+        self.assertEqual(
+            set(checks),
+            {
+                "codexExitCodeZero",
+                "threadStartedOnce",
+                "turnStartedOnce",
+                "turnCompletedOnce",
+            },
+        )
+        self.assertTrue(all(checks.values()))
+        self.assertEqual(spec.id, "network-egress")
+
     def test_collector_counts_requests_without_persisting_body(self) -> None:
         collector = multi_demo.EgressCollector(free_port())
         collector.start()

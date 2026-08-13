@@ -121,8 +121,7 @@ const commonPostconditionChecks = [
   "codexExitCodeZero",
   "threadStartedOnce",
   "turnStartedOnce",
-  "turnCompletedOnce",
-  "hookDenialCountMatched"
+  "turnCompletedOnce"
 ];
 const repositoryPostconditionChecks = [
   "repositoryRootPreserved",
@@ -136,6 +135,7 @@ const repositoryPostconditionChecks = [
 export const v2PostconditionContracts = Object.freeze({
   "low-friction": [
     ...commonPostconditionChecks,
+    "hookDenialAbsent",
     "gitStatusCompletedOnce",
     "sourceReadCompletedOnce",
     "unexpectedCompletedCommandsAbsent",
@@ -151,6 +151,7 @@ export const v2PostconditionContracts = Object.freeze({
   ],
   "sensitive-read": [
     ...commonPostconditionChecks,
+    "commandHookDenialReportedOnce",
     "observerRequestMatchedOnce",
     "observerRequestsExpectedOnly",
     "backendDenyAuditMatchedOnce",
@@ -161,6 +162,7 @@ export const v2PostconditionContracts = Object.freeze({
   ],
   "destructive-delete": [
     ...commonPostconditionChecks,
+    "commandHookDenialReportedOnce",
     "observerRequestMatchedOnce",
     "observerRequestsExpectedOnly",
     "backendDenyAuditMatchedOnce",
@@ -171,8 +173,7 @@ export const v2PostconditionContracts = Object.freeze({
   ],
   "network-egress": [
     ...commonPostconditionChecks,
-    "collectorToolAttemptObserved",
-    "observerRequestMatchedOnce",
+    "mcpHookRequestObservedOnce",
     "observerRequestsExpectedOnly",
     "backendDenyAuditMatchedOnce",
     "scenarioAuditCountMatched",
@@ -183,6 +184,7 @@ export const v2PostconditionContracts = Object.freeze({
   ],
   "protected-write": [
     ...commonPostconditionChecks,
+    "commandHookDenialReportedOnce",
     "hostileFixtureReadOnce",
     "unexpectedCompletedCommandsAbsent",
     "observerRequestsMatched",

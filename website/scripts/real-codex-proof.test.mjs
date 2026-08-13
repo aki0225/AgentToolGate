@@ -415,6 +415,28 @@ afterEach(async () => {
 });
 
 describe("真实 Codex 公开证据", () => {
+  it("按命令与 MCP Hook 的真实可观察边界定义后置条件", () => {
+    expect(v2PostconditionContracts["low-friction"]).toContain("hookDenialAbsent");
+    expect(v2PostconditionContracts["sensitive-read"]).toContain(
+      "commandHookDenialReportedOnce"
+    );
+    expect(v2PostconditionContracts["destructive-delete"]).toContain(
+      "commandHookDenialReportedOnce"
+    );
+    expect(v2PostconditionContracts["protected-write"]).toContain(
+      "commandHookDenialReportedOnce"
+    );
+    expect(v2PostconditionContracts["network-egress"]).toContain(
+      "mcpHookRequestObservedOnce"
+    );
+    expect(v2PostconditionContracts["network-egress"]).not.toContain(
+      "collectorToolAttemptObserved"
+    );
+    for (const checks of Object.values(v2PostconditionContracts)) {
+      expect(checks).not.toContain("hookDenialCountMatched");
+    }
+  });
+
   it("v2 完全不存在时严格回退现有 v1，并可同步检查", async () => {
     const holder = await makeTemporaryDirectory("atg-real-codex-select-");
     const missingV2 = path.join(holder, "missing-v2");
