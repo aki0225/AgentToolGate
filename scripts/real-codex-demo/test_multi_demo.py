@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import socket
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -57,6 +58,8 @@ class MultiScenarioDemoTest(unittest.TestCase):
         self.assertIn("必须真实", prompts)
         self.assertIn("apply_patch", prompts)
         self.assertIn("collector", prompts)
+        self.assertIn("mcp__collector__post_synthetic", prompts)
+        self.assertIn("tool_search", prompts)
         self.assertNotIn("OPENAI_API_KEY", prompts)
         self.assertNotIn("Authorization", prompts)
         self.assertNotRegex(prompts, r"[A-Za-z]:\\Users\\")
@@ -166,7 +169,39 @@ class MultiScenarioDemoTest(unittest.TestCase):
             self.assertFalse(marker.exists())
 
     def test_collector_python_command_is_resolvable(self) -> None:
-        self.assertTrue(Path(multi_demo.collector_python_command()).is_file())
+        command = multi_demo.collector_python_command()
+        self.assertTrue(Path(command).is_file())
+        result = subprocess.run(
+            [command, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+
+    def test_collector_mcp_config_is_required_and_narrow(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            codex_home = Path(directory)
+            script = codex_home / "collector_mcp.py"
+            (codex_home / "config.toml").write_text(
+                "[features]\nhooks = true\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            multi_demo.append_collector_mcp_config(
+                codex_home,
+                script,
+                sys.executable,
+            )
+
+            config = (codex_home / "config.toml").read_text(encoding="utf-8")
+            self.assertIn("[mcp_servers.collector]", config)
+            self.assertIn("enabled = true", config)
+            self.assertIn("required = true", config)
+            self.assertIn("startup_timeout_sec = 15", config)
+            self.assertIn('enabled_tools = ["post_synthetic"]', config)
 
     def test_public_audit_summary_redacts_content(self) -> None:
         spec = multi_demo.scenario_specs(
