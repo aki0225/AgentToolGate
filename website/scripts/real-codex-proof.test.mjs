@@ -470,6 +470,7 @@ describe("真实 Codex 公开证据", () => {
     expect(evidence.summary.scenarios[2].riskLevel).toBe("critical");
     expect(evidence.summary.sharedChecks.hookTrusted).toBe(true);
     expect(evidence.summary.boundaries.codexInteractiveApprovalClaimed).toBe(false);
+    expect(evidence.summary.boundaries.codexAskMapping).toBe("conservative_deny");
 
     await syncEvidence({ v1Root: evidenceRoot, v2Root, publicRoot });
     await checkEvidence({ v1Root: evidenceRoot, v2Root, publicRoot });
@@ -488,6 +489,7 @@ describe("真实 Codex 公开证据", () => {
         "boundaries"
       ].sort()
     );
+    expect(derived.boundaries.codexAskMapping).toBe("conservative_deny");
   });
 
   it("v2 目录只要部分存在就直接失败，不回退 v1", async () => {

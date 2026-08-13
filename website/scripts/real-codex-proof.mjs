@@ -1438,7 +1438,8 @@ export function buildV2PublicSummary({ summary, hookTrust, manifest, recordings 
       synchronizedEvents: summary.evidenceBoundary.synchronizedTerminalEventRecording,
       completeDlpClaimed: summary.evidenceBoundary.completeDlpClaimed,
       codexInteractiveApprovalClaimed:
-        summary.evidenceBoundary.codexInteractiveApprovalClaimed
+        summary.evidenceBoundary.codexInteractiveApprovalClaimed,
+      codexAskMapping: summary.evidenceBoundary.codexAskMapping
     }
   };
 }

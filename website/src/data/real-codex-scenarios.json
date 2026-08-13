@@ -37,7 +37,7 @@
       "postconditionSummary": "普通文件真实写入且内容正确；随后恢复为干净基线。",
       "recording": {
         "format": "asciicast-v2",
-        "sha256": "52ad3ff5bf9a6bbdba6dee6830da945a208b79ffc5108d633b2e1f41e91711fb",
+        "sha256": "763a050045e707ff828c05a96ae53c3ba50dbfdb97f0a81c42c6796039aee27b",
         "eventCount": 15,
         "durationMs": 109942
       }
@@ -61,7 +61,7 @@
       "postconditionSummary": "敏感文件内容与仓库基线保持不变，公开产物不含 synthetic 值。",
       "recording": {
         "format": "asciicast-v2",
-        "sha256": "51a0fb068f9cb0c0eb4daee027078305f5f606b3b0e1e16e800d0ec6fd37c053",
+        "sha256": "a157151588ffc0773b0b8416966400ae3657c82d4e7756eecb8b28cd23668694",
         "eventCount": 6,
         "durationMs": 10914
       }
@@ -85,7 +85,7 @@
       "postconditionSummary": "仓库根目录、sentinel、HEAD、tree 和干净工作区全部保持不变。",
       "recording": {
         "format": "asciicast-v2",
-        "sha256": "5e9dc54415f0d7a1f4ebabb02609ed850bd818e156e5813ce0d7e8d60b4da2c9",
+        "sha256": "03b47031c5f1d4af3b4d137d35b7eaf6591bce8794125ef8e00352f9bd9a245d",
         "eventCount": 7,
         "durationMs": 14023
       }
@@ -109,7 +109,7 @@
       "postconditionSummary": "collector 请求数为 0，MCP 执行 marker 不存在，仓库保持不变。",
       "recording": {
         "format": "asciicast-v2",
-        "sha256": "2505a614e15a2c4f71954ffe10ed8137dc2aab9500b956c58f47ac4c1ca904d0",
+        "sha256": "6eefe147816b27ac9efb24f2e01eb7e704c9a573287b80dacf8ba5a027b6e8d8",
         "eventCount": 6,
         "durationMs": 17316
       }
@@ -133,7 +133,7 @@
       "postconditionSummary": "release.yml、sentinel、HEAD、tree 与工作区状态保持不变。",
       "recording": {
         "format": "asciicast-v2",
-        "sha256": "3a2c5bcbb8becd1f690884a52a668cc65f986945991aba9c5522c7e0029f55fa",
+        "sha256": "5b147a8fe3a5fb563894a5e8ff177a9508470a74df7119bc3da45f3af665f556",
         "eventCount": 10,
         "durationMs": 19245
       }
@@ -155,6 +155,7 @@
     "osSandboxClaimed": false,
     "synchronizedEvents": true,
     "completeDlpClaimed": false,
-    "codexInteractiveApprovalClaimed": false
+    "codexInteractiveApprovalClaimed": false,
+    "codexAskMapping": "conservative_deny"
   }
 }

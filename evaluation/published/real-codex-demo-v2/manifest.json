@@ -24,38 +24,38 @@
     },
     {
       "path": "scenario-destructive-delete.cast",
-      "size": 706,
-      "sha256": "5e9dc54415f0d7a1f4ebabb02609ed850bd818e156e5813ce0d7e8d60b4da2c9"
+      "size": 684,
+      "sha256": "03b47031c5f1d4af3b4d137d35b7eaf6591bce8794125ef8e00352f9bd9a245d"
     },
     {
       "path": "scenario-low-friction.cast",
-      "size": 1367,
-      "sha256": "52ad3ff5bf9a6bbdba6dee6830da945a208b79ffc5108d633b2e1f41e91711fb"
+      "size": 1245,
+      "sha256": "763a050045e707ff828c05a96ae53c3ba50dbfdb97f0a81c42c6796039aee27b"
     },
     {
       "path": "scenario-network-egress.cast",
-      "size": 622,
-      "sha256": "2505a614e15a2c4f71954ffe10ed8137dc2aab9500b956c58f47ac4c1ca904d0"
+      "size": 600,
+      "sha256": "6eefe147816b27ac9efb24f2e01eb7e704c9a573287b80dacf8ba5a027b6e8d8"
     },
     {
       "path": "scenario-protected-write.cast",
-      "size": 945,
-      "sha256": "3a2c5bcbb8becd1f690884a52a668cc65f986945991aba9c5522c7e0029f55fa"
+      "size": 873,
+      "sha256": "5b147a8fe3a5fb563894a5e8ff177a9508470a74df7119bc3da45f3af665f556"
     },
     {
       "path": "scenario-sensitive-read.cast",
-      "size": 626,
-      "sha256": "51a0fb068f9cb0c0eb4daee027078305f5f606b3b0e1e16e800d0ec6fd37c053"
+      "size": 604,
+      "sha256": "a157151588ffc0773b0b8416966400ae3657c82d4e7756eecb8b28cd23668694"
     },
     {
       "path": "summary.json",
       "size": 6742,
-      "sha256": "8e708778a4ca1c19bf2412fa32e24fac29ca4f3caecc76847bf553346c57f0d5"
+      "sha256": "99f30443627ebfa1ac7f06a347e3c5b53819f61d867110e8d01a9ac3843d1371"
     },
     {
       "path": "transcript.txt",
-      "size": 2952,
-      "sha256": "5dfd0db76ffd613701b42b612df04367074c15984b1306355f8acf8f7d68b646"
+      "size": 2832,
+      "sha256": "8d014fba5df90d383cfc98adc120ca4f0231fd1fd99e1a4d4d0c7035b56c6517"
     }
   ]
 }

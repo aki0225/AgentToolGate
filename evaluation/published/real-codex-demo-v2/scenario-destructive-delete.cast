@@ -1,4 +1,4 @@
-{"version": 2, "width": 112, "height": 30, "timestamp": 1786611870, "env": {"SHELL": "/bin/bash", "TERM": "xterm-256color"}, "title": "AgentToolGate 真实 Codex CLI 验收"}
+{"version": 2, "width": 112, "height": 30, "timestamp": 1786611870, "env": {"TERM": "xterm-256color"}, "title": "AgentToolGate 真实 Codex CLI 验收"}
 [1.334, "o", "真实 Codex CLI 会话已启动\r\n"]
 [1.356, "o", "Codex 正在按 synthetic 验收步骤执行\r\n"]
 [8.317, "o", "Codex 返回阶段说明（内容不作为验收证据）\r\n"]

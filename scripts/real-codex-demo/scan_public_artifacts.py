@@ -51,6 +51,43 @@ KNOWN_SECRET_ENV_NAMES = (
 SYNTHETIC_SECRET_MARKERS: tuple[str, ...] = ()
 
 
+def forbidden_patterns(contract_name: str | None) -> list[re.Pattern[bytes]]:
+    patterns = [
+        re.compile(rb"(?i)\bsk-[A-Za-z0-9_-]{16,}\b"),
+        re.compile(rb"(?i)\b(?:github_pat_|gh[pousr]_)[A-Za-z0-9_-]{12,}\b"),
+        re.compile(rb"-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----"),
+        re.compile(
+            rb"""(?ix)
+            ["']?authorization["']?\s*[:=]\s*["']?
+            (?:bearer\s+)?[A-Za-z0-9._~+/=-]{12,}
+            """
+        ),
+        re.compile(rb"(?i)\bAKIA[A-Z0-9]{16}\b"),
+        re.compile(rb"(?i)\bxox[baprs]-[A-Za-z0-9-]{12,}\b"),
+        re.compile(
+            rb"(?i)\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\."
+            rb"[A-Za-z0-9_-]{8,}\b"
+        ),
+        # Runner、临时目录与常见宿主绝对路径均不应进入公开证据。
+        re.compile(rb"(?i)(?:runner|github)[\\/](?:work|home|workspace)[\\/]"),
+        re.compile(rb"(?i)(?:[A-Z]:\\Users\\|/home/[^/\s]+/|/Users/[^/\s]+/)"),
+        re.compile(rb"(?i)(?:/tmp|/private/tmp|[A-Z]:\\(?:Temp|Windows\\Temp))[\\/]"),
+        re.compile(rb"(?i)(?:provider\.key|known_hosts|askpass\.sh)"),
+        re.compile(rb"(?i)ATG_SYNTHETIC_[A-Z0-9_]*DO_NOT_PUBLISH[A-Z0-9_]*"),
+        re.compile(rb"(?i)ATG_SYNTHETIC_SSH_SECRET_[A-F0-9]{24,}"),
+        re.compile(rb"(?i)synthetic_secret\s*=\s*[A-Za-z0-9._-]{4,}"),
+    ]
+    if contract_name == "v2-success":
+        patterns.append(
+            re.compile(
+                rb"(?i)[A-Z]:[\\/]+"
+                rb"(?:Program Files[\\/]+PowerShell|Windows[\\/]+System32[\\/]+WindowsPowerShell)"
+                rb"[\\/]+[^\"\r\n]*(?:pwsh|powershell)(?:\.exe)?"
+            )
+        )
+    return patterns
+
+
 def validate_manifest(
     root: Path,
     file_names: set[str],
@@ -152,32 +189,6 @@ def main() -> int:
     for marker in SYNTHETIC_SECRET_MARKERS:
         encoded_values.extend(encoded_candidates(marker))
 
-    forbidden_patterns = [
-        re.compile(rb"(?i)\bsk-[A-Za-z0-9_-]{16,}\b"),
-        re.compile(rb"(?i)\b(?:github_pat_|gh[pousr]_)[A-Za-z0-9_-]{12,}\b"),
-        re.compile(rb"-----BEGIN (?:OPENSSH|RSA|EC|DSA|PRIVATE) PRIVATE KEY-----"),
-        re.compile(
-            rb"""(?ix)
-            ["']?authorization["']?\s*[:=]\s*["']?
-            (?:bearer\s+)?[A-Za-z0-9._~+/=-]{12,}
-            """
-        ),
-        re.compile(rb"(?i)\bAKIA[A-Z0-9]{16}\b"),
-        re.compile(rb"(?i)\bxox[baprs]-[A-Za-z0-9-]{12,}\b"),
-        re.compile(
-            rb"(?i)\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\."
-            rb"[A-Za-z0-9_-]{8,}\b"
-        ),
-        # Runner、临时目录与常见宿主绝对路径均不应进入公开证据。
-        re.compile(rb"(?i)(?:runner|github)[\\/](?:work|home|workspace)[\\/]"),
-        re.compile(rb"(?i)(?:[A-Z]:\\Users\\|/home/[^/\s]+/|/Users/[^/\s]+/)"),
-        re.compile(rb"(?i)(?:/tmp|/private/tmp|[A-Z]:\\(?:Temp|Windows\\Temp))[\\/]"),
-        re.compile(rb"(?i)(?:provider\.key|known_hosts|askpass\.sh)"),
-        re.compile(rb"(?i)ATG_SYNTHETIC_[A-Z0-9_]*DO_NOT_PUBLISH[A-Z0-9_]*"),
-        re.compile(rb"(?i)ATG_SYNTHETIC_SSH_SECRET_[A-F0-9]{24,}"),
-        re.compile(rb"(?i)synthetic_secret\s*=\s*[A-Za-z0-9._-]{4,}"),
-    ]
-
     failures: list[str] = []
     files: list[Path] = []
     for path in root.iterdir():
@@ -194,6 +205,7 @@ def main() -> int:
 
     file_names = {path.name for path in files}
     contract = detect_contract(file_names)
+    contract_name: str | None = None
     if contract is None:
         failures.append("公开产物文件集合不符合 v1、v2 或失败契约")
     else:
@@ -220,7 +232,7 @@ def main() -> int:
         content = path.read_bytes()
         if any(value in content for value in encoded_values):
             failures.append(f"{path.name}: 命中已知或 synthetic 敏感值")
-        if any(pattern.search(content) for pattern in forbidden_patterns):
+        if any(pattern.search(content) for pattern in forbidden_patterns(contract_name)):
             failures.append(f"{path.name}: 命中凭据或宿主路径格式")
 
     if failures:

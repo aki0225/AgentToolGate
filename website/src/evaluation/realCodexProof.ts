@@ -80,6 +80,7 @@ export interface RealCodexProofDocument {
     synchronizedEvents: true;
     completeDlpClaimed: false;
     codexInteractiveApprovalClaimed: false;
+    codexAskMapping: "conservative_deny";
   };
 }
 
@@ -367,7 +368,8 @@ function parseBoundaries(value: unknown): RealCodexProofDocument["boundaries"] {
       "osSandboxClaimed",
       "synchronizedEvents",
       "completeDlpClaimed",
-      "codexInteractiveApprovalClaimed"
+      "codexInteractiveApprovalClaimed",
+      "codexAskMapping"
     ],
     "boundaries"
   );
@@ -412,6 +414,11 @@ function parseBoundaries(value: unknown): RealCodexProofDocument["boundaries"] {
       boundaries.codexInteractiveApprovalClaimed,
       false,
       "boundaries.codexInteractiveApprovalClaimed"
+    ),
+    codexAskMapping: requireLiteral(
+      boundaries.codexAskMapping,
+      "conservative_deny",
+      "boundaries.codexAskMapping"
     )
   };
 }

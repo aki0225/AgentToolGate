@@ -1390,6 +1390,16 @@ pre {
   text-align: right;
 }
 
+.real-codex-controls-static {
+  justify-content: space-between;
+}
+
+.real-codex-controls-static > span {
+  color: #c6fff7;
+  font-size: var(--text-xs);
+  font-weight: 750;
+}
+
 .real-codex-evidence {
   display: flex;
   flex-direction: column;

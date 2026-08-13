@@ -30,6 +30,7 @@ def load_sibling_module(name: str):
 
 
 FINALIZE = load_sibling_module("finalize_public_artifacts")
+SCAN = load_sibling_module("scan_public_artifacts")
 
 
 class RealCodexDemoTest(unittest.TestCase):
@@ -225,7 +226,52 @@ class RealCodexDemoTest(unittest.TestCase):
             path = Path(temp_dir) / "demo.cast"
             RUN_DEMO.write_cast(path, [(0.1, "第一步"), (0.3, "第二步")])
             content = path.read_text(encoding="utf-8")
+            header = __import__("json").loads(content.splitlines()[0])
         self.assertLess(content.index("第一步"), content.index("第二步"))
+        self.assertEqual(header["env"], {"TERM": "xterm-256color"})
+        self.assertNotIn("SHELL", header["env"])
+
+    def test_public_command_display_normalizes_system_powershell_path(self) -> None:
+        self.assertEqual(
+            RUN_DEMO.public_command_display(
+                r'''"C:\Program Files\PowerShell\7\pwsh.exe" -Command 'git status --short' '''
+            ),
+            "pwsh -Command 'git status --short'",
+        )
+        self.assertEqual(
+            RUN_DEMO.public_command_display(
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -Command Get-Date"
+            ),
+            "powershell -Command Get-Date",
+        )
+        self.assertEqual(
+            RUN_DEMO.public_command_display("/bin/bash -lc 'git status --short'"),
+            "/bin/bash -lc 'git status --short'",
+        )
+        self.assertEqual(
+            RUN_DEMO.public_command_display(
+                r'''"D:\tools\custom\pwsh.exe" -Command 'git status --short' '''
+            ),
+            "\"D:\\tools\\custom\\pwsh.exe\" -Command 'git status --short'",
+        )
+
+    def test_v2_scan_rejects_system_powershell_path_without_breaking_v1(self) -> None:
+        public_path = (
+            rb'$ "C:\\Program Files\\PowerShell\\7\\pwsh.exe" '
+            rb"-Command 'git status --short'"
+        )
+        self.assertFalse(
+            any(
+                pattern.search(public_path)
+                for pattern in SCAN.forbidden_patterns("v1-success")
+            )
+        )
+        self.assertTrue(
+            any(
+                pattern.search(public_path)
+                for pattern in SCAN.forbidden_patterns("v2-success")
+            )
+        )
 
     def test_codex_event_summary_only_returns_fixed_counts(self) -> None:
         events = [
