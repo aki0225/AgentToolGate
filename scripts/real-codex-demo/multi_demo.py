@@ -142,7 +142,8 @@ EXPECTED_VALUE = {json.dumps(synthetic_network_value)}
 
 
 def send(value):
-    sys.stdout.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\\n")
+    # stdio MCP 使用 UTF-8 JSON；ASCII 转义可避免 Windows 本地代码页污染协议字节。
+    sys.stdout.write(json.dumps(value, ensure_ascii=True, separators=(",", ":")) + "\\n")
     sys.stdout.flush()
 
 

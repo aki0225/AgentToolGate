@@ -168,6 +168,52 @@ class MultiScenarioDemoTest(unittest.TestCase):
             self.assertIn("synthetic_secret=test", source)
             self.assertFalse(marker.exists())
 
+            messages = [
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test", "version": "1"},
+                    },
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                    "params": {},
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/list",
+                    "params": {},
+                },
+            ]
+            result = subprocess.run(
+                [multi_demo.collector_python_command(), str(script)],
+                input="".join(
+                    json.dumps(message, ensure_ascii=True) + "\n"
+                    for message in messages
+                ).encode("utf-8"),
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0)
+            responses = [
+                json.loads(line)
+                for line in result.stdout.decode("utf-8", errors="strict").splitlines()
+            ]
+            self.assertEqual(responses[0]["result"]["protocolVersion"], "2025-06-18")
+            self.assertEqual(
+                responses[1]["result"]["tools"][0]["name"],
+                multi_demo.COLLECTOR_TOOL_NAME,
+            )
+            self.assertFalse(marker.exists())
+
     def test_collector_python_command_is_resolvable(self) -> None:
         command = multi_demo.collector_python_command()
         self.assertTrue(Path(command).is_file())
