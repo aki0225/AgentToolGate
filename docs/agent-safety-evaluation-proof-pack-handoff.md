@@ -2,12 +2,13 @@
 
 > 本文记录 2026-08-08 至 `v0.2.0` 阶段的实施过程，已不再作为当前恢复入口。
 >
-> 当前稳定版本为 `v0.3.0`，冻结与验收结论见
-> [`docs/v0.3.0-release-acceptance.md`](v0.3.0-release-acceptance.md)。
+> 当前稳定版本为 `v0.3.1`，当前维护状态见
+> [`docs/current-status.md`](current-status.md)，冻结与验收结论见
+> [`docs/v0.3.1-release-acceptance.md`](v0.3.1-release-acceptance.md)。
 >
 > 历史前置基线：`2d3a5f2`（阶段 2D.1）
 
-## 1. 当前结论
+## 1. 历史结论
 
 Agent 安全评估计划的阶段 0～2D.1、阶段 3A/3B 和阶段 4A/4B 已完成。评估器可以使用真实
 AgentToolGate 后端、产品 Hook、SQLite 多 Actor 状态和 loopback OTel collector 执行
@@ -168,10 +169,14 @@ failed/skipped 计数与 results 一致，报告完整且敏感扫描无命中�
 
 该目录只在当前机器上存在，不能作为公开仓库证据来源。
 
-## 4. 当前边界与未完成内容
+## 4. 历史实施边界与完成状态
 
-实施计划验收清单当前为 11 / 13。核心执行链、机器可读证据、人读报告、跨平台 CI
-和公开展示已完成，剩余工作是真实客户端验收和正式发布一致性审计。
+实施计划的 13 / 13 项验收均已完成。核心执行链、机器可读证据、人读报告、跨平台 CI、
+公开展示、真实客户端验收和正式发布一致性审计都有对应记录。
+
+本节保留阶段 3～5 的历史实施证据，不再表示当前仍有待办。`v0.2.0` 完成了这套
+Proof Pack 计划；后续 `v0.3.0`、`v0.3.1` 的产品与发布状态应分别查看对应验收文档，
+不要从本文恢复当前版本开发。
 
 ### 阶段 3：报告与 evidence
 
@@ -275,13 +280,13 @@ failed/skipped 计数与 results 一致，报告完整且敏感扫描无命中�
 | `agenttoolgate-evaluation-linux-amd64.tar.gz` | 28,610,242 | `619b9b4a0142e804c5e76691eaaf9938fa56658dbe0f8e53022e7d9835b7f6dd` |
 | `SHA256SUMS` | 416 | `b58b8b3dbe2fc70c6a76699331881bbae57a0dee6611ed510a3ffc90c99f835e` |
 
-## 5. 当前结论
+## 5. 历史冻结结论
 
 阶段 5 已完成。`v0.2.0` 的下载内容、源码提交、公开评估快照、README 和 Pages 已建立
 可追溯关系。后续新增规则、客户端或平台时，应创建新的评估 run 和 Release，不覆盖
 本轮标签或历史证据。
 
-## 6. 恢复步骤
+## 6. 历史恢复步骤
 
 ```powershell
 git pull --ff-only
@@ -297,8 +302,8 @@ Get-Content docs/agent-safety-evaluation-proof-pack-plan.md
 - 没有残留 `agenttoolgate` / `atg-eval` 进程。
 - 不读取或提交 `.tmp/` 中的历史运行产物。
 
-如需继续发布后开发，从新的独立任务和新版本开始，不修改 `v0.2.0`、`v0.3.0` 或其
-候选标签。
+如需继续发布后开发，从新的独立任务和新版本开始，不修改 `v0.2.0`、`v0.3.0`、
+`v0.3.1` 或其候选标签。当前恢复入口是 [`docs/current-status.md`](current-status.md)。
 
 ## 7. 禁止顺带修改
 
