@@ -1,11 +1,11 @@
 import { Icon } from "./Icon";
 import { evaluationProof, getEvaluationSummary, type EvaluationSummary } from "../evaluation/proof";
+import { RealCodexProof } from "./RealCodexProof";
 
 const githubRoot = "https://github.com/aki0225/AgentToolGate";
 const sourceUrl = `${githubRoot}/blob/main/evaluation/published/agent-safety-proof.json`;
 const methodUrl = `${githubRoot}/blob/main/evaluation/README.md`;
 const releaseAcceptanceUrl = `${githubRoot}/blob/main/docs/v0.3.1-release-acceptance.md`;
-const clientAcceptanceUrl = `${githubRoot}/blob/main/docs/v0.3.1-rc1-codex-cli-acceptance.md`;
 const releaseUrl = `${githubRoot}/releases/tag/v0.3.1`;
 type NumericSummaryKey = Exclude<keyof EvaluationSummary, "id" | "kind" | "platform">;
 
@@ -89,6 +89,8 @@ export function EvaluationProof() {
         </div>
       </div>
 
+      <RealCodexProof />
+
       <div className="evidence-ladder" aria-label="公开证据分层">
         <div className="evidence-ladder-heading">
           <span>Evidence ladder</span>
@@ -107,11 +109,11 @@ export function EvaluationProof() {
             <p>双平台构建、校验和、Windows 正式包 smoke 与 Release 元数据均已验收。</p>
             <small>tag v0.3.1 · commit c6799c3</small>
           </a>
-          <a href={clientAcceptanceUrl} rel="noreferrer" target="_blank">
+          <a href="#real-codex-proof">
             <span>03 · 真实客户端</span>
-            <strong>Codex CLI 真实调用</strong>
-            <p>项目与 Hook 两层信任、MCP allow、高危写入拒绝和独立后置条件均可核对。</p>
-            <small>RC 与正式版同提交 c6799c3 · 未绕过 Hook 信任</small>
+            <strong>Codex CLI 预录验收</strong>
+            <p>正式 Release、MCP allow、高危写入拒绝、Hook trust 与独立后置条件均可核对。</p>
+            <small>Windows disposable · commit cd63620 · 不是浏览器实时执行</small>
           </a>
         </div>
       </div>
