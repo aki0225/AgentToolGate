@@ -22,10 +22,20 @@ npm run build
 
 `npm test` 会对 `src/demo/stateMachine.ts` 执行 Vitest 单元测试和覆盖率门禁，覆盖正常审批、自批拒绝、拒绝分支、一次性票据、非法迁移与重置。
 
+真实 Codex 预录证据位于 `evaluation/published/real-codex-demo/`。修改或重新导入证据后先执行：
+
+```powershell
+npm run real-codex:sync
+npm run real-codex:check
+```
+
+校验器会验证文件白名单、manifest SHA256、Hook trust、MCP/Audit 关联、受保护写入拒绝、仓库与清理后置条件，以及 Asciicast v2 事件边界；页面只消费校验后派生的静态 JSON 与录制文件。
+
 ## 实现边界
 
 - 三个交互场景只使用 synthetic fixtures 和浏览器内存状态。
 - 页面不发送 `fetch`、XHR、WebSocket 或第三方分析请求。
+- 真实 Codex 区域是同源静态预录证据，不在浏览器中连接本机、AgentToolGate 后端或模型上游。
 - ATG 管理的 Connector Secret 只以 `valueRef` 元数据出现在展示内容中，不包含 Secret value。
 - Local Action 场景不包含可执行恶意脚本，不写入真实 Startup、Hook 或凭据路径。
 - Audit 与 OTel 使用脱敏口径；审批内部暂存冻结参数的事实会明确披露。

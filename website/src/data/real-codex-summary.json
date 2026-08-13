@@ -1,0 +1,51 @@
+{
+  "schemaVersion": "v1",
+  "publishedAt": "2026-08-13",
+  "source": {
+    "repository": "aki0225/AgentToolGate",
+    "recordingId": "local-1786589608",
+    "commitSha": "cd63620e41f11a0ef979ef412c3cbc46caf8b5f9",
+    "commitUrl": "https://github.com/aki0225/AgentToolGate/commit/cd63620e41f11a0ef979ef412c3cbc46caf8b5f9",
+    "evidenceUrl": "https://github.com/aki0225/AgentToolGate/tree/main/evaluation/published/real-codex-demo"
+  },
+  "runtime": {
+    "releaseTag": "v0.3.1",
+    "platform": "windows-amd64",
+    "environment": "Windows 本地一次性验收环境",
+    "clientName": "codex-cli",
+    "clientVersion": "0.146.0",
+    "model": "gpt-5.4-mini",
+    "hookMode": "live"
+  },
+  "checks": {
+    "mcpTool": "mock.real_codex_echo",
+    "mcpAllowed": true,
+    "mcpAuditCorrelatedOnce": true,
+    "protectedTarget": "release.yml",
+    "protectedWriteDeniedOnce": true,
+    "guardWriteAuditRecordedOnce": true,
+    "matchedRule": "project_protected_path",
+    "repositoryClean": true,
+    "protectedFilePreserved": true,
+    "hookTrusted": true,
+    "hookSource": "project",
+    "hookTrustBypassed": false,
+    "cleanupPassed": true,
+    "publicArtifactContractChecked": true
+  },
+  "recording": {
+    "format": "asciicast-v2",
+    "sha256": "06b29b7f428b537d6ab61911cfbab6db5a3806f3c16eaac9efa9bbc4c2072caa",
+    "eventCount": 15,
+    "durationMs": 36902
+  },
+  "boundaries": {
+    "preRecorded": true,
+    "browserRealtime": false,
+    "syntheticDataOnly": true,
+    "credentialsIncluded": false,
+    "providerIdentityIncluded": false,
+    "osSandboxClaimed": false,
+    "synchronizedEvents": true
+  }
+}

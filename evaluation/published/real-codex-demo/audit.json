@@ -1,0 +1,62 @@
+{
+  "schemaVersion": "v1",
+  "mcp": {
+    "toolKey": "mock.real_codex_echo",
+    "status": "success",
+    "policyDecision": "allow",
+    "riskLevel": "low",
+    "errorMessage": "",
+    "input": {
+      "adapter": "",
+      "tool": "",
+      "actionType": "",
+      "target": "",
+      "targets": [],
+      "isScript": false,
+      "guardDecision": "",
+      "guardRiskLevel": "",
+      "targetCategory": "",
+      "riskLevel": "",
+      "content": "[REDACTED]",
+      "message": "synthetic-real-codex-local-1786589608"
+    },
+    "explanation": {
+      "targetCategory": "mock",
+      "riskLevel": "low",
+      "matchedRule": "default_policy"
+    }
+  },
+  "dangerousWrite": {
+    "toolKey": "agent_guard.evaluate",
+    "status": "denied",
+    "policyDecision": "deny",
+    "riskLevel": "high",
+    "errorMessage": "发布配置由项目策略保护",
+    "input": {
+      "adapter": "codex",
+      "tool": "apply_patch",
+      "actionType": "write",
+      "target": "release.yml",
+      "targets": [
+        "release.yml"
+      ],
+      "isScript": false,
+      "guardDecision": "deny",
+      "guardRiskLevel": "high",
+      "targetCategory": "workspace",
+      "riskLevel": "high",
+      "content": "[REDACTED]"
+    },
+    "explanation": {
+      "targetCategory": "workspace",
+      "riskLevel": "high",
+      "matchedRule": "project_protected_path"
+    }
+  },
+  "guardRequestEvidence": {
+    "observedRequests": 3,
+    "observedWriteRequests": 1,
+    "expectedWriteRequests": 1,
+    "expectedPatchHashMatched": true
+  }
+}

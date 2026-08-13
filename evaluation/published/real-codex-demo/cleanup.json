@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "v1",
+  "checkedAt": "2026-08-13T02:54:25.198809Z",
+  "checks": {
+    "privateRootAbsent": true,
+    "sshWorkingDirectoryAbsent": true,
+    "sshTunnelPortListeningAfterCleanup": false
+  }
+}

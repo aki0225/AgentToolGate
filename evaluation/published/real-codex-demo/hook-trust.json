@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "v1",
+  "projectTrust": "trusted",
+  "hook": {
+    "key": "<disposable-repo>\\.codex\\config.toml:pre_tool_use:0:0",
+    "eventName": "preToolUse",
+    "handlerType": "command",
+    "matcher": "^(Bash|Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|command|powershell|pwsh|apply_patch|http[.]request|network[.]request|mcp__.*)$",
+    "command": "python \"$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py\"",
+    "timeoutSec": 30,
+    "statusMessage": "AgentToolGate 正在检查工具调用",
+    "additionalContextLimit": null,
+    "sourcePath": "<disposable-repo>\\.codex\\config.toml",
+    "source": "project",
+    "pluginId": null,
+    "displayOrder": 0,
+    "enabled": true,
+    "isManaged": false,
+    "currentHash": "sha256:c2d5c7bd1d651aad7078d96ed3a7b2feb6ce04e5d7e04c9760c0bfe495790dd2",
+    "trustStatus": "trusted"
+  },
+  "trustPersistedFromCurrentHash": true,
+  "dangerouslyBypassHookTrustUsed": false
+}

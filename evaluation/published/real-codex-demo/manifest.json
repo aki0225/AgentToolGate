@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "v1",
+  "generatedAt": "2026-08-13T02:54:25.201825Z",
+  "files": [
+    {
+      "path": "audit.json",
+      "size": 1524,
+      "sha256": "412023b61dfab12f99cbd3f75d55badf520dcc2ef0c87d88d594ad7d4efac689"
+    },
+    {
+      "path": "cleanup.json",
+      "size": 211,
+      "sha256": "9ae39a184a64a9b429f65c4b0424ca5a724b1e3c7c15578ce200ee6a6f7ec915"
+    },
+    {
+      "path": "codex-real-demo.cast",
+      "size": 1307,
+      "sha256": "06b29b7f428b537d6ab61911cfbab6db5a3806f3c16eaac9efa9bbc4c2072caa"
+    },
+    {
+      "path": "hook-trust.json",
+      "size": 984,
+      "sha256": "c8ee2187ae7f602721a71873909c716892d50e3854c35b16451af9a65bb655b4"
+    },
+    {
+      "path": "postconditions.json",
+      "size": 1070,
+      "sha256": "55d4b2fe6b467191901498c4d8d5814e6ea74e636c0dd1c62391bcd4c9ad2ef9"
+    },
+    {
+      "path": "summary.json",
+      "size": 1695,
+      "sha256": "965214c4d9b2dc1108bd8bbf005cf3ed266eb8610581754a9273dd40288211a2"
+    },
+    {
+      "path": "transcript.txt",
+      "size": 1110,
+      "sha256": "5c7cfca0c2e46448275774592200a6ae155255eb4bae528bb96a9ed3e4909cd8"
+    }
+  ]
+}
