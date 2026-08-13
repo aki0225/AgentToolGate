@@ -1,40 +1,129 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  getRealCodexScenario,
+  parseRealCodexProofDocument,
   parseRealCodexRecording,
+  parseRealCodexScenarioRecordings,
   realCodexProof,
-  realCodexRecording
+  realCodexRecordings,
+  realCodexScenarioIds,
+  realCodexScenarios
 } from "./realCodexProof";
 
-describe("真实 Codex 预录证据", () => {
-  it("保留真实客户端、Hook 和边界口径", () => {
-    expect(realCodexProof.runtime.clientName).toBe("codex-cli");
-    expect(realCodexProof.runtime.platform).toBe("windows-amd64");
-    expect(realCodexProof.checks.mcpAllowed).toBe(true);
-    expect(realCodexProof.checks.protectedWriteDeniedOnce).toBe(true);
-    expect(realCodexProof.checks.hookTrusted).toBe(true);
-    expect(realCodexProof.checks.hookTrustBypassed).toBe(false);
-    expect(realCodexProof.boundaries.preRecorded).toBe(true);
-    expect(realCodexProof.boundaries.browserRealtime).toBe(false);
-    expect(realCodexProof.boundaries.credentialsIncluded).toBe(false);
-    expect(realCodexProof.boundaries.osSandboxClaimed).toBe(false);
-  });
+function cloneProof() {
+  return structuredClone(realCodexProof);
+}
 
-  it("解析同步事件并与派生摘要一致", () => {
-    expect(realCodexRecording.header.version).toBe(2);
-    expect(realCodexRecording.events).toHaveLength(realCodexProof.recording.eventCount);
-    expect(realCodexRecording.durationMs).toBe(realCodexProof.recording.durationMs);
+describe("真实 Codex 多场景证据", () => {
+  it("严格保留五场景、默认顺序和安全语义", () => {
+    expect(realCodexProof.schemaVersion).toBe("v2");
+    expect(realCodexProof.scenarios.map((scenario) => scenario.id)).toEqual(
+      realCodexScenarioIds
+    );
+    expect(realCodexProof.scenarios).toHaveLength(5);
+    expect(getRealCodexScenario("low-friction").decision).toBe("allow");
+    expect(getRealCodexScenario("low-friction").riskLevel).toBe("low");
+    expect(["correlated", "not-applicable"]).toContain(
+      getRealCodexScenario("low-friction").auditStatus
+    );
     expect(
-      realCodexRecording.events.some((event) =>
-        event.text.includes("MCP 调用：agenttoolgate/mock.real_codex_echo")
-      )
+      realCodexProof.scenarios
+        .filter((scenario) => scenario.id !== "low-friction")
+        .every(
+          (scenario) =>
+            scenario.decision === "deny" && scenario.auditStatus === "correlated"
+        )
     ).toBe(true);
-    expect(realCodexRecording.events.some((event) => event.text.includes("git status --short"))).toBe(
-      true
+    expect(getRealCodexScenario("destructive-delete").riskLevel).toBe("critical");
+    expect(new Set(realCodexProof.scenarios.map((scenario) => scenario.sessionId)).size).toBe(5);
+    expect(
+      realCodexProof.scenarios.map((scenario) => scenario.recordingFile)
+    ).toEqual(realCodexScenarioIds.map((id) => `scenario-${id}.cast`));
+    expect(getRealCodexScenario("sensitive-read").guardSignal).toBe("sensitive_read");
+    expect(getRealCodexScenario("sensitive-read").matchedRule).toBe(
+      "guard-core-deny-floor"
     );
   });
 
-  it("拒绝逆序时间、非输出事件和控制字符", () => {
+  it("每个场景的同步录制都与派生摘要一致", () => {
+    for (const scenario of realCodexScenarios) {
+      expect(scenario.recordingData.header.version).toBe(2);
+      expect(scenario.recordingData.events).toHaveLength(scenario.recording.eventCount);
+      expect(scenario.recordingData.durationMs).toBe(scenario.recording.durationMs);
+      expect(realCodexRecordings[scenario.id]).toBe(scenario.recordingData);
+    }
+  });
+
+  it("保留 Hook trust、清理与产品能力边界", () => {
+    expect(realCodexProof.runtime.clientName).toBe("codex-cli");
+    expect(realCodexProof.runtime.hookMode).toBe("live");
+    expect(realCodexProof.sharedChecks.hookTrusted).toBe(true);
+    expect(realCodexProof.sharedChecks.hookSource).toBe("project");
+    expect(realCodexProof.sharedChecks.hookTrustBypassed).toBe(false);
+    expect(realCodexProof.sharedChecks.cleanupPassed).toBe(true);
+    expect(realCodexProof.boundaries.preRecorded).toBe(true);
+    expect(realCodexProof.boundaries.browserRealtime).toBe(false);
+    expect(realCodexProof.boundaries.syntheticDataOnly).toBe(true);
+    expect(realCodexProof.boundaries.credentialsIncluded).toBe(false);
+    expect(realCodexProof.boundaries.providerIdentityIncluded).toBe(false);
+    expect(realCodexProof.boundaries.osSandboxClaimed).toBe(false);
+    expect(realCodexProof.boundaries.completeDlpClaimed).toBe(false);
+    expect(realCodexProof.boundaries.codexInteractiveApprovalClaimed).toBe(false);
+  });
+
+  it("拒绝缺场景、重复场景和放松后的场景决策", () => {
+    const missing = cloneProof();
+    missing.scenarios.pop();
+    expect(() => parseRealCodexProofDocument(missing)).toThrow(/恰好包含 5 个场景/);
+
+    const duplicate = cloneProof();
+    duplicate.scenarios[4].id = "low-friction";
+    expect(() => parseRealCodexProofDocument(duplicate)).toThrow(/重复 id/);
+
+    const unsafe = cloneProof();
+    unsafe.scenarios[1].decision = "allow";
+    expect(() => parseRealCodexProofDocument(unsafe)).toThrow(/安全语义不一致/);
+
+    const missingAudit = cloneProof();
+    missingAudit.scenarios[1].auditStatus = "not-applicable";
+    expect(() => parseRealCodexProofDocument(missingAudit)).toThrow(/证据语义不一致/);
+
+    const weakDeleteRisk = cloneProof();
+    weakDeleteRisk.scenarios[2].riskLevel = "high";
+    expect(() => parseRealCodexProofDocument(weakDeleteRisk)).toThrow(/critical 风险语义/);
+
+    const duplicateSession = cloneProof();
+    duplicateSession.scenarios[1].sessionId = duplicateSession.scenarios[0].sessionId;
+    expect(() => parseRealCodexProofDocument(duplicateSession)).toThrow(
+      /sessionId 必须全部唯一/
+    );
+
+    const mismatchedRecording = cloneProof();
+    mismatchedRecording.scenarios[0].recordingFile = "scenario-sensitive-read.cast";
+    expect(() => parseRealCodexProofDocument(mismatchedRecording)).toThrow(
+      /recordingFile 必须/
+    );
+  });
+
+  it("拒绝摘要与录制事件数或时长不一致", () => {
+    const rawRecordings = Object.fromEntries(
+      realCodexScenarioIds.map((id) => [
+        id,
+        [
+          JSON.stringify({ version: 2, width: 80, height: 24, title: id }),
+          JSON.stringify([0.1, "o", "开始\r\n"]),
+          JSON.stringify([0.2, "o", "完成\r\n"])
+        ].join("\n")
+      ])
+    ) as Record<(typeof realCodexScenarioIds)[number], string>;
+
+    expect(() => parseRealCodexScenarioRecordings(realCodexProof, rawRecordings)).toThrow(
+      /派生摘要与录制文件不一致/
+    );
+  });
+
+  it("拒绝逆序时间、输入事件、控制字符和超长输出", () => {
     const header = JSON.stringify({
       version: 2,
       width: 80,
@@ -46,6 +135,41 @@ describe("真实 Codex 预录证据", () => {
         [header, JSON.stringify([1, "o", "第一步\r\n"]), JSON.stringify([0.5, "i", "\u0007"])]
           .join("\n")
       )
-    ).toThrow(/纯文本输出事件/);
+    ).toThrow(/有界纯文本输出事件/);
+
+    expect(() =>
+      parseRealCodexRecording(
+        [header, JSON.stringify([0.1, "o", "x".repeat(8_193)])].join("\n")
+      )
+    ).toThrow(/有界纯文本输出事件/);
+  });
+
+  it("允许标准 asciicast 可选元数据，但拒绝未知 header 字段", () => {
+    const validHeader = JSON.stringify({
+      version: 2,
+      width: 80,
+      height: 24,
+      title: "valid",
+      timestamp: 1,
+      env: { TERM: "xterm-256color" }
+    });
+    expect(
+      parseRealCodexRecording(
+        [validHeader, JSON.stringify([0.1, "o", "完成\r\n"])].join("\n")
+      ).events
+    ).toHaveLength(1);
+
+    const invalidHeader = JSON.stringify({
+      version: 2,
+      width: 80,
+      height: 24,
+      title: "invalid",
+      unexpected: true
+    });
+    expect(() =>
+      parseRealCodexRecording(
+        [invalidHeader, JSON.stringify([0.1, "o", "完成\r\n"])].join("\n")
+      )
+    ).toThrow(/header 字段集合/);
   });
 });
