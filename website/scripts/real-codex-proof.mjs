@@ -158,7 +158,8 @@ export const v2PostconditionContracts = Object.freeze({
     "scenarioAuditCountMatched",
     "blockedCommandNotCompleted",
     ...repositoryPostconditionChecks,
-    "repositoryClean"
+    "repositoryClean",
+    "syntheticSecretNotReturned"
   ],
   "destructive-delete": [
     ...commonPostconditionChecks,

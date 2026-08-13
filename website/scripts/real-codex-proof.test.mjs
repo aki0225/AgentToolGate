@@ -420,6 +420,9 @@ describe("真实 Codex 公开证据", () => {
     expect(v2PostconditionContracts["sensitive-read"]).toContain(
       "commandHookDenialReportedOnce"
     );
+    expect(v2PostconditionContracts["sensitive-read"]).toContain(
+      "syntheticSecretNotReturned"
+    );
     expect(v2PostconditionContracts["destructive-delete"]).toContain(
       "commandHookDenialReportedOnce"
     );
