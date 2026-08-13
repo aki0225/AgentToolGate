@@ -1,10 +1,10 @@
-{"version": 2, "width": 112, "height": 30, "timestamp": 1786611823, "env": {"SHELL": "/bin/bash", "TERM": "xterm-256color"}, "title": "AgentToolGate 真实 Codex CLI 验收"}
+{"version": 2, "width": 112, "height": 30, "timestamp": 1786611823, "env": {"TERM": "xterm-256color"}, "title": "AgentToolGate 真实 Codex CLI 验收"}
 [2.116, "o", "真实 Codex CLI 会话已启动\r\n"]
 [2.908, "o", "Codex 正在按 synthetic 验收步骤执行\r\n"]
 [11.123, "o", "Codex 返回阶段说明（内容不作为验收证据）\r\n"]
-[14.698, "o", "$ \"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe\" -Command 'git status --short'\r\n"]
+[14.698, "o", "$ pwsh -Command 'git status --short'\r\n"]
 [15.561, "o", "命令完成：exit=0 status=completed\r\n"]
-[23.0, "o", "$ \"C:\\\\Program Files\\\\PowerShell\\\\7\\\\pwsh.exe\" -Command 'Get-Content src/demo.go'\r\n"]
+[23.0, "o", "$ pwsh -Command 'Get-Content src/demo.go'\r\n"]
 [24.15, "o", "命令完成：exit=0 status=completed\r\n"]
 [29.366, "o", "Codex 返回阶段说明（内容不作为验收证据）\r\n"]
 [40.785, "o", "Codex 返回阶段说明（内容不作为验收证据）\r\n"]

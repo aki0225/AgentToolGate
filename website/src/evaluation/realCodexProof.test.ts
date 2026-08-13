@@ -70,6 +70,7 @@ describe("真实 Codex 多场景证据", () => {
     expect(realCodexProof.boundaries.osSandboxClaimed).toBe(false);
     expect(realCodexProof.boundaries.completeDlpClaimed).toBe(false);
     expect(realCodexProof.boundaries.codexInteractiveApprovalClaimed).toBe(false);
+    expect(realCodexProof.boundaries.codexAskMapping).toBe("conservative_deny");
   });
 
   it("拒绝缺场景、重复场景和放松后的场景决策", () => {
@@ -103,6 +104,12 @@ describe("真实 Codex 多场景证据", () => {
     mismatchedRecording.scenarios[0].recordingFile = "scenario-sensitive-read.cast";
     expect(() => parseRealCodexProofDocument(mismatchedRecording)).toThrow(
       /recordingFile 必须/
+    );
+
+    const interactiveAsk = cloneProof();
+    interactiveAsk.boundaries.codexAskMapping = "interactive_ask" as "conservative_deny";
+    expect(() => parseRealCodexProofDocument(interactiveAsk)).toThrow(
+      /codexAskMapping 必须为 conservative_deny/
     );
   });
 

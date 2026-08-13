@@ -1,0 +1,6 @@
+README.md text eol=lf
+evaluation/published/**/*.json text eol=lf
+evaluation/published/**/*.txt text eol=lf
+evaluation/published/**/*.cast text eol=lf
+website/src/data/*.json text eol=lf
+website/src/data/*.cast text eol=lf

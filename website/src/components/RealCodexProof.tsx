@@ -9,10 +9,41 @@ import {
 import { Icon } from "./Icon";
 
 const playbackRate = 4;
+const minimumPlaybackDelayMs = 90;
+const maximumPlaybackDelayMs = 900;
 const initialEventLimit = 3;
 
 function initialEventCount(eventCount: number) {
   return Math.min(initialEventLimit, eventCount);
+}
+
+export function playbackDelayMilliseconds(previousTime: number, nextTime: number) {
+  return Math.min(
+    maximumPlaybackDelayMs,
+    Math.max(minimumPlaybackDelayMs, ((nextTime - previousTime) * 1000) / playbackRate)
+  );
+}
+
+export function horizontalTabIndex(
+  key: string,
+  selectedIndex: number,
+  itemCount: number
+) {
+  if (itemCount <= 0) {
+    return null;
+  }
+  switch (key) {
+    case "ArrowRight":
+      return (selectedIndex + 1) % itemCount;
+    case "ArrowLeft":
+      return (selectedIndex - 1 + itemCount) % itemCount;
+    case "Home":
+      return 0;
+    case "End":
+      return itemCount - 1;
+    default:
+      return null;
+  }
 }
 
 function formatClock(milliseconds: number) {
@@ -88,10 +119,7 @@ export function RealCodexProof() {
     }
     const previousTime = visibleCount === 0 ? 0 : events[visibleCount - 1].timeSeconds;
     const nextTime = events[visibleCount].timeSeconds;
-    const delay = Math.min(
-      900,
-      Math.max(90, ((nextTime - previousTime) * 1000) / playbackRate)
-    );
+    const delay = playbackDelayMilliseconds(previousTime, nextTime);
     const timer = window.setTimeout(() => {
       setVisibleCount((count) => Math.min(count + 1, events.length));
     }, delay);
@@ -124,24 +152,13 @@ export function RealCodexProof() {
   }
 
   function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
-    let nextIndex = selectedIndex;
-    switch (event.key) {
-      case "ArrowRight":
-      case "ArrowDown":
-        nextIndex = (selectedIndex + 1) % realCodexScenarios.length;
-        break;
-      case "ArrowLeft":
-      case "ArrowUp":
-        nextIndex = (selectedIndex - 1 + realCodexScenarios.length) % realCodexScenarios.length;
-        break;
-      case "Home":
-        nextIndex = 0;
-        break;
-      case "End":
-        nextIndex = realCodexScenarios.length - 1;
-        break;
-      default:
-        return;
+    const nextIndex = horizontalTabIndex(
+      event.key,
+      selectedIndex,
+      realCodexScenarios.length
+    );
+    if (nextIndex === null) {
+      return;
     }
     event.preventDefault();
     // 所有标签始终挂载，先同步移动焦点可避免 React 提交与动画帧的时序竞争。
@@ -267,7 +284,7 @@ export function RealCodexProof() {
               </div>
               <strong>codex.exec / {selectedScenario.label}</strong>
               <small>
-                {formatClock(selectedScenario.recording.durationMs)} · {playbackRate}×
+                {formatClock(selectedScenario.recording.durationMs)} · 自适应加速回放
               </small>
             </div>
 
@@ -307,25 +324,36 @@ export function RealCodexProof() {
               <code>{selectedScenario.matchedRule}</code>
             </div>
 
-            <div className="real-codex-controls">
-              <button type="button" onClick={togglePlayback}>
-                {playing ? "暂停" : complete ? "重新播放" : "播放录制"}
-              </button>
-              <button className="real-codex-control-secondary" type="button" onClick={resetPlayback}>
-                重置
-              </button>
-              <div
-                aria-label={`播放进度 ${progress}%`}
-                aria-valuemax={100}
-                aria-valuemin={0}
-                aria-valuenow={progress}
-                className="real-codex-progress"
-                role="progressbar"
-              >
-                <span style={{ width: `${progress}%` }} />
+            {reducedMotion ? (
+              <div className="real-codex-controls real-codex-controls-static" role="status">
+                <span>已展开完整记录</span>
+                <time>{formatClock(selectedScenario.recording.durationMs)}</time>
               </div>
-              <time>{formatClock(Math.round(currentTime * 1000))}</time>
-            </div>
+            ) : (
+              <div className="real-codex-controls">
+                <button type="button" onClick={togglePlayback}>
+                  {playing ? "暂停" : complete ? "重新播放" : "播放录制"}
+                </button>
+                <button
+                  className="real-codex-control-secondary"
+                  type="button"
+                  onClick={resetPlayback}
+                >
+                  重置
+                </button>
+                <div
+                  aria-label={`播放进度 ${progress}%`}
+                  aria-valuemax={100}
+                  aria-valuemin={0}
+                  aria-valuenow={progress}
+                  className="real-codex-progress"
+                  role="progressbar"
+                >
+                  <span style={{ width: `${progress}%` }} />
+                </div>
+                <time>{formatClock(Math.round(currentTime * 1000))}</time>
+              </div>
+            )}
           </div>
 
           <aside className="real-codex-evidence" aria-label={`${selectedScenario.label}验收证据`}>
@@ -341,7 +369,9 @@ export function RealCodexProof() {
                   <strong>{selectedScenario.target}</strong>
                   <code>{selectedScenario.guardSignal}</code>
                   <small>
-                    动作 {selectedScenario.actionType} · 后端规则 {selectedScenario.matchedRule}
+                    动作 {selectedScenario.actionType} ·{" "}
+                    {selectedScenario.id === "low-friction" ? "代表性写入规则" : "后端规则"}{" "}
+                    {selectedScenario.matchedRule}
                   </small>
                 </dd>
               </div>

@@ -12,9 +12,9 @@ Codex approvals/sandbox: 仅 disposable 验收环境关闭，用于排除客户�
 真实 Codex CLI 会话已启动
 Codex 正在按 synthetic 验收步骤执行
 Codex 返回阶段说明（内容不作为验收证据）
-$ "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command 'git status --short'
+$ pwsh -Command 'git status --short'
 命令完成：exit=0 status=completed
-$ "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command 'Get-Content src/demo.go'
+$ pwsh -Command 'Get-Content src/demo.go'
 命令完成：exit=0 status=completed
 Codex 返回阶段说明（内容不作为验收证据）
 Codex 返回阶段说明（内容不作为验收证据）
@@ -54,7 +54,7 @@ AgentToolGate 验收关联：deny / high / guard-core-deny-floor
 真实 Codex CLI 会话已启动
 Codex 正在按 synthetic 验收步骤执行
 Codex 返回阶段说明（内容不作为验收证据）
-$ "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command 'Get-Content tool-output.txt'
+$ pwsh -Command 'Get-Content tool-output.txt'
 命令完成：exit=0 status=completed
 Codex 返回阶段说明（内容不作为验收证据）
 Codex 返回阶段说明（内容不作为验收证据）

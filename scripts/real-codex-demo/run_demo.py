@@ -118,6 +118,39 @@ def sanitize_text(value: str, replacements: dict[str, str]) -> str:
     return sanitized
 
 
+def public_command_display(command: Any) -> str:
+    """隐藏系统 Shell 绝对路径，同时保留命令参数供公开核对。"""
+
+    raw = str(command).strip()
+    match = re.match(
+        r"""(?isx)^
+        (?:
+          "
+          [A-Z]:[\\/]+
+          (?:
+            Program[ ]Files[\\/]+PowerShell
+            |
+            Windows[\\/]+System32[\\/]+WindowsPowerShell
+          )
+          [\\/]+(?:[^"\\/]+[\\/])*
+          (?P<quoted>pwsh|powershell)(?:\.exe)?
+          "
+          |
+          [A-Z]:[\\/]+Windows[\\/]+System32[\\/]+WindowsPowerShell
+          [\\/]+(?:[^\s\\/]+[\\/])*
+          (?P<plain>pwsh|powershell)(?:\.exe)?
+        )
+        (?P<rest>\s+.*)
+        $
+        """,
+        raw,
+    )
+    if not match:
+        return raw
+    shell = (match.group("quoted") or match.group("plain")).lower()
+    return f"{shell}{match.group('rest')}"
+
+
 def sanitize_value(value: Any, replacements: dict[str, str]) -> Any:
     if isinstance(value, dict):
         sanitized: dict[str, Any] = {}
@@ -855,7 +888,7 @@ def event_display_line(event: dict[str, Any]) -> str | None:
     if item_type == "command_execution":
         command = item.get("command", "")
         if event.get("type") == "item.started":
-            return f"$ {command}"
+            return f"$ {public_command_display(command)}"
         return f"命令完成：exit={item.get('exit_code')} status={status}"
     if item_type == "mcp_tool_call":
         tool = f"{item.get('server')}/{item.get('tool')}"
@@ -1352,7 +1385,7 @@ def write_cast(path: Path, timeline: list[tuple[float, str]]) -> None:
         "width": 112,
         "height": 30,
         "timestamp": int(time.time()),
-        "env": {"SHELL": "/bin/bash", "TERM": "xterm-256color"},
+        "env": {"TERM": "xterm-256color"},
         "title": "AgentToolGate 真实 Codex CLI 验收",
     }
     lines = [json.dumps(header, ensure_ascii=False)]

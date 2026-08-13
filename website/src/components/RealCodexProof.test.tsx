@@ -1,7 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { RealCodexProof } from "./RealCodexProof";
+import {
+  horizontalTabIndex,
+  playbackDelayMilliseconds,
+  RealCodexProof
+} from "./RealCodexProof";
 
 describe("真实 Codex 多场景预录面板", () => {
   it("呈现五个可访问场景标签并默认选择低摩擦场景", () => {
@@ -41,6 +45,24 @@ describe("真实 Codex 多场景预录面板", () => {
     expect(html).toContain(">重置</button>");
     expect(html).not.toContain(">暂停</button>");
     expect(html.match(/class="real-codex-line /g)).toHaveLength(3);
+    expect(html).toContain("自适应加速回放");
+    expect(html).not.toContain("4×");
+    expect(html).toContain("代表性写入规则");
+  });
+
+  it("按水平标签语义处理键盘，并保留上下方向键的页面滚动", () => {
+    expect(horizontalTabIndex("ArrowRight", 4, 5)).toBe(0);
+    expect(horizontalTabIndex("ArrowLeft", 0, 5)).toBe(4);
+    expect(horizontalTabIndex("Home", 3, 5)).toBe(0);
+    expect(horizontalTabIndex("End", 1, 5)).toBe(4);
+    expect(horizontalTabIndex("ArrowUp", 2, 5)).toBeNull();
+    expect(horizontalTabIndex("ArrowDown", 2, 5)).toBeNull();
+  });
+
+  it("使用有界自适应延迟播放录制", () => {
+    expect(playbackDelayMilliseconds(0, 0.02)).toBe(90);
+    expect(playbackDelayMilliseconds(1, 2)).toBe(250);
+    expect(playbackDelayMilliseconds(0, 10)).toBe(900);
   });
 
   it("低摩擦首屏按证据状态呈现 Audit，不声称普通读取必有后端 Audit", () => {
@@ -48,7 +70,7 @@ describe("真实 Codex 多场景预录面板", () => {
 
     expect(html).toMatch(/Audit (已关联|不适用)/);
     expect(html).toContain("workspace_write");
-    expect(html).toContain("后端规则 agent-guard-safe-workspace-write-allow");
+    expect(html).toContain("代表性写入规则 agent-guard-safe-workspace-write-allow");
     expect(html).not.toContain("每段录制都与 Guard Audit");
     expect(html).not.toContain("实时演示");
     expect(html).not.toContain("交互审批已完成");
