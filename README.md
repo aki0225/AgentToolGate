@@ -15,6 +15,7 @@
 
 **[架构总览](#架构总览)** ·
 **[快速开始](#快速开始)** ·
+**[当前状态](#当前状态)** ·
 **[在线展示](https://aki0225.github.io/AgentToolGate/)** ·
 **[实测评估](#实测评估)** ·
 **[防护范围](#防护范围)** ·
@@ -113,6 +114,16 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 
 日常使用说明见 [docs/local-daily-use.md](docs/local-daily-use.md)，AI 客户端接入见 [docs/ai-client-integration.md](docs/ai-client-integration.md)。
 
+## 当前状态
+
+- 当前稳定版是 [`v0.3.1`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.3.1)，
+  产品提交为 `c6799c39061c05e35b54a348a6e293032edf94b4`。
+- `v0.3.1` 已冻结；此后的 `main` 提交主要维护公开证据、展示站、测试门禁和文档，
+  不会改变已发布附件。
+- 最新状态、已验证能力和维护边界见
+  [当前项目状态](docs/current-status.md)；发布级证据见
+  [v0.3.1 发布验收](docs/v0.3.1-release-acceptance.md)。
+
 ## 生产部署前必读
 
 仓库默认 `docker-compose.yml` 使用 `HOST=0.0.0.0`、`AUTH_MODE=local`、
@@ -188,6 +199,7 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 
 ## 深入文档
 
+- [当前项目状态](docs/current-status.md)：稳定版本、维护基线、已验证能力和后续变更边界。
 - [架构说明](docs/architecture.md)：项目定位、REST/MCP/Local Action 主链路、核心模块、数据流与信任边界。
 - [MCP 治理](docs/mcp-governance.md)：MCP Inbound Streamable HTTP `/mcp`、SSE fallback `/mcp/sse`、MCP Outbound `mcp_<connector>.<tool>`、ATG 管理的 Connector Secret 与 Connector、Approval 的关系。
 - [本地动作防火墙](docs/local-action-firewall.md)：off / dry-run / live、`deny_with_ticket`、remembered allow、Claude / Codex 差异和 TOCTOU 风险。

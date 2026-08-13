@@ -2,9 +2,15 @@
 
 > 交接日期：2026-08-13
 >
-> 当前分支：`main`
+> 交接时分支：`main`
 >
-> 播放器实现提交：`6bb1459`
+> 播放器初始实现提交：`6bb1459`
+>
+> 后续准确性与交互修复：`b6b3ec8`
+>
+> Playwright 浏览器门禁：`198a60b`
+>
+> 当前恢复入口：[`docs/current-status.md`](current-status.md)
 
 ## 本轮已完成
 
@@ -44,6 +50,8 @@ cd website
 npm run check
 npm test
 npm run build
+npm run playwright:install
+npm run e2e
 ```
 
 结果：
@@ -75,44 +83,29 @@ npm run build
 - 当前 Codex Hook MVP 将 Guard `ask` 保守映射为拒绝，不冒充 Codex 交互审批。
 - `gpt-5.5` 是本轮客户端请求和验收记录中的模型名；公开证据不包含 provider 身份，因此不声称能够独立证明上游底层模型身份。
 
-## 今晚继续处理的非阻断展示问题
+## 后续完成的展示修复
 
-以下问题不影响五场景 Guard 决策、Audit、后置条件或敏感扫描，但建议在正式对外展示前处理：
+原交接列出的 9 项非阻断展示问题中，8 项已完成，1 项保留为可选展示优化：
 
-1. 五个 Cast 的 header 仍包含固定的 `SHELL=/bin/bash`，与本轮 Windows 录制环境不一致。
-   - 修改 `scripts/real-codex-demo/run_demo.py` 的 Cast header 生成逻辑。
-   - Windows 可写准确的 PowerShell 信息，或直接不输出 `SHELL`。
-2. 部分同步事件仍显示系统级 PowerShell 绝对路径：
+1. 五个 v2 Cast 不再写入固定的 `SHELL=/bin/bash`。
+2. v2 公开录制中的系统 PowerShell 绝对路径统一显示为 `pwsh`，scanner 已增加回归检查。
+3. 页面证据面板已经展示动作目标、Guard signal、Audit 和独立后置条件；原始 Cast
+   仍以 `AgentToolGate 验收关联` 摘要为主。若以后需要让终端回放单独承担更多解释，
+   可以增加明确标为 `Hook observer 观察到` 的验收器派生行，但不得冒充 Codex 原始事件。
+4. Website 派生契约保留 `codexAskMapping=conservative_deny`，并做严格解析测试。
+5. 播放器文案改为“自适应加速回放”，不再声称固定 `4×`。
+6. `prefers-reduced-motion` 下直接展开完整记录，隐藏无意义的播放和重置控件。
+7. 水平 Tab 只处理 `ArrowLeft`、`ArrowRight`、`Home`、`End`，上下键保留页面默认行为。
+8. Playwright 已覆盖标签键盘语义、播放/暂停/重置、重播、三种视口和 reduced-motion；
+   CI 与 Pages 上传前都会执行。
+9. 低摩擦场景的规则文案已标为“代表性写入规则”，不再用单条规则概括整个场景。
 
-   ```text
-   C:\Program Files\PowerShell\7\pwsh.exe
-   ```
-
-   - 这不是用户私有路径或凭据，但公开展示可统一脱敏为 `pwsh`。
-   - 应在生成阶段处理，并为 scanner 增加回归检查，避免只手工修改当前证据。
-3. 被拒绝场景的 Cast 主要展示最终验收关联，动作尝试的可读性仍可增强。
-   - 可追加明确标注为“Hook observer 观察到”的验收器派生行。
-   - 不得把派生行冒充 Codex 原始事件，也不得编造 Audit 或模型输出。
-4. 原始 v2 `summary.json` 已包含：
-
-   ```json
-   "codexAskMapping": "conservative_deny"
-   ```
-
-   Website 派生 JSON 尚未保留该机器可读字段；页面已有对应中文边界文案，可补齐 TypeScript 与派生契约。
-5. 播放器标题显示固定 `4×`，但当前事件间隔会被限制在 `90–900ms`，长间隔会被进一步压缩。
-   - 可改成“自适应加速回放”，避免声称固定倍率。
-   - 或按真实时间差除以固定倍率播放，并按录制时间而不是事件数量计算进度。
-6. reduced-motion 下会直接展示完整录制，但播放、重置按钮仍保留，点击后没有明显变化。
-   - 可隐藏或禁用这些控制，并显示“已展开完整记录”。
-7. Tab 声明为水平布局，但当前仍处理 `ArrowUp`、`ArrowDown`。
-   - 应只处理 `ArrowLeft`、`ArrowRight`、`Home`、`End`，保留上下键的页面滚动行为。
-   - 键盘焦点与激活面板的同步问题本轮已经修复。
-8. 当前组件自动化测试以静态渲染为主。
-   - 本轮已用真实浏览器人工验收播放、重置、键盘、窄屏和 reduced-motion。
-   - 后续可补一条 Playwright 交互测试，固定这些状态流。
-9. 低摩擦场景聚合了状态检查、源码读取、普通写入和 MCP 调用，但卡片只显示一条代表性写入规则。
-   - 文案可明确写成“代表性写入判定”，或分开展示四类动作，避免把单一规则概括为整个场景。
+第 1、2、4～7、9 项由 `b6b3ec8` 完成；第 8 项由 `198a60b` 完成。第 3 项不影响
+Guard 决策、Audit、后置条件或敏感扫描，不是发布阻断项。对应 `main` 的 CI
+[`31708710029`](https://github.com/aki0225/AgentToolGate/actions/runs/31708710029)
+和 Pages
+[`31708710016`](https://github.com/aki0225/AgentToolGate/actions/runs/31708710016)
+均为 success。
 
 修改现有 v2 Cast 后，必须同步更新：
 
@@ -122,7 +115,7 @@ npm run build
 
 不得重新生成 synthetic Secret，不需要重新调用模型；只有在现有同步事件、Hook observer、Audit 和后置条件不足以支持展示内容时，才重新录制。
 
-## 精确续做步骤
+## 后续维护验证
 
 ```powershell
 git pull --ff-only
@@ -135,6 +128,8 @@ npm run real-codex:sync
 npm run check
 npm test
 npm run build
+npm run playwright:install
+npm run e2e
 ```
 
 若修改公开证据，额外执行：
@@ -146,4 +141,4 @@ python scripts/real-codex-demo/scan_public_artifacts.py `
 git diff --check
 ```
 
-最后再启动 Website，重复 1440、760、375、键盘和 reduced-motion 浏览器验收，并确认公开 Pages，而不只看 Actions 状态。
+最后仍应启动 Website 做人工 spot check，并确认公开 Pages，而不只看 Actions 状态。

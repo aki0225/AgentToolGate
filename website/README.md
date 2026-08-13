@@ -18,9 +18,15 @@ Vite 的 Pages 基础路径固定为 `/AgentToolGate/`。本地开发时按终�
 npm run check
 npm test
 npm run build
+npm run playwright:install
+npm run e2e
 ```
 
 `npm test` 会对 `src/demo/stateMachine.ts` 执行 Vitest 单元测试和覆盖率门禁，覆盖正常审批、自批拒绝、拒绝分支、一次性票据、非法迁移与重置。
+
+`npm run e2e` 会启动生产预览，并用 Chromium 验证真实 Codex 五场景播放器的键盘语义、
+播放状态、重播、三种视口和 `prefers-reduced-motion`。首次运行或浏览器版本变化后先执行
+`npm run playwright:install`。
 
 真实 Codex 预录证据位于 `evaluation/published/real-codex-demo/`。修改或重新导入证据后先执行：
 
