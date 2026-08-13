@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import importlib.util
 import hashlib
+import json
+import os
 import tempfile
 import unittest
 from unittest import mock
@@ -64,7 +66,7 @@ class RealCodexDemoTest(unittest.TestCase):
                 "item": {
                     "type": "mcp_tool_call",
                     "server": "agenttoolgate",
-                    "tool": "mock.echo",
+                    "tool": RUN_DEMO.DEMO_MCP_TOOL_KEY,
                     "arguments": {"message": unique_message},
                     "status": "completed",
                 },
@@ -80,7 +82,7 @@ class RealCodexDemoTest(unittest.TestCase):
         ]
         audits = [
             {
-                "toolKey": "mock.echo",
+                "toolKey": RUN_DEMO.DEMO_MCP_TOOL_KEY,
                 "status": "success",
                 "inputRedactedJson": {"message": unique_message},
             },
@@ -176,6 +178,7 @@ class RealCodexDemoTest(unittest.TestCase):
         self.assertTrue(result["checks"]["protectedReleaseContentPreserved"])
         self.assertTrue(result["checks"]["sentinelFilePreserved"])
         self.assertTrue(result["checks"]["repositoryClean"])
+        self.assertTrue(result["checks"]["mcpDemoEchoSucceededOnce"])
 
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
@@ -284,6 +287,170 @@ class RealCodexDemoTest(unittest.TestCase):
         self.assertNotIn("--dir", second_args)
         self.assertEqual(invoked.call_args_list[0].kwargs["cwd"], Path("/tmp/repo"))
         self.assertEqual(invoked.call_args_list[1].kwargs["cwd"], Path("/tmp/repo"))
+
+    def test_observed_hook_control_keeps_release_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            executable = root / ("agenttoolgate.exe" if os.name == "nt" else "agenttoolgate")
+            executable.write_text("synthetic executable\n", encoding="utf-8")
+            control = root / "hook-control.json"
+            RUN_DEMO.write_json(
+                control,
+                {
+                    "mode": "live",
+                    "endpoint": "http://127.0.0.1:18090",
+                    "executable": str(executable.resolve()),
+                },
+            )
+            RUN_DEMO.configure_observed_hook_control(control, 19001, executable)
+            document = json.loads(control.read_text(encoding="utf-8"))
+        self.assertEqual(document["endpoint"], "http://127.0.0.1:19001")
+        self.assertEqual(document["executable"], str(executable.resolve()))
+
+    def test_observed_hook_control_rejects_missing_or_other_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            expected = root / ("agenttoolgate.exe" if os.name == "nt" else "agenttoolgate")
+            expected.write_text("expected\n", encoding="utf-8")
+            other = root / ("other.exe" if os.name == "nt" else "other")
+            other.write_text("other\n", encoding="utf-8")
+            control = root / "hook-control.json"
+            for executable in ("", str(other.resolve())):
+                with self.subTest(executable=executable):
+                    RUN_DEMO.write_json(
+                        control,
+                        {
+                            "mode": "live",
+                            "endpoint": "http://127.0.0.1:18090",
+                            "executable": executable,
+                        },
+                    )
+                    with self.assertRaises(RUN_DEMO.DemoFailure):
+                        RUN_DEMO.configure_observed_hook_control(
+                            control,
+                            19001,
+                            expected,
+                        )
+
+    def test_codex_environment_removes_external_guard_overrides(self) -> None:
+        blocked = {
+            "AGENTTOOLGATE_BEARER_TOKEN": "secret",
+            "AGENTTOOLGATE_EXE": "/tmp/other-atg",
+            "AGENTTOOLGATE_URL": "http://127.0.0.1:9999",
+            "AGENTTOOLGATE_WORKSPACE_ORG_ID": "other",
+            "OPENAI_API_KEY": "secret",
+            "OPENAI_BASE_URL": "https://private.invalid/v1",
+            "WORKSPACE_ORG_ID": "other",
+        }
+        with mock.patch.dict(os.environ, blocked, clear=False):
+            codex_home = Path("/tmp/isolated-codex-home")
+            environment = RUN_DEMO.create_codex_environment(
+                codex_home,
+                "/usr/bin:/bin",
+            )
+        for key in blocked:
+            self.assertNotIn(key, environment)
+        self.assertEqual(environment["CODEX_HOME"], str(codex_home))
+        self.assertEqual(environment["PATH"], "/usr/bin:/bin")
+
+    def test_create_demo_mcp_tool_requires_message_schema(self) -> None:
+        created = {
+            "namespace": RUN_DEMO.DEMO_MCP_TOOL_NAMESPACE,
+            "name": RUN_DEMO.DEMO_MCP_TOOL_NAME,
+            "inputSchemaJson": {
+                "type": "object",
+                "properties": {"message": {"type": "string", "minLength": 1}},
+                "required": ["message"],
+                "additionalProperties": False,
+            },
+        }
+        with mock.patch.object(RUN_DEMO, "http_json", return_value=created) as requested:
+            result = RUN_DEMO.create_demo_mcp_tool(18090)
+
+        self.assertEqual(result, created)
+        call = requested.call_args
+        self.assertEqual(call.args[0], "http://127.0.0.1:18090/api/tools")
+        self.assertEqual(call.kwargs["method"], "POST")
+        payload = call.kwargs["payload"]
+        self.assertEqual(
+            f"{payload['namespace']}.{payload['name']}",
+            RUN_DEMO.DEMO_MCP_TOOL_KEY,
+        )
+        self.assertEqual(payload["inputSchemaJson"]["required"], ["message"])
+        self.assertFalse(payload["inputSchemaJson"]["additionalProperties"])
+
+    def test_create_demo_mcp_tool_rejects_weakened_schema(self) -> None:
+        weakened = {
+            "namespace": RUN_DEMO.DEMO_MCP_TOOL_NAMESPACE,
+            "name": RUN_DEMO.DEMO_MCP_TOOL_NAME,
+            "inputSchemaJson": {"type": "object"},
+        }
+        with (
+            mock.patch.object(RUN_DEMO, "http_json", return_value=weakened),
+            self.assertRaises(RUN_DEMO.DemoFailure),
+        ):
+            RUN_DEMO.create_demo_mcp_tool(18090)
+
+    def test_runtime_evidence_uses_actual_local_platform(self) -> None:
+        with (
+            mock.patch.object(RUN_DEMO.platform, "system", return_value="Windows"),
+            mock.patch.object(RUN_DEMO.platform, "machine", return_value="AMD64"),
+            mock.patch.dict(os.environ, {"GITHUB_ACTIONS": ""}, clear=False),
+        ):
+            evidence = RUN_DEMO.runtime_evidence()
+
+        self.assertEqual(evidence["platform"], "windows-amd64")
+        self.assertEqual(evidence["label"], "Windows 本地一次性验收环境")
+
+    def test_runtime_evidence_identifies_github_ubuntu(self) -> None:
+        with (
+            mock.patch.object(RUN_DEMO.platform, "system", return_value="Linux"),
+            mock.patch.object(RUN_DEMO.platform, "machine", return_value="x86_64"),
+            mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}, clear=False),
+        ):
+            evidence = RUN_DEMO.runtime_evidence()
+
+        self.assertEqual(evidence["platform"], "linux-amd64")
+        self.assertEqual(evidence["label"], "GitHub 托管 Ubuntu 一次性运行器")
+
+    def test_codex_home_disables_unrelated_plugins_but_keeps_hooks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            codex_home = root / "codex-home"
+            RUN_DEMO.create_codex_home(
+                codex_home,
+                root / "repo",
+                18090,
+                18091,
+                "synthetic-model",
+                "synthetic-key",
+            )
+            config = (codex_home / "config.toml").read_text(encoding="utf-8")
+
+        self.assertIn("hooks = true", config)
+        self.assertIn("plugins = false", config)
+
+    def test_remove_directory_tree_retries_transient_windows_race(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "codex-home"
+            path.mkdir()
+            transient_error = OSError(145, "目录不是空的")
+            with (
+                mock.patch.object(
+                    RUN_DEMO.shutil,
+                    "rmtree",
+                    side_effect=[transient_error, None],
+                ) as removed,
+                mock.patch.object(RUN_DEMO.time, "sleep") as slept,
+            ):
+                RUN_DEMO.remove_directory_tree(
+                    path,
+                    attempts=2,
+                    retry_delay_seconds=0.25,
+                )
+
+        self.assertEqual(removed.call_count, 2)
+        slept.assert_called_once_with(0.25)
 
     def test_protected_release_write_matching_is_exact(self) -> None:
         repo = Path.cwd() / ".tmp" / "disposable-repo"
@@ -417,7 +584,7 @@ class RealCodexDemoTest(unittest.TestCase):
         self.assertEqual(summary["input"]["content"], "[REDACTED]")
         mcp_summary = RUN_DEMO.public_audit_summary(
             {
-                "toolKey": "mock.echo",
+                "toolKey": RUN_DEMO.DEMO_MCP_TOOL_KEY,
                 "status": "success",
                 "policyDecision": "allow",
                 "inputRedactedJson": {"message": "synthetic-message"},
