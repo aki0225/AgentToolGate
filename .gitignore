@@ -13,12 +13,15 @@ frontend/.vite/
 frontend/.playwright-browsers/
 website/node_modules/
 website/dist/
+website/.playwright-browsers/
 *.tsbuildinfo
 
 # Test output
 coverage/
 frontend/playwright-report/
 frontend/test-results/
+website/playwright-report/
+website/test-results/
 
 # Environment
 .env
