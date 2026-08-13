@@ -1,0 +1,61 @@
+{
+  "schemaVersion": "v2",
+  "generatedAt": "2026-08-13T09:05:35.449083Z",
+  "files": [
+    {
+      "path": "audit.json",
+      "size": 9891,
+      "sha256": "807b9dd486fc58fdb75517ab665a2fededcfe40d42cdf3fc486789eb743b3fee"
+    },
+    {
+      "path": "cleanup.json",
+      "size": 313,
+      "sha256": "807616fbd4eba2de5a3c1e1507a8ac0309702299802ed5d604b5442e2cd04cf6"
+    },
+    {
+      "path": "hook-trust.json",
+      "size": 984,
+      "sha256": "4f845762fbea4c1045ed791b1f3c3941d6782784cab9b8dfa8e7c5a02fc18866"
+    },
+    {
+      "path": "postconditions.json",
+      "size": 5017,
+      "sha256": "b826840823e0b0c1d2f1003ffab3a2d0d2c6bc0cc6be2da360b87f6897eae983"
+    },
+    {
+      "path": "scenario-destructive-delete.cast",
+      "size": 706,
+      "sha256": "5e9dc54415f0d7a1f4ebabb02609ed850bd818e156e5813ce0d7e8d60b4da2c9"
+    },
+    {
+      "path": "scenario-low-friction.cast",
+      "size": 1367,
+      "sha256": "52ad3ff5bf9a6bbdba6dee6830da945a208b79ffc5108d633b2e1f41e91711fb"
+    },
+    {
+      "path": "scenario-network-egress.cast",
+      "size": 622,
+      "sha256": "2505a614e15a2c4f71954ffe10ed8137dc2aab9500b956c58f47ac4c1ca904d0"
+    },
+    {
+      "path": "scenario-protected-write.cast",
+      "size": 945,
+      "sha256": "3a2c5bcbb8becd1f690884a52a668cc65f986945991aba9c5522c7e0029f55fa"
+    },
+    {
+      "path": "scenario-sensitive-read.cast",
+      "size": 626,
+      "sha256": "51a0fb068f9cb0c0eb4daee027078305f5f606b3b0e1e16e800d0ec6fd37c053"
+    },
+    {
+      "path": "summary.json",
+      "size": 6742,
+      "sha256": "8e708778a4ca1c19bf2412fa32e24fac29ca4f3caecc76847bf553346c57f0d5"
+    },
+    {
+      "path": "transcript.txt",
+      "size": 2953,
+      "sha256": "088ddf9d26e80d2bcbf06e47513f90778ed296e5637afd19c7361f1e3f3c7439"
+    }
+  ]
+}
