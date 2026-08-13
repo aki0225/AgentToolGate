@@ -20,9 +20,10 @@ jobs:
     env:
       ATG_DEMO_ATG_PORT: "18090"
       ATG_DEMO_TUNNEL_PORT: "18081"
+      ATG_DEMO_COLLECTOR_PORT: "18092"
       ATG_DEMO_RELEASE_TAG: "v0.3.1"
       ATG_DEMO_CODEX_VERSION: "0.146.0"
-      ATG_DEMO_MODEL: "gpt-5.6-luna"
+      ATG_DEMO_MODEL: "gpt-5.4-mini"
     steps:
       - name: 检出受信任主分支代码
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -177,7 +178,7 @@ jobs:
           codex_runtime_path="$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin"
           sudo --non-interactive \
             --preserve-env=ATG_DEMO_CODEX_VERSION,GITHUB_REPOSITORY,GITHUB_RUN_ID,GITHUB_SHA \
-            "$python_bin" scripts/real-codex-demo/run_demo.py \
+            "$python_bin" scripts/real-codex-demo/multi_demo.py \
             --agenttoolgate "$ATG_DEMO_BINARY" \
             --codex "$codex_bin" \
             --codex-runtime-path "$codex_runtime_path" \
@@ -186,6 +187,7 @@ jobs:
             --release-tag "$ATG_DEMO_RELEASE_TAG" \
             --atg-port "$ATG_DEMO_ATG_PORT" \
             --provider-port "$ATG_DEMO_TUNNEL_PORT" \
+            --collector-port "$ATG_DEMO_COLLECTOR_PORT" \
             --api-key-file "$ATG_DEMO_PRIVATE/provider.key" \
             --private-root "$ATG_DEMO_PRIVATE" \
             --output "$ATG_DEMO_OUTPUT"
@@ -232,7 +234,9 @@ jobs:
             --input "$ATG_DEMO_OUTPUT" \
             --private-root "$ATG_DEMO_PRIVATE" \
             --ssh-dir "$RUNNER_TEMP/agenttoolgate-demo-ssh" \
-            --tunnel-port "$ATG_DEMO_TUNNEL_PORT"
+            --tunnel-port "$ATG_DEMO_TUNNEL_PORT" \
+            --atg-port "$ATG_DEMO_ATG_PORT" \
+            --collector-port "$ATG_DEMO_COLLECTOR_PORT"
 
       - name: 扫描公开产物中的敏感值
         if: always()
@@ -264,13 +268,16 @@ jobs:
           include-hidden-files: false
           path: |
             ${{ env.ATG_DEMO_OUTPUT }}/summary.json
-            ${{ env.ATG_DEMO_OUTPUT }}/failure.json
             ${{ env.ATG_DEMO_OUTPUT }}/hook-trust.json
             ${{ env.ATG_DEMO_OUTPUT }}/audit.json
             ${{ env.ATG_DEMO_OUTPUT }}/postconditions.json
             ${{ env.ATG_DEMO_OUTPUT }}/cleanup.json
             ${{ env.ATG_DEMO_OUTPUT }}/transcript.txt
-            ${{ env.ATG_DEMO_OUTPUT }}/codex-real-demo.cast
+            ${{ env.ATG_DEMO_OUTPUT }}/scenario-low-friction.cast
+            ${{ env.ATG_DEMO_OUTPUT }}/scenario-sensitive-read.cast
+            ${{ env.ATG_DEMO_OUTPUT }}/scenario-destructive-delete.cast
+            ${{ env.ATG_DEMO_OUTPUT }}/scenario-network-egress.cast
+            ${{ env.ATG_DEMO_OUTPUT }}/scenario-protected-write.cast
             ${{ env.ATG_DEMO_OUTPUT }}/manifest.json
 
       - name: 上传脱敏失败证据
