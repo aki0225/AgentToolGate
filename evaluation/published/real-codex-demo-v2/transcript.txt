@@ -61,4 +61,3 @@ Codex 返回阶段说明（内容不作为验收证据）
 Codex 会话已完成
 AgentToolGate 验收关联：deny / high / project_protected_path
 独立后置条件：release.yml、sentinel、HEAD、tree 与工作区状态保持不变。
-

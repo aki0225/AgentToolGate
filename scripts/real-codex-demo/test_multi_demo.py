@@ -350,6 +350,14 @@ class MultiScenarioDemoTest(unittest.TestCase):
         self.assertIn("AgentToolGate 验收关联", timeline[-2][1])
         self.assertIn("独立后置条件", timeline[-1][1])
 
+    def test_render_transcript_keeps_section_spacing_without_blank_eof(self) -> None:
+        transcript = multi_demo.render_transcript(
+            ["标题", "", "## 场景 1", "完成", ""]
+        )
+
+        self.assertEqual(transcript, "标题\n\n## 场景 1\n完成\n")
+        self.assertFalse(transcript.endswith("\n\n"))
+
     def test_recording_metadata_matches_written_cast(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cast_path = Path(directory) / "scenario.cast"

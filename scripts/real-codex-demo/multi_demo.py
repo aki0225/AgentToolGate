@@ -985,6 +985,12 @@ def scenario_timeline(
     return result
 
 
+def render_transcript(lines: list[str]) -> str:
+    """保留场景间空行，但确保公开文本只以一个换行符结束。"""
+
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
 def public_audit_scenario(
     spec: ScenarioSpec,
     validated: dict[str, Any],
@@ -1439,7 +1445,7 @@ def main() -> int:
             },
         )
         (output / "transcript.txt").write_text(
-            "\n".join(transcript_lines) + "\n",
+            render_transcript(transcript_lines),
             encoding="utf-8",
             newline="\n",
         )
