@@ -338,6 +338,9 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
+      - name: 安装 Playwright Chromium
+        run: npm run playwright:install
+
       - name: 执行静态检查
         run: npm run check
 
@@ -346,6 +349,18 @@ jobs:
 
       - name: 构建展示站
         run: npm run build
+
+      - name: 运行展示站 E2E
+        run: npm run e2e
+
+      - name: 失败时上传展示站 Playwright 诊断产物
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: website-playwright-artifacts
+          path: |
+            website/playwright-report
+            website/test-results
 
   smoke:
     name: 核心 smoke
