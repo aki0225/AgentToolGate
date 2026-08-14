@@ -280,6 +280,8 @@ class CodexHookBridgeTest(unittest.TestCase):
 
             for command in (
                 "git status",
+                "git status --short",
+                "git status -s",
                 "pwd",
                 "Get-Location",
             ):
@@ -916,8 +918,8 @@ class CodexHookBridgeTest(unittest.TestCase):
             }
         }
         cases = (
-            ("非法 JSON", "not-json", None),
-            ("额外顶层字段", json.dumps({**valid_deny, "extra": True}, ensure_ascii=False), None),
+            ("非法 JSON", "not-json", HOOK.GO_CLI_UNCERTAIN),
+            ("额外顶层字段", json.dumps({**valid_deny, "extra": True}, ensure_ascii=False), HOOK.GO_CLI_UNCERTAIN),
             (
                 "updatedInput",
                 json.dumps(
@@ -929,14 +931,14 @@ class CodexHookBridgeTest(unittest.TestCase):
                     },
                     ensure_ascii=False,
                 ),
-                None,
+                HOOK.GO_CLI_UNCERTAIN,
             ),
             (
                 "重复 JSON key",
                 '{"hookSpecificOutput":{"hookEventName":"PreToolUse",'
                 '"permissionDecision":"deny","permissionDecision":"allow",'
                 '"permissionDecisionReason":"blocked"}}',
-                None,
+                HOOK.GO_CLI_UNCERTAIN,
             ),
             (
                 "deny reason 类型非法",
@@ -949,7 +951,7 @@ class CodexHookBridgeTest(unittest.TestCase):
                         }
                     }
                 ),
-                None,
+                HOOK.GO_CLI_UNCERTAIN,
             ),
             (
                 "deny reason 为空",
@@ -962,7 +964,7 @@ class CodexHookBridgeTest(unittest.TestCase):
                         }
                     }
                 ),
-                None,
+                HOOK.GO_CLI_UNCERTAIN,
             ),
             (
                 "deny reason 缺失",
@@ -974,7 +976,7 @@ class CodexHookBridgeTest(unittest.TestCase):
                         }
                     }
                 ),
-                None,
+                HOOK.GO_CLI_UNCERTAIN,
             ),
             ("合法 deny", json.dumps(valid_deny, ensure_ascii=False), valid_deny),
         )
@@ -987,6 +989,79 @@ class CodexHookBridgeTest(unittest.TestCase):
                         HOOK.call_agenttoolgate_guard_hook_codex({"tool_name": "shell"}),
                         expected,
                     )
+        finally:
+            HOOK.subprocess.run = original_run
+
+    def test_go_cli_timeout_is_uncertain_and_does_not_retry_http(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            status_output = self.invoke_raw(
+                json.dumps(
+                    {
+                        "tool_name": "Bash",
+                        "tool_input": {"command": "git status --short"},
+                        "cwd": str(repo),
+                    },
+                    ensure_ascii=False,
+                ),
+                go_cli=lambda _payload: HOOK.GO_CLI_UNCERTAIN,
+                post_json=lambda *_args, **_kwargs: self.fail("不确定状态不得重复请求后端"),
+            )
+            write_output = self.invoke_hook(
+                {
+                    "tool_name": "Write",
+                    "tool_input": {"path": "src/demo.txt", "content": "ordinary workspace update"},
+                    "cwd": str(repo),
+                },
+                go_cli=lambda _payload: HOOK.GO_CLI_UNCERTAIN,
+                post_json=lambda *_args, **_kwargs: self.fail("不确定状态不得重复请求后端"),
+            )
+            delete_output = self.invoke_hook(
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "rm -rf ."},
+                    "cwd": str(repo),
+                },
+                go_cli=lambda _payload: HOOK.GO_CLI_UNCERTAIN,
+                post_json=lambda *_args, **_kwargs: self.fail("不确定状态不得重复请求后端"),
+            )
+            sensitive_output = self.invoke_hook(
+                {
+                    "tool_name": "PowerShell",
+                    "tool_input": {"command": "Set-Content '.ssh/id_rsa' 'synthetic'"},
+                    "cwd": str(repo),
+                },
+                go_cli=lambda _payload: HOOK.GO_CLI_UNCERTAIN,
+                post_json=lambda *_args, **_kwargs: self.fail("不确定状态不得重复请求后端"),
+            )
+
+            self.assertEqual(status_output, "")
+            self.assertEqual(write_output["hookSpecificOutput"]["permissionDecision"], "deny")
+            self.assertEqual(delete_output["hookSpecificOutput"]["permissionDecision"], "deny")
+            self.assertIn(
+                "action denied",
+                delete_output["hookSpecificOutput"]["permissionDecisionReason"],
+            )
+            self.assertEqual(sensitive_output["hookSpecificOutput"]["permissionDecision"], "deny")
+            self.assertIn(
+                "sensitive target denied",
+                sensitive_output["hookSpecificOutput"]["permissionDecisionReason"],
+            )
+            audit_path = repo / ".tmp" / "local-action-firewall" / "pending-audit.jsonl"
+            self.assertTrue(audit_path.is_file())
+
+    def test_go_cli_timeout_returns_uncertain_sentinel(self) -> None:
+        original_run = HOOK.subprocess.run
+        try:
+            def timeout(*_args: Any, **_kwargs: Any) -> Any:
+                raise HOOK.subprocess.TimeoutExpired(cmd=["agenttoolgate"], timeout=1.5)
+
+            HOOK.subprocess.run = timeout
+            self.assertIs(
+                HOOK.call_agenttoolgate_guard_hook_codex({"tool_name": "shell"}),
+                HOOK.GO_CLI_UNCERTAIN,
+            )
         finally:
             HOOK.subprocess.run = original_run
 
