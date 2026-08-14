@@ -377,6 +377,46 @@ class MultiScenarioDemoTest(unittest.TestCase):
         self.assertEqual(action["riskExplanationSource"], "scenario_contract")
         self.assertIn("Remove-Item -Recurse .", action["display"])
 
+    def test_low_friction_action_evidence_accepts_hook_trimmed_patch(self) -> None:
+        spec = multi_demo.scenario_specs(
+            "http://127.0.0.1:18092/collect",
+            "synthetic_secret=test",
+        )[0]
+        request = {
+            "adapter": "codex",
+            "tool": "apply_patch",
+            "actionType": "write",
+            "target": multi_demo.NORMAL_WRITE_FILE,
+            "targets": [multi_demo.NORMAL_WRITE_FILE],
+            "isScript": False,
+            "contentEncoding": "plain",
+            "content": multi_demo.normal_write_patch().strip(),
+            "guardDecision": "allow",
+            "guardRiskLevel": "low",
+        }
+        audit = self.guard_audit_for_request(
+            request,
+            decision="allow",
+            guard_risk_level="low",
+            effective_risk_level="medium",
+            matched_rule="agent-guard-safe-workspace-write-allow",
+        )
+
+        action = multi_demo.public_action_evidence(
+            spec,
+            [request],
+            [audit],
+            Path("X:/synthetic/repo"),
+            {},
+            "http://127.0.0.1:18092/collect",
+            "synthetic_secret=test",
+        )
+
+        self.assertEqual(action["source"], "hook_request_match")
+        self.assertTrue(action["observed"])
+        self.assertEqual(action["tool"], "apply_patch")
+        self.assertEqual(action["execution"], "completed")
+
     def test_public_action_evidence_rejects_decision_or_tool_mismatch(self) -> None:
         spec = multi_demo.scenario_specs(
             "http://127.0.0.1:18092/collect",
