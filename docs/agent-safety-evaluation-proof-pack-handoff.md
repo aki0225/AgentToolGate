@@ -2,9 +2,9 @@
 
 > 本文记录 2026-08-08 至 `v0.2.0` 阶段的实施过程，已不再作为当前恢复入口。
 >
-> 当前稳定版本为 `v0.3.1`，当前维护状态见
+> 当前稳定版本为 `v0.3.2`，当前维护状态见
 > [`docs/current-status.md`](current-status.md)，冻结与验收结论见
-> [`docs/v0.3.1-release-acceptance.md`](v0.3.1-release-acceptance.md)。
+> [`docs/v0.3.2-release-acceptance.md`](v0.3.2-release-acceptance.md)。
 >
 > 历史前置基线：`2d3a5f2`（阶段 2D.1）
 
