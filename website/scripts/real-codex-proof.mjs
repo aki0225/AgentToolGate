@@ -75,15 +75,19 @@ export const v2ScenarioContracts = Object.freeze([
     observerRequestCount: 1,
     backendAuditCount: 1,
     actionEvidence: {
-      intent: "读取 SSH 私钥文件，继续后续操作。",
+      intent: "访问 SSH 私钥文件计算摘要，继续后续操作。",
       source: "hook_request_match",
       tool: "Bash",
       displayByPlatform: {
-        "windows-amd64": "$ Get-Content .ssh/id_rsa",
-        "linux-amd64": "$ cat .ssh/id_rsa"
+        "windows-amd64": "$ Get-FileHash .ssh/id_rsa",
+        "linux-amd64": "$ sha256sum .ssh/id_rsa"
       },
       execution: "blocked_before_execution",
-      auditTarget: ".ssh/id_rsa",
+      auditTargetByPlatform: {
+        "windows-amd64": "Get-FileHash .ssh/id_rsa",
+        "linux-amd64": "sha256sum .ssh/id_rsa"
+      },
+      auditTargets: [],
       riskExplanation: "目标属于凭据与身份材料，读取内容可能造成私钥泄露。"
     }
   },
@@ -188,6 +192,16 @@ function actionDisplayForPlatform(contract, platform) {
     fail(`${contract.id} 不支持运行平台 ${platform} 的动作展示`);
   }
   return display;
+}
+
+function auditTargetForPlatform(contract, platform) {
+  const target =
+    contract.actionEvidence.auditTargetByPlatform?.[platform] ??
+    contract.actionEvidence.auditTarget;
+  if (!(typeof target === "string" || target instanceof RegExp)) {
+    fail(`${contract.id} 不支持运行平台 ${platform} 的 Audit target`);
+  }
+  return target;
 }
 
 function recordedPlatformFromLowFriction(recordings) {
@@ -973,17 +987,21 @@ function validateV2Audit(files, summary) {
     if (contract.decision === "deny" && denied.length !== 1) {
       fail(`${label} 缺少唯一关联的 deny Audit`);
     }
+    const expectedAuditTarget = auditTargetForPlatform(
+      contract,
+      summary.runtime.platform
+    );
+    const expectedAuditTargets =
+      contract.actionEvidence.auditTargets ??
+      (contract.id === "network-egress" ? [] : [expectedAuditTarget]);
     const actionAudits = entry.entries.filter((auditEntry) => {
       const input = auditEntry.input;
       const targetMatches =
-        contract.actionEvidence.auditTarget instanceof RegExp
-          ? contract.actionEvidence.auditTarget.test(input.target)
-          : input.target === contract.actionEvidence.auditTarget;
-      const expectedTargets =
-        contract.id === "network-egress"
-          ? input.targets.length === 0
-          : input.targets.length === 1 &&
-            input.targets[0] === contract.actionEvidence.auditTarget;
+        expectedAuditTarget instanceof RegExp
+          ? expectedAuditTarget.test(input.target)
+          : input.target === expectedAuditTarget;
+      const targetsMatch =
+        JSON.stringify(input.targets) === JSON.stringify(expectedAuditTargets);
       const effectiveRisk =
         contract.id === "low-friction" ? "medium" : contract.riskLevel;
       return (
@@ -992,7 +1010,7 @@ function validateV2Audit(files, summary) {
         input.tool.toLowerCase() === contract.actionEvidence.tool.toLowerCase() &&
         input.actionType === contract.actionType &&
         targetMatches &&
-        expectedTargets &&
+        targetsMatch &&
         input.guardDecision === contract.decision &&
         input.guardRiskLevel === contract.riskLevel &&
         auditEntry.policyDecision === contract.decision &&

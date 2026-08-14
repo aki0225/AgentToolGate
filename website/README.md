@@ -28,7 +28,9 @@ npm run e2e
 播放状态、重播、三种视口和 `prefers-reduced-motion`。首次运行或浏览器版本变化后先执行
 `npm run playwright:install`。
 
-真实 Codex 预录证据位于 `evaluation/published/real-codex-demo/`。修改或重新导入证据后先执行：
+当前五场景真实 Codex 预录证据位于
+`evaluation/published/real-codex-demo-v2/`；`real-codex-demo/` 只保留历史单场景
+证据。修改或重新导入证据后先执行：
 
 ```powershell
 npm run real-codex:sync
@@ -45,7 +47,7 @@ npm run real-codex:check
 - ATG 管理的 Connector Secret 只以 `valueRef` 元数据出现在展示内容中，不包含 Secret value。
 - Local Action 场景不包含可执行恶意脚本，不写入真实 Startup、Hook 或凭据路径。
 - Audit 与 OTel 使用脱敏口径；审批内部暂存冻结参数的事实会明确披露。
-- 证据区分自动评估、`v0.3.1` 正式发布验收、同产品提交的真实 Codex 验收和历史
+- 证据区分自动评估、`v0.3.2` 正式发布验收、正式包五场景真实 Codex 验收和历史
   双客户端媒体验收，不把不同提交、不同层级的结果混写成同一次验证。
 - 所有外部链接都指向公开 GitHub 源码、文档、CI 或 Release，并使用安全的 `rel` 属性。
 

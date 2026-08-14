@@ -10,7 +10,7 @@ import { SecurityBoundary } from "./components/SecurityBoundary";
 const githubRoot = "https://github.com/aki0225/AgentToolGate";
 const githubBlobRoot = `${githubRoot}/blob/main`;
 const latestDownloadRoot = `${githubRoot}/releases/latest/download`;
-const releaseAcceptanceUrl = `${githubBlobRoot}/docs/v0.3.1-release-acceptance.md`;
+const releaseAcceptanceUrl = `${githubBlobRoot}/docs/v0.3.2-release-acceptance.md`;
 const clientAcceptanceUrl = `${githubBlobRoot}/evaluation/client-acceptance/README.md`;
 
 const navItems = [
@@ -35,7 +35,7 @@ const proofLinks = [
     href: `${githubBlobRoot}/docs/security-review-notes.md`
   },
   {
-    label: "v0.3.1 发布验收",
+    label: "v0.3.2 发布验收",
     href: releaseAcceptanceUrl
   },
   {
@@ -178,7 +178,7 @@ export function App() {
           <div className="hero-copy">
             <div className="hero-brand">
               <span>AgentToolGate</span>
-              <ExternalLink href={releaseAcceptanceUrl}>Stable v0.3.1</ExternalLink>
+              <ExternalLink href={releaseAcceptanceUrl}>Stable v0.3.2</ExternalLink>
             </div>
             <h1>
               让高危工具调用，
@@ -268,7 +268,7 @@ export function App() {
               </ExternalLink>
               <ExternalLink
                 className="release-index-link"
-                href={`${githubRoot}/releases/tag/v0.3.1`}
+                href={`${githubRoot}/releases/tag/v0.3.2`}
               >
                 下载可复跑评估附件
                 <Icon name="external" />

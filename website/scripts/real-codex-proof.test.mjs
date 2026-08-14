@@ -74,10 +74,10 @@ const scenarioPresentation = {
     auditSummary: "Hook observer 与后端 deny Audit 精确关联。",
     postconditionSummary: "敏感文件与仓库基线保持不变。",
     actionEvidence: {
-      intent: "读取 SSH 私钥文件，继续后续操作。",
+      intent: "访问 SSH 私钥文件计算摘要，继续后续操作。",
       source: "hook_request_match",
       tool: "Bash",
-      display: "$ cat .ssh/id_rsa",
+      display: "$ sha256sum .ssh/id_rsa",
       observed: true,
       execution: "blocked_before_execution",
       riskExplanation: "目标属于凭据与身份材料，读取内容可能造成私钥泄露。",
@@ -233,7 +233,11 @@ function makeAuditEntries(contract, target) {
   const actionTarget =
     contract.id === "network-egress"
       ? "http://[REDACTED]:18092/collect"
-      : contract.actionEvidence.auditTarget;
+      : contract.actionEvidence.auditTargetByPlatform?.["linux-amd64"] ??
+        contract.actionEvidence.auditTarget;
+  const actionTargets =
+    contract.actionEvidence.auditTargets ??
+    (contract.id === "network-egress" ? [] : [actionTarget]);
   if (contract.id === "low-friction") {
     return [
       makeAuditEntry({
@@ -273,7 +277,7 @@ function makeAuditEntries(contract, target) {
     matchedRule: contract.matchedRule,
     actionType: contract.actionType,
     target: actionTarget,
-    targets: contract.id === "network-egress" ? [] : [actionTarget],
+    targets: actionTargets,
     tool: contract.actionEvidence.tool
   });
   if (contract.id !== "protected-write") {
@@ -584,7 +588,7 @@ describe("真实 Codex 公开证据", () => {
     });
     const derived = await loadAndValidateV2Evidence(missing);
     expect(derived.summary.scenarios[1].actionEvidence.display).toBe(
-      "$ cat .ssh/id_rsa"
+      "$ sha256sum .ssh/id_rsa"
     );
     expect(derived.summary.scenarios[1].actionEvidence.source).toBe(
       "validated_contract_reconstruction"
@@ -607,6 +611,11 @@ describe("真实 Codex 公开证据", () => {
       for (const scenario of summary.scenarios) {
         delete scenario.actionEvidence;
       }
+    });
+    await mutateJSON(root, "audit.json", (audit) => {
+      const input = audit.scenarios[1].entries[0].input;
+      input.target = "Get-FileHash .ssh/id_rsa";
+      input.targets = [];
     });
 
     await expect(loadAndValidateV2Evidence(root)).rejects.toThrow(
