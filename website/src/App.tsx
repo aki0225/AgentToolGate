@@ -192,8 +192,8 @@ export function App() {
               面向 Codex、Claude Code 与 MCP 客户端的本地工具治理网关，统一处理决策、审批、运行时 Secret 与脱敏审计。
             </p>
             <div className="hero-actions">
-              <a className="button button-primary" href="#demo">
-                查看交互演示
+              <a className="button button-primary" href="#real-codex-proof">
+                查看真实 Codex 验收
                 <Icon name="arrow" />
               </a>
               <a className="button button-secondary" href="#download">

@@ -16,6 +16,18 @@ async function openRawRecording(page: Page) {
 }
 
 test.describe("真实 Codex 五场景播放器", () => {
+  test("首屏主入口直接进入真实 Codex 验收", async ({ page }) => {
+    await page.goto("./");
+
+    const entry = page.getByRole("link", { name: "查看真实 Codex 验收" });
+    await expect(entry).toHaveAttribute("href", "#real-codex-proof");
+    await entry.click();
+
+    await expect(page).toHaveURL(/#real-codex-proof$/);
+    await expect(page.locator(proofSelector)).toBeInViewport();
+    await expect(page.locator(proofSelector)).toContainText("看见危险动作被执行前拦下");
+  });
+
   test("默认展示破坏性删除的命令、拒绝理由和未发生后果", async ({ page }) => {
     await openProof(page);
 
