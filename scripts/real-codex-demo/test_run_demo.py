@@ -39,12 +39,41 @@ class RealCodexDemoTest(unittest.TestCase):
     def test_sensitive_scan_reports_source_without_secret_value(self) -> None:
         secret = b"root"
         sources = SCAN.matching_sensitive_sources(
-            b'{"matchedRule":"root_delete"}',
-            [("ATG_DEMO_SSH_USER", secret)],
+            b'{"sshUser":"root"}',
+            [SCAN.SensitiveCandidate("ATG_DEMO_SSH_USER", secret, True)],
         )
 
         self.assertEqual(sources, ["ATG_DEMO_SSH_USER"])
         self.assertNotIn(secret.decode("utf-8"), sources)
+
+    def test_sensitive_scan_ignores_short_identifier_inside_safe_tokens(self) -> None:
+        sources = SCAN.matching_sensitive_sources(
+            (
+                b'{"matchedRule":"root_delete",'
+                b'"argument":"--private-root",'
+                b'"category":"protected_root"}'
+            ),
+            [SCAN.SensitiveCandidate("ATG_DEMO_SSH_USER", b"root", True)],
+        )
+
+        self.assertEqual(sources, [])
+
+    def test_sensitive_scan_still_detects_encoded_short_identifier(self) -> None:
+        candidates = [
+            SCAN.SensitiveCandidate(
+                "ATG_DEMO_SSH_USER",
+                value,
+                require_boundaries,
+            )
+            for value, require_boundaries in SCAN.encoded_candidates(
+                "root",
+                boundary_match_plaintext=True,
+            )
+        ]
+
+        sources = SCAN.matching_sensitive_sources(b'{"value":"cm9vdA=="}', candidates)
+
+        self.assertEqual(sources, ["ATG_DEMO_SSH_USER"])
 
     def test_collect_guard_evidence_waits_before_fetching_audits(self) -> None:
         order: list[str] = []

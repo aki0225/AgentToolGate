@@ -12,6 +12,7 @@ import re
 import sys
 import urllib.parse
 from pathlib import Path
+from typing import NamedTuple
 
 V1_SUCCESS_FILES = {
     "summary.json",
@@ -49,6 +50,13 @@ KNOWN_SECRET_ENV_NAMES = (
     "ATG_DEMO_SSH_KNOWN_HOSTS",
 )
 SYNTHETIC_SECRET_MARKERS: tuple[str, ...] = ()
+BOUNDARY_MATCH_ENV_NAMES = {"ATG_DEMO_SSH_USER"}
+
+
+class SensitiveCandidate(NamedTuple):
+    source: str
+    value: bytes
+    require_identifier_boundaries: bool = False
 
 
 def forbidden_patterns(contract_name: str | None) -> list[re.Pattern[bytes]]:
@@ -126,32 +134,63 @@ def validate_manifest(
     return failures
 
 
-def encoded_candidates(value: str) -> list[bytes]:
-    candidates: list[bytes] = []
+def encoded_candidates(
+    value: str,
+    *,
+    boundary_match_plaintext: bool = False,
+) -> list[tuple[bytes, bool]]:
+    candidates: dict[bytes, bool] = {}
     for candidate in (value, *(line.strip() for line in value.splitlines())):
         if len(candidate) < 4:
             continue
         raw = candidate.encode("utf-8")
-        candidates.extend(
-            [
-                raw,
-                base64.b64encode(raw),
-                base64.b64encode(raw).rstrip(b"="),
-                base64.urlsafe_b64encode(raw),
-                base64.urlsafe_b64encode(raw).rstrip(b"="),
-                raw.hex().encode("ascii"),
-                urllib.parse.quote(candidate, safe="").encode("utf-8"),
-                json.dumps(candidate).encode("utf-8")[1:-1],
-            ]
-        )
-    return candidates
+        plaintext_forms = {
+            raw,
+            urllib.parse.quote(candidate, safe="").encode("utf-8"),
+            json.dumps(candidate).encode("utf-8")[1:-1],
+        }
+        encoded_forms = {
+            base64.b64encode(raw),
+            base64.b64encode(raw).rstrip(b"="),
+            base64.urlsafe_b64encode(raw),
+            base64.urlsafe_b64encode(raw).rstrip(b"="),
+            raw.hex().encode("ascii"),
+        }
+        for encoded in plaintext_forms:
+            candidates[encoded] = (
+                candidates.get(encoded, True) and boundary_match_plaintext
+            )
+        for encoded in encoded_forms:
+            candidates[encoded] = False
+    return list(candidates.items())
+
+
+def contains_sensitive_candidate(
+    content: bytes,
+    candidate: SensitiveCandidate,
+) -> bool:
+    if not candidate.require_identifier_boundaries:
+        return candidate.value in content
+    identifier = rb"[A-Za-z0-9_.-]"
+    pattern = (
+        rb"(?<!" + identifier + rb")"
+        + re.escape(candidate.value)
+        + rb"(?!" + identifier + rb")"
+    )
+    return re.search(pattern, content) is not None
 
 
 def matching_sensitive_sources(
     content: bytes,
-    candidates: list[tuple[str, bytes]],
+    candidates: list[SensitiveCandidate],
 ) -> list[str]:
-    return sorted({source for source, value in candidates if value in content})
+    return sorted(
+        {
+            candidate.source
+            for candidate in candidates
+            if contains_sensitive_candidate(content, candidate)
+        }
+    )
 
 
 def detect_contract(file_names: set[str]) -> tuple[str, str] | None:
@@ -188,18 +227,25 @@ def main() -> int:
         print("公开演示产物目录不存在。", file=sys.stderr)
         return 2
 
-    encoded_values: list[tuple[str, bytes]] = []
+    encoded_values: list[SensitiveCandidate] = []
     for name in KNOWN_SECRET_ENV_NAMES:
         value = os.environ.get(name, "")
         if value:
             encoded_values.extend(
-                (name, candidate)
-                for candidate in encoded_candidates(value)
+                SensitiveCandidate(name, candidate, require_boundaries)
+                for candidate, require_boundaries in encoded_candidates(
+                    value,
+                    boundary_match_plaintext=name in BOUNDARY_MATCH_ENV_NAMES,
+                )
             )
     for index, marker in enumerate(SYNTHETIC_SECRET_MARKERS, start=1):
         encoded_values.extend(
-            (f"SYNTHETIC_SECRET_MARKERS[{index}]", candidate)
-            for candidate in encoded_candidates(marker)
+            SensitiveCandidate(
+                f"SYNTHETIC_SECRET_MARKERS[{index}]",
+                candidate,
+                require_boundaries,
+            )
+            for candidate, require_boundaries in encoded_candidates(marker)
         )
 
     failures: list[str] = []
