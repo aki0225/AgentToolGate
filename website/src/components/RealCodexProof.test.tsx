@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
+  actionEvidenceHeading,
   horizontalTabIndex,
   playbackDelayMilliseconds,
   RealCodexProof
@@ -30,6 +31,10 @@ describe("真实 Codex 多场景预录面板", () => {
     expect(html).toContain("场景风险说明");
     expect(html).toContain("动作未执行");
     expect(html).toContain("仓库根目录、sentinel、HEAD、tree 和干净工作区全部保持不变");
+    expect(html).toContain("验收场景指令");
+    expect(html).toContain("按验收合同复原的动作摘要");
+    expect(html).not.toContain("Agent 意图");
+    expect(html).not.toContain("实际工具调用摘要");
   });
 
   it("明确展示动作摘要来源且不冒充原始事件或交互审批", () => {
@@ -73,6 +78,11 @@ describe("真实 Codex 多场景预录面板", () => {
     expect(playbackDelayMilliseconds(0, 0.02)).toBe(90);
     expect(playbackDelayMilliseconds(1, 2)).toBe(250);
     expect(playbackDelayMilliseconds(0, 10)).toBe(900);
+  });
+
+  it("在标题层区分 Hook 观测证据和合同复原摘要", () => {
+    expect(actionEvidenceHeading(true)).toBe("Hook 观测到的工具调用");
+    expect(actionEvidenceHeading(false)).toBe("按验收合同复原的动作摘要");
   });
 
   it("危险动作首屏呈现关联 Audit，不声称实时演示或交互审批", () => {

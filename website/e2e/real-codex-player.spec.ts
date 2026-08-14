@@ -31,7 +31,11 @@ test.describe("真实 Codex 五场景播放器", () => {
     await expect(panel).toContainText("会破坏整个工作区");
     await expect(panel).toContainText("动作未执行");
     await expect(panel).toContainText("仓库根目录、sentinel、HEAD、tree");
+    await expect(panel).toContainText("验收场景指令");
+    await expect(panel).toContainText("按验收合同复原的动作摘要");
     await expect(panel).toContainText("历史验收合同复原");
+    await expect(panel).not.toContainText("Agent 意图");
+    await expect(panel).not.toContainText("实际工具调用摘要");
     await expect(panel.locator(".real-codex-raw-proof")).not.toHaveAttribute("open", "");
   });
 

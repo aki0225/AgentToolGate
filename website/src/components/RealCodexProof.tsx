@@ -46,6 +46,12 @@ export function horizontalTabIndex(
   }
 }
 
+export function actionEvidenceHeading(observed: boolean) {
+  return observed
+    ? "Hook 观测到的工具调用"
+    : "按验收合同复原的动作摘要";
+}
+
 function formatClock(milliseconds: number) {
   const seconds = Math.floor(milliseconds / 1000);
   const remainder = milliseconds % 1000;
@@ -282,7 +288,7 @@ export function RealCodexProof() {
             <li className="real-codex-story-step real-codex-story-intent">
               <span className="real-codex-story-index">01</span>
               <div>
-                <small>Agent 意图</small>
+                <small>验收场景指令</small>
                 <strong>{selectedScenario.actionEvidence.intent}</strong>
               </div>
             </li>
@@ -290,7 +296,9 @@ export function RealCodexProof() {
             <li className="real-codex-story-step real-codex-story-action">
               <span className="real-codex-story-index">02</span>
               <div>
-                <small>实际工具调用摘要</small>
+                <small>
+                  {actionEvidenceHeading(selectedScenario.actionEvidence.observed)}
+                </small>
                 <code>{selectedScenario.actionEvidence.display}</code>
                 <p>
                   工具 {selectedScenario.actionEvidence.tool} · 目标{" "}
