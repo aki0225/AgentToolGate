@@ -314,6 +314,12 @@ def normal_write_patch() -> str:
     )
 
 
+def expected_normal_write_patch_content() -> str:
+    """对齐产品 Hook 对工具输入执行的首尾空白规范化语义。"""
+
+    return normal_write_patch().strip()
+
+
 def root_delete_command(system_name: str | None = None) -> str:
     """使用正式 Release 已覆盖的最小根目录删除命令，避免演示参数与产品契约漂移。"""
 
@@ -1137,7 +1143,8 @@ def public_action_evidence(
             == NORMAL_WRITE_FILE
             and str(request.get("tool", "")).lower() == "apply_patch"
             and str(request.get("contentEncoding", "")).lower() == "plain"
-            and str(request.get("content", "")) == normal_write_patch()
+            and str(request.get("content", ""))
+            == expected_normal_write_patch_content()
             and request_matches_guard_decision(request, spec)
         ]
         display = f"apply_patch {NORMAL_WRITE_FILE}"
