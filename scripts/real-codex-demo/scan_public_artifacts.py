@@ -147,6 +147,13 @@ def encoded_candidates(value: str) -> list[bytes]:
     return candidates
 
 
+def matching_sensitive_sources(
+    content: bytes,
+    candidates: list[tuple[str, bytes]],
+) -> list[str]:
+    return sorted({source for source, value in candidates if value in content})
+
+
 def detect_contract(file_names: set[str]) -> tuple[str, str] | None:
     contracts = (
         ("v1-success", "v1", V1_SUCCESS_FILES),
@@ -181,13 +188,19 @@ def main() -> int:
         print("公开演示产物目录不存在。", file=sys.stderr)
         return 2
 
-    encoded_values: list[bytes] = []
+    encoded_values: list[tuple[str, bytes]] = []
     for name in KNOWN_SECRET_ENV_NAMES:
         value = os.environ.get(name, "")
         if value:
-            encoded_values.extend(encoded_candidates(value))
-    for marker in SYNTHETIC_SECRET_MARKERS:
-        encoded_values.extend(encoded_candidates(marker))
+            encoded_values.extend(
+                (name, candidate)
+                for candidate in encoded_candidates(value)
+            )
+    for index, marker in enumerate(SYNTHETIC_SECRET_MARKERS, start=1):
+        encoded_values.extend(
+            (f"SYNTHETIC_SECRET_MARKERS[{index}]", candidate)
+            for candidate in encoded_candidates(marker)
+        )
 
     failures: list[str] = []
     files: list[Path] = []
@@ -230,8 +243,10 @@ def main() -> int:
 
     for path in files:
         content = path.read_bytes()
-        if any(value in content for value in encoded_values):
-            failures.append(f"{path.name}: 命中已知或 synthetic 敏感值")
+        for source in matching_sensitive_sources(content, encoded_values):
+            failures.append(
+                f"{path.name}: 命中已知或 synthetic 敏感值来源 {source}"
+            )
         if any(pattern.search(content) for pattern in forbidden_patterns(contract_name)):
             failures.append(f"{path.name}: 命中凭据或宿主路径格式")
 

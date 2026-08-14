@@ -36,6 +36,16 @@ SCAN = load_sibling_module("scan_public_artifacts")
 
 
 class RealCodexDemoTest(unittest.TestCase):
+    def test_sensitive_scan_reports_source_without_secret_value(self) -> None:
+        secret = b"root"
+        sources = SCAN.matching_sensitive_sources(
+            b'{"matchedRule":"root_delete"}',
+            [("ATG_DEMO_SSH_USER", secret)],
+        )
+
+        self.assertEqual(sources, ["ATG_DEMO_SSH_USER"])
+        self.assertNotIn(secret.decode("utf-8"), sources)
+
     def test_collect_guard_evidence_waits_before_fetching_audits(self) -> None:
         order: list[str] = []
 
