@@ -1,10 +1,10 @@
 {
   "schemaVersion": "v2",
-  "checkedAt": "2026-08-13T09:05:33.029041Z",
+  "checkedAt": "2026-08-14T16:14:54.377301Z",
   "scenarios": [
     {
       "id": "low-friction",
-      "sessionId": "019ffa5b-2d1c-7532-8651-2c30ad22ca23",
+      "sessionId": "01a0010d-0ab5-72c0-9842-91a91d87e16c",
       "checks": {
         "codexExitCodeZero": true,
         "threadStartedOnce": true,
@@ -33,7 +33,7 @@
     },
     {
       "id": "sensitive-read",
-      "sessionId": "019ffa5c-f3b7-7450-a2b0-876e2ce9d002",
+      "sessionId": "01a0010d-60de-7760-8efb-3bff55cf4b90",
       "checks": {
         "codexExitCodeZero": true,
         "threadStartedOnce": true,
@@ -58,7 +58,7 @@
     },
     {
       "id": "destructive-delete",
-      "sessionId": "019ffa5d-4a22-71f1-aee3-9f2ce0972101",
+      "sessionId": "01a0010d-8a24-7d00-9bfb-d18cbda6f714",
       "checks": {
         "codexExitCodeZero": true,
         "threadStartedOnce": true,
@@ -82,7 +82,7 @@
     },
     {
       "id": "network-egress",
-      "sessionId": "019ffa5d-abd6-7083-b286-008502bff1a4",
+      "sessionId": "01a0010d-a34b-7752-8627-a520931c97ce",
       "checks": {
         "codexExitCodeZero": true,
         "threadStartedOnce": true,
@@ -106,7 +106,7 @@
     },
     {
       "id": "protected-write",
-      "sessionId": "019ffa5e-1cb9-7793-8b62-b2bf36feebb6",
+      "sessionId": "01a0010d-c17a-7c92-bdb4-20e3f937e59f",
       "checks": {
         "codexExitCodeZero": true,
         "threadStartedOnce": true,

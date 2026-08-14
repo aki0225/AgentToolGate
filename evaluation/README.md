@@ -9,8 +9,8 @@
 
 ## 当前阶段
 
-评估计划已完成并随 `v0.3.0` 冻结；当前稳定版 `v0.3.1` 继续发布同一套可复跑评估
-附件，并补充 Codex 项目 Hook 接入。当前公开评估快照来自 GitHub Actions run
+评估计划已完成并随 `v0.3.0` 冻结；当前稳定版 `v0.3.2` 继续发布同一套可复跑评估
+附件，并补充正式 Release 上的真实 Codex 五场景证据。当前公开评估快照来自 GitHub Actions run
 [`31465745397`](https://github.com/aki0225/AgentToolGate/actions/runs/31465745397)：
 
 - Quick Linux：20 passed / 0 failed / 0 skipped。
@@ -19,10 +19,16 @@
 - 审批前上游请求、Secret 泄漏和 Ticket 重放成功数均为 0。
 
 当前稳定版的正式 Release、双平台 smoke 和真实 Codex 证据边界见
-[`docs/v0.3.1-release-acceptance.md`](../docs/v0.3.1-release-acceptance.md)；
+[`docs/v0.3.2-release-acceptance.md`](../docs/v0.3.2-release-acceptance.md)；
 `v0.3.0` 的完整评估附件复跑记录仍保留在
 [`docs/v0.3.0-release-acceptance.md`](../docs/v0.3.0-release-acceptance.md)。以下阶段
 记录保留实施历史，不应被理解为比该稳定快照更新的“当前结果”。
+
+五场景真实 Codex 公开证据位于
+[`evaluation/published/real-codex-demo-v2/`](published/real-codex-demo-v2/)。
+它来自五次独立 Codex CLI `0.147.0` 会话，使用 `v0.3.2` 正式 Linux amd64 包，
+动作摘要来自唯一 Hook 请求匹配；普通开发动作完成，敏感读取、根目录删除、网络外传和
+受保护路径写入均在执行前拒绝。
 
 阶段 1 已完成：
 

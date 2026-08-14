@@ -1,12 +1,13 @@
 import { Icon } from "./Icon";
 import { evaluationProof, getEvaluationSummary, type EvaluationSummary } from "../evaluation/proof";
+import { realCodexProof } from "../evaluation/realCodexProof";
 import { RealCodexProof } from "./RealCodexProof";
 
 const githubRoot = "https://github.com/aki0225/AgentToolGate";
 const sourceUrl = `${githubRoot}/blob/main/evaluation/published/agent-safety-proof.json`;
 const methodUrl = `${githubRoot}/blob/main/evaluation/README.md`;
-const releaseAcceptanceUrl = `${githubRoot}/blob/main/docs/v0.3.1-release-acceptance.md`;
-const releaseUrl = `${githubRoot}/releases/tag/v0.3.1`;
+const releaseAcceptanceUrl = `${githubRoot}/blob/main/docs/v0.3.2-release-acceptance.md`;
+const releaseUrl = `${githubRoot}/releases/tag/v0.3.2`;
 type NumericSummaryKey = Exclude<keyof EvaluationSummary, "id" | "kind" | "platform">;
 
 function ProofMeasure({ label, summary }: { label: string; summary: EvaluationSummary }) {
@@ -105,15 +106,18 @@ export function EvaluationProof() {
           </a>
           <a href={releaseAcceptanceUrl} rel="noreferrer" target="_blank">
             <span>02 · 正式发布</span>
-            <strong>v0.3.1 下载后验收</strong>
-            <p>双平台构建、校验和、Windows 正式包 smoke 与 Release 元数据均已验收。</p>
-            <small>tag v0.3.1 · commit c6799c3</small>
+            <strong>v0.3.2 正式发布验收</strong>
+            <p>双平台构建、校验和、原生 runner smoke 与 Release 元数据均已验收。</p>
+            <small>tag v0.3.2 · commit 60dd6db</small>
           </a>
           <a href="#real-codex-proof">
             <span>03 · 真实客户端</span>
             <strong>Codex CLI 预录验收</strong>
-            <p>正式 Release、MCP allow、高危写入拒绝、Hook trust 与独立后置条件均可核对。</p>
-            <small>Windows disposable · commit cd63620 · 不是浏览器实时执行</small>
+            <p>正式 Release、普通开发放行、四类高危动作拒绝与独立后置条件均可核对。</p>
+            <small>
+              {realCodexProof.runtime.platform} · Codex {realCodexProof.runtime.clientVersion} ·
+              commit {realCodexProof.source.commitSha.slice(0, 7)}
+            </small>
           </a>
         </div>
       </div>

@@ -26,13 +26,13 @@ describe("真实 Codex 多场景预录面板", () => {
     expect(html).toContain('id="real-codex-panel"');
     expect(html).toContain("critical");
     expect(html).toContain("root_delete");
-    expect(html).toContain("$ Remove-Item -Recurse .");
+    expect(html).toContain("$ rm -rf .");
     expect(html).toContain("执行前拒绝");
     expect(html).toContain("场景风险说明");
     expect(html).toContain("动作未执行");
     expect(html).toContain("仓库根目录、sentinel、HEAD、tree 和干净工作区全部保持不变");
     expect(html).toContain("验收场景指令");
-    expect(html).toContain("按验收合同复原的动作摘要");
+    expect(html).toContain("Hook 观测到的工具调用");
     expect(html).not.toContain("Agent 意图");
     expect(html).not.toContain("实际工具调用摘要");
   });
@@ -40,8 +40,13 @@ describe("真实 Codex 多场景预录面板", () => {
   it("明确展示动作摘要来源且不冒充原始事件或交互审批", () => {
     const html = renderToStaticMarkup(<RealCodexProof />);
 
-    expect(html).toContain("历史验收合同复原");
-    expect(html).toContain("不是原始 Hook 或 Codex 事件");
+    expect(html).toContain("唯一 Hook 请求匹配");
+    expect(html).toContain("不是 Codex 原始终端事件");
+    expect(html).not.toContain("历史验收合同复原");
+    expect(html).toContain("v0.3.2");
+    expect(html).toContain("Codex 0.147.0");
+    expect(html).toContain("linux-amd64");
+    expect(html).toContain("commit bf0bb9d");
     expect(html).toContain("预录，不是浏览器实时连接");
     expect(html).toContain("仅使用 synthetic 数据");
     expect(html).toContain("不包含真实凭据或 provider 身份");

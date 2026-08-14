@@ -45,14 +45,14 @@ describe("真实 Codex 多场景证据", () => {
       "guard-core-deny-floor"
     );
     expect(getRealCodexScenario("sensitive-read").actionEvidence).toMatchObject({
-      source: "validated_contract_reconstruction",
-      display: "$ Get-Content .ssh/id_rsa",
+      source: "hook_request_match",
+      display: "$ sha256sum .ssh/id_rsa",
       execution: "blocked_before_execution",
-      observed: false,
+      observed: true,
       riskExplanationSource: "scenario_contract"
     });
     expect(getRealCodexScenario("destructive-delete").actionEvidence.display).toBe(
-      "$ Remove-Item -Recurse ."
+      "$ rm -rf ."
     );
   });
 
@@ -136,7 +136,8 @@ describe("真实 Codex 多场景证据", () => {
     );
 
     const inconsistentSource = cloneProof();
-    inconsistentSource.scenarios[2].actionEvidence.source = "hook_request_match";
+    inconsistentSource.scenarios[2].actionEvidence.source =
+      "validated_contract_reconstruction";
     expect(() => parseRealCodexProofDocument(inconsistentSource)).toThrow(
       /observed 与来源不一致/
     );

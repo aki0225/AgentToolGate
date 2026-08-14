@@ -9,6 +9,8 @@ describe("展示站首屏入口", () => {
 
     expect(html).toContain('href="#real-codex-proof"');
     expect(html).toContain("查看真实 Codex 验收");
+    expect(html).toContain("Stable v0.3.2");
+    expect(html).toContain("v0.3.2 发布验收");
     expect(html).toContain('href="#demo"');
     expect(html).toContain(">交互演示</a>");
     expect(html).not.toContain(">查看交互演示");

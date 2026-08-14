@@ -1,30 +1,27 @@
 # 当前项目状态
 
-> 状态日期：2026-08-13
+> 状态日期：2026-08-14
 >
-> 当前稳定版：`v0.3.1`
+> 当前稳定版：`v0.3.2`
 >
-> 稳定版产品提交：`c6799c39061c05e35b54a348a6e293032edf94b4`
+> 稳定版产品提交：`60dd6dbd5dc7e59defd83cbad5f2508d11f4ec98`
 >
-> 本页校正前的 `main` 基线：`198a60b28f059b37d044e777f3d93820c8f4c6c5`
+> 本页更新前的 `main` 基线：`bf0bb9da836e85b33176824efc959ea2125f6d7f`
 
 ## 1. 版本状态
 
-`v0.3.1` 已冻结，Release 标签与验收过的产品提交保持一致。正式附件、双平台
-Release workflow、Windows 正式包 smoke、Linux runner 证据和真实 Codex 验收边界见
-[`v0.3.1 发布验收`](v0.3.1-release-acceptance.md)。
+`v0.3.2` 已冻结，Release 标签与验收过的产品提交保持一致。正式附件、双平台
+Release workflow、原生 runner smoke，以及使用正式 Linux 包完成的五场景真实 Codex
+CLI 验收见 [`v0.3.2 发布验收`](v0.3.2-release-acceptance.md)。
 
-`v0.3.1` 之后的 `main` 主要增加或维护：
+`v0.3.2` 之后的 `main` 目前只增加或维护：
 
-- 真实 Codex 五场景公开证据。
-- GitHub Pages 预录证据播放器。
-- 证据生成、脱敏与契约校验。
-- 展示站 Vitest 和 Playwright 门禁。
-- 文档与历史交接状态。
+- 真实 Codex 公开产物的敏感扫描测试。
+- 五场景证据、GitHub Pages 派生数据与发布文档。
 
-从 `v0.3.1` 到本页校正前的 `main`，没有修改 `backend/`、`frontend/` 控制台、
-`configs/` 或 Release 构建脚本。后续若产品代码发生变化，应创建新版本和新的发布验收，
-不能把 `main` 的维护提交描述成已发布到 `v0.3.1`。
+从 `v0.3.2` 到本页更新前的 `main`，没有修改 `backend/`、`frontend/` 控制台、
+`configs/`、产品 Hook 或 Release 构建脚本。后续若产品代码发生变化，应创建新版本和
+新的发布验收，不能把 `main` 的维护提交描述成已发布到 `v0.3.2`。
 
 ## 2. 已验证能力
 
@@ -33,18 +30,18 @@ Release workflow、Windows 正式包 smoke、Linux runner 证据和真实 Codex 
 - **稳定 Release**：Windows amd64 和 Linux amd64 正式包、SHA256、原生 runner smoke。
 - **自动安全评估**：Quick、Windows full、Linux full 的逐 case Proof Pack；Linux
   平台不适用项保持 skipped，不冒充 passed。
-- **真实客户端**：历史 Codex CLI / Claude Code 双客户端链路验收，以及同一
-  `v0.3.1` 产品提交上的真实 Codex CLI 验收。
+- **真实客户端**：历史 Codex CLI / Claude Code 双客户端链路验收，以及
+  `v0.3.2` 正式 Linux 包上的五次独立 Codex CLI 会话。
 - **真实 Codex 五场景展示**：低摩擦开发、敏感读取、破坏性删除、网络外传和受保护
-  写入，均带 Hook、Audit 和独立后置条件。
+  写入，动作摘要均来自唯一 Hook 请求匹配，并带对应 Audit 和独立后置条件。
 - **展示站门禁**：类型检查、静态证据校验、Vitest、生产构建和 Playwright 浏览器交互。
 
-本页校正前的 `main` 已通过：
+本页更新前的 `main` 已通过：
 
 - CI run
-  [`31708710029`](https://github.com/aki0225/AgentToolGate/actions/runs/31708710029)。
-- Pages run
-  [`31708710016`](https://github.com/aki0225/AgentToolGate/actions/runs/31708710016)。
+  [`31818092277`](https://github.com/aki0225/AgentToolGate/actions/runs/31818092277)。
+- 真实 Codex 五场景 run
+  [`31818280270`](https://github.com/aki0225/AgentToolGate/actions/runs/31818280270)。
 
 ## 3. 当前使用入口
 
@@ -77,7 +74,7 @@ Release workflow、Windows 正式包 smoke、Linux runner 证据和真实 Codex 
 
 ## 5. 维护规则
 
-- 不移动或覆盖 `v0.3.1`、`v0.3.0`、`v0.2.0` 及其候选标签。
+- 不移动或覆盖 `v0.3.2`、`v0.3.1`、`v0.3.0`、`v0.2.0` 及其候选标签。
 - 新增 Guard 规则、客户端、平台或产品行为时，重新生成对应评估与发布证据。
 - 证据、展示或文档维护不能被描述成稳定 Release 产品能力变化。
 - 发现安全缺陷时保留失败证据并单独修复，不通过放宽 expected decision 或跳过校验换取绿色结果。

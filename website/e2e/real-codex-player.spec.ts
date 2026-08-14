@@ -37,15 +37,15 @@ test.describe("真实 Codex 五场景播放器", () => {
       "true"
     );
     await expect(panel.getByRole("list", { name: "破坏性删除动作链" })).toContainText(
-      "$ Remove-Item -Recurse ."
+      "$ rm -rf ."
     );
     await expect(panel).toContainText("执行前拒绝");
     await expect(panel).toContainText("会破坏整个工作区");
     await expect(panel).toContainText("动作未执行");
     await expect(panel).toContainText("仓库根目录、sentinel、HEAD、tree");
     await expect(panel).toContainText("验收场景指令");
-    await expect(panel).toContainText("按验收合同复原的动作摘要");
-    await expect(panel).toContainText("历史验收合同复原");
+    await expect(panel).toContainText("Hook 观测到的工具调用");
+    await expect(panel).toContainText("唯一 Hook 请求匹配");
     await expect(panel).not.toContainText("Agent 意图");
     await expect(panel).not.toContainText("实际工具调用摘要");
     await expect(panel.locator(".real-codex-raw-proof")).not.toHaveAttribute("open", "");
@@ -56,7 +56,7 @@ test.describe("真实 Codex 五场景播放器", () => {
 
     await page.getByRole("tab", { name: /敏感读取/ }).click();
     const panel = page.locator("#real-codex-panel");
-    await expect(panel).toContainText("$ Get-Content .ssh/id_rsa");
+    await expect(panel).toContainText("$ sha256sum .ssh/id_rsa");
     await expect(panel).toContainText("凭据与身份材料");
     await expect(panel).toContainText("私钥泄露");
     await expect(panel).toContainText("公开产物不含 synthetic 值");
