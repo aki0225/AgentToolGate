@@ -1,8 +1,14 @@
 # 真实 Codex 五场景展示交接
 
-> 交接日期：2026-08-13
+> 首次交接日期：2026-08-13
 >
-> 交接时分支：`main`
+> 最近续做更新：2026-08-14
+>
+> 当前续做分支：`codex/real-codex-observed-evidence`
+>
+> 当前续做提交：`e1c462e`
+>
+> 当前 PR：`#13`，交接时仍未合并，必须等待远端检查通过
 >
 > 播放器初始实现提交：`6bb1459`
 >
@@ -11,6 +17,139 @@
 > Playwright 浏览器门禁：`198a60b`
 >
 > 当前恢复入口：[`docs/current-status.md`](current-status.md)
+
+## 2026-08-14：`observed=true` 真实重录续做状态
+
+### 本轮目标
+
+重新执行五次独立真实 Codex 会话，让每个场景的 `actionEvidence` 都来自唯一
+Hook 请求和唯一关联 Audit：
+
+```json
+{
+  "source": "hook_request_match",
+  "observed": true
+}
+```
+
+不得在旧公开产物上人工补字段，也不得把验收合同复原或 synthetic 测试冒充原始
+Hook 观测事件。
+
+### 已完成
+
+1. 确认当前 `multi_demo.py` 已具备从唯一 Hook 请求和 Audit 生成公开动作证据的逻辑。
+2. 使用用户显式提供、但未纳入仓库的本机 OpenAI-compatible 配置完成
+   `gpt-5.6-terra` 最小探活，曾返回 `200`。
+3. 在正式 `v0.3.1` Release、Codex CLI `0.146.0` 和系统临时 disposable
+   仓库中，真实完成过低摩擦场景的：
+   - `git status --short`
+   - 普通源码读取
+   - `apply_patch src/demo-note.txt`
+   - `mock.real_codex_echo`
+4. 发现并修复真实演示验收器的补丁规范化缺陷：
+   - 产品 Hook 的 `get_text()` 会对工具输入执行 `strip()`。
+   - 验收器此前却使用带末尾换行的补丁做精确比较。
+   - Hook 和后端 Audit 已记录唯一 `apply_patch`、正确目标及匹配内容 Hash，
+     但公开动作证据生成器仍误判为不匹配。
+5. 修复提交：
+
+   ```text
+   e1c462e 修复：对齐真实演示 Hook 补丁规范化
+   ```
+
+   修复没有放宽 adapter、工具名、动作类型、目标、内容编码、Guard 决策、风险等级、
+   内容 Hash 或唯一 Audit 关联条件。
+6. 已验证：
+
+   ```powershell
+   python -m unittest scripts/real-codex-demo/test_multi_demo.py scripts/real-codex-demo/test_run_demo.py
+   git diff --check
+   ```
+
+   结果：51 个 Python 测试通过，`git diff --check` 通过。
+7. 分支已推送并创建 PR `#13`。交接时 GitHub 状态接口只返回 pending，尚未获得可信
+   的完整检查终态，因此未合并。
+
+### 当前阻塞
+
+上游仍不稳定，不是 AgentToolGate 或 Hook 拒绝：
+
+- `gpt-5.6-sol` 一次直接探活和随后三次有界探活均返回 `503`。
+- `gpt-5.6-terra` 曾探活成功，但完整录制中发生连接重置或在普通读取动作后断流；
+  最后一次稳定性探活也返回 `503`。
+- 失败均发生在公开证据生成前；没有覆盖
+  `evaluation/published/real-codex-demo-v2/`，线上 Pages 仍使用上一版真实证据。
+
+### 清理状态
+
+- 所有诊断运行中的私有凭据目录均已删除。
+- ATG、provider proxy 和 collector 的临时端口均已关闭。
+- 失败产物只保留在系统临时目录并已通过敏感扫描，没有提交到 Git。
+- 仓库中没有 API Key、请求地址、provider 身份或用户私有路径。
+
+### 晚间恢复顺序
+
+1. 先同步并进入续做分支：
+
+   ```powershell
+   git fetch --all --prune
+   git switch codex/real-codex-observed-evidence
+   git pull --ff-only
+   git status -sb
+   ```
+
+2. 检查 PR `#13` 的远端门禁。只有检查全部通过时才允许合并；失败或未获得可信终态
+   时继续保留分支。
+3. 上游恢复后先对 `gpt-5.6-terra` 或 `gpt-5.6-sol` 做低成本探活。建议至少连续
+   三次成功后再执行完整五场景，避免再次空耗额度。
+4. 同一工作区可继续使用被 `.gitignore` 忽略的本地辅助脚本：
+
+   ```powershell
+   python .tmp\real-codex-local-preflight.py `
+     --provider-file <本机凭据文件> `
+     --codex <codex.cmd> `
+     --model gpt-5.6-terra `
+     --release-cache <v0.3.1-release-cache> `
+     --provider-attempts 3
+   ```
+
+   该辅助脚本和凭据文件都没有进入 Git。若在新机器或新 clone 中恢复，应先依据
+   `.github/workflows/real-codex-demo.yml` 重建等价的隔离入口，不得把凭据复制到仓库。
+5. 完整运行成功后，先在临时公开目录独立确认：
+   - `summary.json` 中五个场景均为 `hook_request_match / observed=true`。
+   - 五个 session ID 唯一。
+   - Hook 为 project / trusted，且没有 trust bypass。
+   - network collector 请求数为 `0`。
+   - sensitive synthetic 内容未进入公开产物。
+   - disposable 仓库、sentinel、HEAD、tree 和干净状态符合各场景后置条件。
+   - 私有目录与三个回环端口均已清理。
+6. 通过后再执行敏感扫描，不要直接覆盖现有公开证据：
+
+   ```powershell
+   python scripts/real-codex-demo/scan_public_artifacts.py `
+     --input <临时公开产物目录>
+   ```
+
+7. 人工审阅通过后再更新 `evaluation/published/real-codex-demo-v2/`，随后执行：
+
+   ```powershell
+   cd website
+   npm run real-codex:sync
+   npm run check
+   npm test
+   npm run build
+   npm run e2e
+   ```
+
+8. 最后分开提交“新真实证据”和“Pages 派生数据”，推送后必须同时确认 CI、Pages
+   workflow 和公开页面实际内容。
+
+### 明确禁止
+
+- 不使用用户明确排除的 `gpt-5.4`。
+- 不把失败、mock、合同复原或手工文本写成 `observed=true`。
+- 不因上游不稳定而放宽唯一请求、唯一 Audit、Hash、路径或后置条件。
+- 不提交 API Key、请求地址、SSH/VPS 信息、本机用户路径或 provider 身份。
 
 ## 本轮已完成
 
