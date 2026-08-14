@@ -29,6 +29,7 @@ MIN_GO_CLI_TIMEOUT_MS = 100
 MAX_GO_CLI_TIMEOUT_MS = 5000
 HOOK_TICKET_TTL_SECONDS = 10 * 60
 HOOK_CONTROL_MODES = {"off", "dry-run", "live"}
+GO_CLI_UNCERTAIN = object()
 SENSITIVE_TARGET_KEYS = {
     "access_token",
     "api_key",
@@ -921,7 +922,7 @@ def is_valid_codex_hook_output(output: Any) -> bool:
     return True
 
 
-def call_agenttoolgate_guard_hook_codex(input_data: dict[str, Any]) -> dict[str, Any] | None:
+def call_agenttoolgate_guard_hook_codex(input_data: dict[str, Any]) -> dict[str, Any] | None | object:
     try:
         repo_root = find_repo_root(get_text(input_data.get("cwd")) or os.getcwd()) or ""
         completed = subprocess.run(
@@ -935,19 +936,22 @@ def call_agenttoolgate_guard_hook_codex(input_data: dict[str, Any]) -> dict[str,
             check=False,
             env=agenttoolgate_subprocess_env(input_data),
         )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired, HookControlError):
+    except subprocess.TimeoutExpired:
+        # 子进程超时时请求可能已经到达后端，禁止再发一次 fallback HTTP。
+        return GO_CLI_UNCERTAIN
+    except (FileNotFoundError, OSError, HookControlError):
         return None
     if completed.returncode != 0:
-        return None
+        return GO_CLI_UNCERTAIN
     stdout = completed.stdout.strip()
     if not stdout:
         return {}
     try:
         output = json.loads(stdout, object_pairs_hook=_reject_hook_control_duplicates)
     except (json.JSONDecodeError, HookControlError, RecursionError):
-        return None
+        return GO_CLI_UNCERTAIN
     if not is_valid_codex_hook_output(output):
-        return None
+        return GO_CLI_UNCERTAIN
     return output
 
 
@@ -1427,8 +1431,14 @@ def is_explicitly_low_risk_offline_action(repo_root: str, payload: dict[str, Any
         return is_project_metadata_read_target(target) or not is_high_risk_offline_target(payload)
     if action != "exec":
         return False
-    # Go CLI 不可用时不维护第二套 shell 解析器，只放行无法携带路径或附加参数的精确命令。
-    return " ".join(content.strip().lower().split()) in {"git status", "pwd", "get-location"}
+    # Go CLI 不可用时只放行经过审查的精确只读命令变体。
+    return " ".join(content.strip().lower().split()) in {
+        "git status",
+        "git status --short",
+        "git status -s",
+        "pwd",
+        "get-location",
+    }
 
 
 def is_fast_path_repo_read(repo_root: str, payload: dict[str, Any]) -> bool:
@@ -1568,6 +1578,18 @@ def main() -> int:
         return 0
 
     go_output = call_agenttoolgate_guard_hook_codex(input_data)
+    if go_output is GO_CLI_UNCERTAIN:
+        if is_explicitly_low_risk_offline_action(repo_root, payload):
+            if record_local_pending_audit(repo_root, payload, "AgentToolGate CLI uncertain, local pending audit", True):
+                return 0
+            decision = {"decision": "deny", "reason": "AgentToolGate CLI uncertain, pending audit unavailable"}
+        elif is_high_risk_offline_target(payload):
+            decision = {"decision": "deny", "reason": "AgentToolGate CLI uncertain, sensitive target denied"}
+        else:
+            decision = {"decision": "deny", "reason": "AgentToolGate CLI uncertain, action denied"}
+        output = build_output(adapter, decision, tool_input)
+        print(json.dumps(output, ensure_ascii=False), flush=True)
+        return 0
     if go_output == {}:
         return 0
     if go_output is not None:

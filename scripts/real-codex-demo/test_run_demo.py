@@ -8,7 +8,9 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
 import unittest
+import urllib.request
 from unittest import mock
 from pathlib import Path
 
@@ -34,6 +36,81 @@ SCAN = load_sibling_module("scan_public_artifacts")
 
 
 class RealCodexDemoTest(unittest.TestCase):
+    def test_collect_guard_evidence_waits_before_fetching_audits(self) -> None:
+        order: list[str] = []
+
+        class Observer:
+            def snapshot(self) -> list[dict[str, object]]:
+                order.append("snapshot")
+                return [{"adapter": "codex"}]
+
+        def fetch(_url: str, **_kwargs: object) -> dict[str, object]:
+            order.append("audit")
+            return {"items": [{"toolKey": "agent_guard.evaluate"}]}
+
+        with mock.patch.object(RUN_DEMO, "http_json", side_effect=fetch):
+            observed, audits = RUN_DEMO.collect_guard_evidence(Observer(), 18090)
+
+        self.assertEqual(order, ["snapshot", "audit"])
+        self.assertEqual(observed, [{"adapter": "codex"}])
+        self.assertEqual(audits, [{"toolKey": "agent_guard.evaluate"}])
+
+    def test_guard_observer_marks_request_inflight_before_recording(self) -> None:
+        order: list[str] = []
+
+        class UpstreamHandler(RUN_DEMO.http.server.BaseHTTPRequestHandler):
+            def log_message(self, _format: str, *_args: object) -> None:
+                return
+
+            def do_POST(self) -> None:
+                content_length = int(self.headers.get("Content-Length", "0"))
+                self.rfile.read(content_length)
+                response = b'{"decision":"allow"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response)))
+                self.end_headers()
+                self.wfile.write(response)
+
+        class RecordingList(list[dict[str, object]]):
+            def append(self, item: dict[str, object]) -> None:
+                order.append("record")
+                super().append(item)
+
+        upstream = RUN_DEMO.socketserver.ThreadingTCPServer(
+            ("127.0.0.1", 0),
+            UpstreamHandler,
+        )
+        upstream.daemon_threads = True
+        upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+        upstream_thread.start()
+        observer = RUN_DEMO.GuardRequestObserver(upstream.server_address[1])
+        original_begin = observer._begin_forward
+
+        def record_begin() -> None:
+            order.append("begin")
+            original_begin()
+
+        observer._begin_forward = record_begin
+        observer.requests = RecordingList()
+        try:
+            observer.start()
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{observer.port}/api/agent-guard/evaluate",
+                data=b'{"adapter":"codex"}',
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+            self.assertEqual(order[:2], ["begin", "record"])
+            self.assertEqual(observer.snapshot(), [{"adapter": "codex"}])
+        finally:
+            observer.stop()
+            upstream.shutdown()
+            upstream.server_close()
+            upstream_thread.join(timeout=5)
+
     def test_sanitize_value_removes_paths_and_credentials(self) -> None:
         value = {
             "path": "/tmp/private/repo/.ssh/authorized_keys",
@@ -334,6 +411,23 @@ class RealCodexDemoTest(unittest.TestCase):
         self.assertEqual(invoked.call_args_list[0].kwargs["cwd"], Path("/tmp/repo"))
         self.assertEqual(invoked.call_args_list[1].kwargs["cwd"], Path("/tmp/repo"))
 
+    def test_trust_codex_hook_starts_app_server_in_disposable_repo(self) -> None:
+        repo = Path("/tmp/disposable-repo")
+        with mock.patch.object(
+            RUN_DEMO.subprocess,
+            "Popen",
+            side_effect=OSError("stop after invocation"),
+        ) as invoked:
+            with self.assertRaisesRegex(OSError, "stop after invocation"):
+                RUN_DEMO.trust_codex_hook(
+                    "codex",
+                    {"CODEX_HOME": "/tmp/codex-home"},
+                    repo,
+                    {},
+                )
+
+        self.assertEqual(invoked.call_args.kwargs["cwd"], repo)
+
     def test_observed_hook_control_keeps_release_executable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -397,6 +491,14 @@ class RealCodexDemoTest(unittest.TestCase):
         for key in blocked:
             self.assertNotIn(key, environment)
         self.assertEqual(environment["CODEX_HOME"], str(codex_home))
+        self.assertEqual(
+            environment["AGENTTOOLGATE_CLI_TIMEOUT_MS"],
+            RUN_DEMO.OBSERVED_HOOK_CLI_TIMEOUT_MS,
+        )
+        self.assertEqual(
+            environment["AGENTTOOLGATE_HOOK_TIMEOUT_MS"],
+            RUN_DEMO.OBSERVED_HOOK_HTTP_TIMEOUT_MS,
+        )
         self.assertEqual(environment["PATH"], "/usr/bin:/bin")
 
     def test_create_demo_mcp_tool_requires_message_schema(self) -> None:

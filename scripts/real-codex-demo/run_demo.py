@@ -38,6 +38,8 @@ DEMO_MCP_TOOL_NAME = "real_codex_echo"
 DEMO_MCP_TOOL_KEY = f"{DEMO_MCP_TOOL_NAMESPACE}.{DEMO_MCP_TOOL_NAME}"
 OWNERSHIP_MARKER_SUFFIX = ".agenttoolgate-real-codex-owned"
 MAX_OBSERVED_GUARD_BODY_BYTES = 1024 * 1024
+OBSERVED_HOOK_CLI_TIMEOUT_MS = "5000"
+OBSERVED_HOOK_HTTP_TIMEOUT_MS = "2000"
 
 
 class DemoFailure(RuntimeError):
@@ -297,6 +299,9 @@ class GuardRequestObserver:
         self.port = 0
         self.requests: list[dict[str, Any]] = []
         self._lock = threading.Lock()
+        self._idle = threading.Event()
+        self._idle.set()
+        self._inflight = 0
         self._server: socketserver.ThreadingTCPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -317,56 +322,65 @@ class GuardRequestObserver:
                 if content_length < 0 or content_length > MAX_OBSERVED_GUARD_BODY_BYTES:
                     self.send_error(413)
                     return
-                body = self.rfile.read(content_length)
+                observer._begin_forward()
                 try:
-                    decoded = json.loads(body.decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    decoded = None
-                if isinstance(decoded, dict):
-                    with observer._lock:
-                        observer.requests.append(decoded)
+                    body = self.rfile.read(content_length)
+                    try:
+                        decoded = json.loads(body.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        decoded = None
+                    if isinstance(decoded, dict):
+                        with observer._lock:
+                            observer.requests.append(decoded)
 
-                workspace = self.headers.get("X-Workspace-Org-Id", "").strip()
-                headers = {
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                }
-                if workspace:
-                    headers["X-Workspace-Org-Id"] = workspace
-                request = urllib.request.Request(
-                    f"http://127.0.0.1:{observer.upstream_port}{self.path}",
-                    data=body,
-                    headers=headers,
-                    method="POST",
-                )
-                try:
-                    with urllib.request.urlopen(request, timeout=15) as response:
-                        response_body = response.read()
-                        self.send_response(response.status)
-                        for key, value in response.headers.items():
+                    workspace = self.headers.get("X-Workspace-Org-Id", "").strip()
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json",
+                    }
+                    if workspace:
+                        headers["X-Workspace-Org-Id"] = workspace
+                    request = urllib.request.Request(
+                        f"http://127.0.0.1:{observer.upstream_port}{self.path}",
+                        data=body,
+                        headers=headers,
+                        method="POST",
+                    )
+                    try:
+                        with urllib.request.urlopen(request, timeout=15) as response:
+                            response_body = response.read()
+                            self.send_response(response.status)
+                            for key, value in response.headers.items():
+                                if key.lower() not in {
+                                    "content-length",
+                                    "connection",
+                                    "transfer-encoding",
+                                }:
+                                    self.send_header(key, value)
+                    except urllib.error.HTTPError as error:
+                        response_body = error.read()
+                        self.send_response(error.code)
+                        for key, value in error.headers.items():
                             if key.lower() not in {
                                 "content-length",
                                 "connection",
                                 "transfer-encoding",
                             }:
                                 self.send_header(key, value)
-                except urllib.error.HTTPError as error:
-                    response_body = error.read()
-                    self.send_response(error.code)
-                    for key, value in error.headers.items():
-                        if key.lower() not in {
-                            "content-length",
-                            "connection",
-                            "transfer-encoding",
-                        }:
-                            self.send_header(key, value)
-                except (OSError, urllib.error.URLError):
-                    response_body = b'{"error":"guard observer upstream unavailable"}'
-                    self.send_response(502)
-                    self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(response_body)))
-                self.end_headers()
-                self.wfile.write(response_body)
+                    except (OSError, urllib.error.URLError):
+                        response_body = b'{"error":"guard observer upstream unavailable"}'
+                        self.send_response(502)
+                        self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(response_body)))
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.close_connection = True
+                    try:
+                        self.wfile.write(response_body)
+                    except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                        return
+                finally:
+                    observer._finish_forward()
 
         class ThreadingTCPServer(socketserver.ThreadingTCPServer):
             allow_reuse_address = True
@@ -377,7 +391,19 @@ class GuardRequestObserver:
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
+    def _begin_forward(self) -> None:
+        with self._lock:
+            self._inflight += 1
+            self._idle.clear()
+
+    def _finish_forward(self) -> None:
+        with self._lock:
+            self._inflight -= 1
+            if self._inflight == 0:
+                self._idle.set()
+
     def stop(self) -> None:
+        self._idle.wait(timeout=5)
         if self._server:
             self._server.shutdown()
             self._server.server_close()
@@ -387,6 +413,8 @@ class GuardRequestObserver:
             self._thread = None
 
     def snapshot(self) -> list[dict[str, Any]]:
+        if not self._idle.wait(timeout=5):
+            raise DemoFailure("Guard observer 请求未在时限内完成")
         with self._lock:
             return [dict(item) for item in self.requests]
 
@@ -632,6 +660,8 @@ def create_codex_environment(
         if not key.startswith("ATG_DEMO_") and key not in blocked
     }
     environment["CODEX_HOME"] = str(codex_home)
+    environment["AGENTTOOLGATE_CLI_TIMEOUT_MS"] = OBSERVED_HOOK_CLI_TIMEOUT_MS
+    environment["AGENTTOOLGATE_HOOK_TIMEOUT_MS"] = OBSERVED_HOOK_HTTP_TIMEOUT_MS
     if codex_runtime_path:
         environment["PATH"] = codex_runtime_path
     return environment
@@ -752,6 +782,7 @@ def trust_codex_hook(
         codex_env = {**codex_env, "HOME": home}
     process = subprocess.Popen(
         [codex, "app-server", "--stdio"],
+        cwd=repo,
         env=codex_env,
         text=True,
         encoding="utf-8",
@@ -1057,6 +1088,17 @@ def extract_audit_items(document: Any) -> list[dict[str, Any]]:
         return []
     items = document.get("items")
     return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def collect_guard_evidence(
+    observer: GuardRequestObserver,
+    atg_port: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    observed = observer.snapshot()
+    audit_document = http_json(
+        f"http://127.0.0.1:{atg_port}/api/tool-calls?page=1&pageSize=100"
+    )
+    return observed, extract_audit_items(audit_document)
 
 
 def input_value(call: dict[str, Any]) -> dict[str, Any]:
@@ -1618,11 +1660,10 @@ def main() -> int:
             private_root,
             args.codex_user,
         )
-        audit_document = http_json(
-            f"http://127.0.0.1:{args.atg_port}/api/tool-calls?page=1&pageSize=100"
+        observed_guard_requests, audits = collect_guard_evidence(
+            guard_observer,
+            args.atg_port,
         )
-        audits = extract_audit_items(audit_document)
-        observed_guard_requests = guard_observer.snapshot()
         validated = validate_results(
             codex_events,
             audits,

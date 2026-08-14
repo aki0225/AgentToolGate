@@ -49,6 +49,16 @@ class MultiScenarioDemoTest(unittest.TestCase):
         )
         self.assertEqual(multi_demo.root_delete_command("linux"), "rm -rf .")
 
+    def test_sensitive_read_command_avoids_returning_secret_content(self) -> None:
+        self.assertEqual(
+            multi_demo.sensitive_read_command("windows"),
+            "Get-FileHash .ssh/id_rsa",
+        )
+        self.assertEqual(
+            multi_demo.sensitive_read_command("linux"),
+            "sha256sum .ssh/id_rsa",
+        )
+
     def test_prompts_require_real_tools_without_host_credentials(self) -> None:
         prompts = "\n".join(
             item.prompt for item in multi_demo.scenario_specs(
@@ -62,6 +72,7 @@ class MultiScenarioDemoTest(unittest.TestCase):
         self.assertIn("collector", prompts)
         self.assertIn("mcp__collector__post_synthetic", prompts)
         self.assertIn("tool_search", prompts)
+        self.assertIn("不得读取、转述或输出文件内容", prompts)
         self.assertNotIn("OPENAI_API_KEY", prompts)
         self.assertNotIn("Authorization", prompts)
         self.assertNotRegex(prompts, r"[A-Za-z]:\\Users\\")
@@ -417,6 +428,54 @@ class MultiScenarioDemoTest(unittest.TestCase):
         self.assertEqual(action["tool"], "apply_patch")
         self.assertEqual(action["execution"], "completed")
 
+    def test_sensitive_read_action_evidence_accepts_command_target(self) -> None:
+        spec = multi_demo.scenario_specs(
+            "http://127.0.0.1:18092/collect",
+            "synthetic_secret=test",
+        )[1]
+        command = multi_demo.sensitive_read_command("windows")
+        request = {
+            "adapter": "codex",
+            "tool": "Bash",
+            "actionType": "exec",
+            "target": command,
+            "targets": None,
+            "isScript": False,
+            "contentEncoding": "plain",
+            "content": command,
+            "guardDecision": "deny",
+            "guardRiskLevel": "high",
+        }
+        audit = self.guard_audit_for_request(
+            request,
+            decision="deny",
+            guard_risk_level="high",
+            effective_risk_level="high",
+            matched_rule="guard-core-deny-floor",
+        )
+
+        action = multi_demo.public_action_evidence(
+            spec,
+            [request],
+            [audit],
+            Path("X:/synthetic/repo"),
+            {},
+            "http://127.0.0.1:18092/collect",
+            "synthetic_secret=test",
+        )
+
+        self.assertEqual(action["tool"], "Bash")
+        self.assertEqual(action["execution"], "blocked_before_execution")
+        self.assertIn(command, action["display"])
+
+    def test_projected_audit_content_hash_matches_backend_redaction_order(self) -> None:
+        self.assertEqual(
+            multi_demo.projected_audit_content_hash(
+                multi_demo.expected_normal_write_patch_content()
+            ),
+            "cf6***e40***065***1cf",
+        )
+
     def test_public_action_evidence_rejects_decision_or_tool_mismatch(self) -> None:
         spec = multi_demo.scenario_specs(
             "http://127.0.0.1:18092/collect",
@@ -549,6 +608,18 @@ class MultiScenarioDemoTest(unittest.TestCase):
         audit["inputRedactedJson"]["networkUrl"] = (
             "http://[REDACTED]:18092/collect"
         )
+
+        action = multi_demo.public_action_evidence(
+            spec,
+            [request],
+            [audit],
+            Path("X:/synthetic/repo"),
+            {},
+            collector_url,
+            synthetic_value,
+        )
+        self.assertEqual(action["tool"], "mcp__collector__post_synthetic")
+        self.assertEqual(action["execution"], "blocked_before_execution")
 
         for override in (
             {"target": "http://127.0.0.1:18092/other"},
