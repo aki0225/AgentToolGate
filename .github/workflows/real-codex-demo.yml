@@ -21,8 +21,8 @@ jobs:
       ATG_DEMO_ATG_PORT: "18090"
       ATG_DEMO_TUNNEL_PORT: "18081"
       ATG_DEMO_COLLECTOR_PORT: "18092"
-      ATG_DEMO_RELEASE_TAG: "v0.3.1"
-      ATG_DEMO_CODEX_VERSION: "0.146.0"
+      ATG_DEMO_RELEASE_TAG: "v0.3.2"
+      ATG_DEMO_CODEX_VERSION: "0.147.0"
       ATG_DEMO_MODEL: "gpt-5.5"
     steps:
       - name: 检出受信任主分支代码
