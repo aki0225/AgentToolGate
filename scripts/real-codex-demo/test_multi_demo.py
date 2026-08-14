@@ -39,6 +39,8 @@ class MultiScenarioDemoTest(unittest.TestCase):
         self.assertTrue(all(item.decision == "deny" for item in specs[1:]))
         self.assertEqual(specs[3].guard_signal, "network_exfil")
         self.assertEqual(specs[4].matched_rule, "project_protected_path")
+        self.assertIn("私钥", specs[1].risk_explanation)
+        self.assertIn("仓库根目录", specs[2].intent)
 
     def test_root_delete_command_matches_published_guard_contract(self) -> None:
         self.assertEqual(
@@ -335,6 +337,198 @@ class MultiScenarioDemoTest(unittest.TestCase):
         self.assertIn("[REDACTED]", serialized)
         self.assertNotIn("ATG_SYNTHETIC_SSH_SECRET_", serialized)
 
+    def test_public_action_evidence_uses_verified_observer_request(self) -> None:
+        spec = multi_demo.scenario_specs(
+            "http://127.0.0.1:18092/collect",
+            "synthetic_secret=test",
+        )[2]
+        request = {
+            "adapter": "codex",
+            "tool": "Bash",
+            "actionType": "exec",
+            "target": ".",
+            "targets": ["."],
+            "isScript": False,
+            "contentEncoding": "plain",
+            "content": multi_demo.root_delete_command(),
+            "guardDecision": "deny",
+            "guardRiskLevel": "critical",
+        }
+        audit = self.guard_audit_for_request(
+            request,
+            decision="deny",
+            guard_risk_level="critical",
+            effective_risk_level="critical",
+            matched_rule="guard-core-deny-floor",
+        )
+        action = multi_demo.public_action_evidence(
+            spec,
+            [request],
+            [audit],
+            Path("X:/synthetic/repo"),
+            {},
+            "http://127.0.0.1:18092/collect",
+            "synthetic_secret=test",
+        )
+
+        self.assertEqual(action["source"], "hook_request_match")
+        self.assertEqual(action["tool"], "Bash")
+        self.assertEqual(action["execution"], "blocked_before_execution")
+        self.assertEqual(action["riskExplanationSource"], "scenario_contract")
+        self.assertIn("Remove-Item -Recurse .", action["display"])
+
+    def test_public_action_evidence_rejects_decision_or_tool_mismatch(self) -> None:
+        spec = multi_demo.scenario_specs(
+            "http://127.0.0.1:18092/collect",
+            "synthetic_secret=test",
+        )[2]
+        base_request = {
+            "adapter": "codex",
+            "tool": "Bash",
+            "actionType": "exec",
+            "target": ".",
+            "targets": ["."],
+            "isScript": False,
+            "contentEncoding": "plain",
+            "content": multi_demo.root_delete_command(),
+            "guardDecision": "deny",
+            "guardRiskLevel": "critical",
+        }
+        audit = self.guard_audit_for_request(
+            base_request,
+            decision="deny",
+            guard_risk_level="critical",
+            effective_risk_level="critical",
+            matched_rule="guard-core-deny-floor",
+        )
+
+        for override in (
+            {"guardDecision": "allow"},
+            {"guardRiskLevel": "high"},
+            {"tool": "apply_patch"},
+        ):
+            with self.subTest(override=override), self.assertRaisesRegex(
+                Exception,
+                "唯一的公开 Hook 动作证据",
+            ):
+                multi_demo.public_action_evidence(
+                    spec,
+                    [{**base_request, **override}],
+                    [audit],
+                    Path("X:/synthetic/repo"),
+                    {},
+                    "http://127.0.0.1:18092/collect",
+                    "synthetic_secret=test",
+                )
+
+    def test_public_action_evidence_rejects_mismatched_audit(self) -> None:
+        spec = multi_demo.scenario_specs(
+            "http://127.0.0.1:18092/collect",
+            "synthetic_secret=test",
+        )[2]
+        request = {
+            "adapter": "codex",
+            "tool": "Bash",
+            "actionType": "exec",
+            "target": ".",
+            "targets": ["."],
+            "isScript": False,
+            "contentEncoding": "plain",
+            "content": multi_demo.root_delete_command(),
+            "guardDecision": "deny",
+            "guardRiskLevel": "critical",
+        }
+        audit = self.guard_audit_for_request(
+            request,
+            decision="deny",
+            guard_risk_level="critical",
+            effective_risk_level="critical",
+            matched_rule="guard-core-deny-floor",
+        )
+        overrides = (
+            {"adapter": "claude"},
+            {"tool": "apply_patch"},
+            {"actionType": "write"},
+            {"target": "src"},
+            {"targets": ["src"]},
+            {"guardDecision": "allow"},
+            {"guardRiskLevel": "high"},
+            {"contentHash": "bad***hash"},
+        )
+
+        for override in overrides:
+            mismatched = {
+                **audit,
+                "inputRedactedJson": {
+                    **audit["inputRedactedJson"],
+                    **override,
+                },
+            }
+            with self.subTest(override=override), self.assertRaisesRegex(
+                Exception,
+                "没有唯一关联 Audit",
+            ):
+                multi_demo.public_action_evidence(
+                    spec,
+                    [request],
+                    [mismatched],
+                    Path("X:/synthetic/repo"),
+                    {},
+                    "http://127.0.0.1:18092/collect",
+                    "synthetic_secret=test",
+                )
+
+    def test_network_action_evidence_rejects_target_mismatch(self) -> None:
+        collector_url = "http://127.0.0.1:18092/collect"
+        synthetic_value = "synthetic_secret=test"
+        spec = multi_demo.scenario_specs(collector_url, synthetic_value)[3]
+        request = {
+            "adapter": "codex",
+            "tool": "mcp__collector__post_synthetic",
+            "actionType": "write",
+            "target": collector_url,
+            "targets": [],
+            "networkMethod": "POST",
+            "networkUrl": collector_url,
+            "isScript": False,
+            "contentEncoding": "plain",
+            "content": synthetic_value,
+            "guardDecision": "deny",
+            "guardRiskLevel": "high",
+        }
+        audit = self.guard_audit_for_request(
+            request,
+            decision="deny",
+            guard_risk_level="high",
+            effective_risk_level="high",
+            matched_rule="guard-core-deny-floor",
+        )
+        audit["inputRedactedJson"]["target"] = (
+            "http://[REDACTED]:18092/collect"
+        )
+        audit["inputRedactedJson"]["networkUrl"] = (
+            "http://[REDACTED]:18092/collect"
+        )
+
+        for override in (
+            {"target": "http://127.0.0.1:18092/other"},
+            {"targets": ["http://127.0.0.1:18092/other"]},
+            {"networkUrl": "http://127.0.0.1:18092/other"},
+        ):
+            with self.subTest(override=override), self.assertRaisesRegex(
+                Exception,
+                "唯一的公开 Hook 动作证据",
+            ):
+                multi_demo.public_action_evidence(
+                    spec,
+                    [{**request, **override}],
+                    [audit],
+                    Path("X:/synthetic/repo"),
+                    {},
+                    collector_url,
+                    synthetic_value,
+                )
+
     def test_scenario_timeline_labels_verifier_derived_lines(self) -> None:
         spec = multi_demo.scenario_specs(
             "http://127.0.0.1:18092/collect",
@@ -343,12 +537,56 @@ class MultiScenarioDemoTest(unittest.TestCase):
         timeline = multi_demo.scenario_timeline(
             [(1.0, "真实 Codex CLI 会话已启动")],
             spec,
+            {
+                "tool": "apply_patch",
+                "display": "apply_patch release.yml",
+                "riskExplanation": spec.risk_explanation,
+            },
             spec.postcondition_summary,
         )
 
-        self.assertEqual(len(timeline), 3)
-        self.assertIn("AgentToolGate 验收关联", timeline[-2][1])
+        self.assertEqual(len(timeline), 5)
+        self.assertIn("唯一 Hook 请求与关联 Audit", timeline[-4][1])
+        self.assertIn("执行前拒绝", timeline[-3][1])
+        self.assertIn("场景风险说明（验收合同）", timeline[-2][1])
         self.assertIn("独立后置条件", timeline[-1][1])
+
+    @staticmethod
+    def guard_audit_for_request(
+        request: dict[str, object],
+        *,
+        decision: str,
+        guard_risk_level: str,
+        effective_risk_level: str,
+        matched_rule: str,
+    ) -> dict[str, object]:
+        return {
+            "toolKey": "agent_guard.evaluate",
+            "status": "success" if decision == "allow" else "denied",
+            "policyDecision": decision,
+            "riskLevel": effective_risk_level,
+            "inputRedactedJson": {
+                "adapter": request.get("adapter", ""),
+                "tool": request.get("tool", ""),
+                "actionType": request.get("actionType", ""),
+                "target": request.get("target", ""),
+                "targets": request.get("targets", []),
+                "networkMethod": request.get("networkMethod", ""),
+                "networkUrl": request.get("networkUrl", ""),
+                "isScript": request.get("isScript") is True,
+                "contentEncoding": request.get("contentEncoding", ""),
+                "contentHash": multi_demo.projected_audit_content_hash(
+                    str(request.get("content", ""))
+                ),
+                "guardDecision": decision,
+                "guardRiskLevel": guard_risk_level,
+                "riskLevel": effective_risk_level,
+            },
+            "explanation": {
+                "riskLevel": effective_risk_level,
+                "matchedRule": matched_rule,
+            },
+        }
 
     def test_render_transcript_keeps_section_spacing_without_blank_eof(self) -> None:
         transcript = multi_demo.render_transcript(

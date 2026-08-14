@@ -2,16 +2,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
+  actionEvidenceHeading,
   horizontalTabIndex,
   playbackDelayMilliseconds,
   RealCodexProof
 } from "./RealCodexProof";
 
 describe("真实 Codex 多场景预录面板", () => {
-  it("呈现五个可访问场景标签并默认选择低摩擦场景", () => {
+  it("呈现五个可访问场景标签并默认展示破坏性删除", () => {
     const html = renderToStaticMarkup(<RealCodexProof />);
 
-    expect(html).toContain("真实 Codex CLI · 五场景预录验收");
+    expect(html).toContain("看见危险动作被执行前拦下");
     expect(html).toContain('role="tablist"');
     expect(html.match(/role="tab"/g)).toHaveLength(5);
     expect(html).toContain('id="real-codex-tab-low-friction"');
@@ -20,34 +21,48 @@ describe("真实 Codex 多场景预录面板", () => {
     expect(html).toContain('id="real-codex-tab-network-egress"');
     expect(html).toContain('id="real-codex-tab-protected-write"');
     expect(html).toContain('aria-selected="true"');
+    expect(html.match(/aria-selected="true"/g)).toHaveLength(1);
     expect(html.match(/aria-controls="real-codex-panel"/g)).toHaveLength(5);
     expect(html).toContain('id="real-codex-panel"');
-    expect(html).toContain("allow / low");
+    expect(html).toContain("critical");
+    expect(html).toContain("root_delete");
+    expect(html).toContain("$ Remove-Item -Recurse .");
+    expect(html).toContain("执行前拒绝");
+    expect(html).toContain("场景风险说明");
+    expect(html).toContain("动作未执行");
+    expect(html).toContain("仓库根目录、sentinel、HEAD、tree 和干净工作区全部保持不变");
+    expect(html).toContain("验收场景指令");
+    expect(html).toContain("按验收合同复原的动作摘要");
+    expect(html).not.toContain("Agent 意图");
+    expect(html).not.toContain("实际工具调用摘要");
   });
 
-  it("明确展示证据边界且不冒充实时或交互审批", () => {
+  it("明确展示动作摘要来源且不冒充原始事件或交互审批", () => {
     const html = renderToStaticMarkup(<RealCodexProof />);
 
+    expect(html).toContain("历史验收合同复原");
+    expect(html).toContain("不是原始 Hook 或 Codex 事件");
     expect(html).toContain("预录，不是浏览器实时连接");
     expect(html).toContain("仅使用 synthetic 数据");
     expect(html).toContain("不包含真实凭据或 provider 身份");
     expect(html).toContain("不是 OS sandbox、EDR 或完整 DLP");
     expect(html).toContain("Codex ask 当前保守拒绝，不冒充交互审批");
-    expect(html).toContain("不是模型自报");
-    expect(html).toContain("仅在确有记录时展示");
     expect(html).toContain("查看公开脱敏证据");
   });
 
-  it("播放器默认不自动播放并只显示低摩擦录制的前三条事件", () => {
+  it("原始录制默认折叠，播放器不自动播放并只准备前三条事件", () => {
     const html = renderToStaticMarkup(<RealCodexProof />);
 
+    expect(html).toContain("<details");
+    expect(html).not.toContain("<details open");
+    expect(html).toContain("查看同步录制与验收日志");
     expect(html).toContain(">播放录制</button>");
     expect(html).toContain(">重置</button>");
     expect(html).not.toContain(">暂停</button>");
     expect(html.match(/class="real-codex-line /g)).toHaveLength(3);
     expect(html).toContain("自适应加速回放");
     expect(html).not.toContain("4×");
-    expect(html).toContain("代表性写入规则");
+    expect(html).toContain("root_delete");
   });
 
   it("按水平标签语义处理键盘，并保留上下方向键的页面滚动", () => {
@@ -65,12 +80,17 @@ describe("真实 Codex 多场景预录面板", () => {
     expect(playbackDelayMilliseconds(0, 10)).toBe(900);
   });
 
-  it("低摩擦首屏按证据状态呈现 Audit，不声称普通读取必有后端 Audit", () => {
+  it("在标题层区分 Hook 观测证据和合同复原摘要", () => {
+    expect(actionEvidenceHeading(true)).toBe("Hook 观测到的工具调用");
+    expect(actionEvidenceHeading(false)).toBe("按验收合同复原的动作摘要");
+  });
+
+  it("危险动作首屏呈现关联 Audit，不声称实时演示或交互审批", () => {
     const html = renderToStaticMarkup(<RealCodexProof />);
 
-    expect(html).toMatch(/Audit (已关联|不适用)/);
-    expect(html).toContain("workspace_write");
-    expect(html).toContain("代表性写入规则 agent-guard-safe-workspace-write-allow");
+    expect(html).toContain("Audit 已关联");
+    expect(html).toContain("critical deny Audit");
+    expect(html).toContain("guard-core-deny-floor");
     expect(html).not.toContain("每段录制都与 Guard Audit");
     expect(html).not.toContain("实时演示");
     expect(html).not.toContain("交互审批已完成");

@@ -46,6 +46,12 @@ export function horizontalTabIndex(
   }
 }
 
+export function actionEvidenceHeading(observed: boolean) {
+  return observed
+    ? "Hook 观测到的工具调用"
+    : "按验收合同复原的动作摘要";
+}
+
 function formatClock(milliseconds: number) {
   const seconds = Math.floor(milliseconds / 1000);
   const remainder = milliseconds % 1000;
@@ -91,7 +97,8 @@ function useReducedMotion() {
 }
 
 export function RealCodexProof() {
-  const [selectedId, setSelectedId] = useState<RealCodexScenarioId>("low-friction");
+  const [selectedId, setSelectedId] =
+    useState<RealCodexScenarioId>("destructive-delete");
   const selectedIndex = realCodexScenarios.findIndex((scenario) => scenario.id === selectedId);
   const selectedScenario = realCodexScenarios[selectedIndex];
   const events = selectedScenario.recordingData.events;
@@ -152,9 +159,10 @@ export function RealCodexProof() {
   }
 
   function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    const focusedIndex = tabRefs.current.indexOf(event.currentTarget);
     const nextIndex = horizontalTabIndex(
       event.key,
-      selectedIndex,
+      focusedIndex >= 0 ? focusedIndex : selectedIndex,
       realCodexScenarios.length
     );
     if (nextIndex === null) {
@@ -185,20 +193,29 @@ export function RealCodexProof() {
     setVisibleCount(reducedMotion ? events.length : initialEventCount(events.length));
   }
 
-  const decisionLabel = selectedScenario.decision === "allow" ? "允许" : "拒绝";
+  const decisionAction =
+    selectedScenario.decision === "allow" ? "允许执行" : "执行前拒绝";
+  const executionLabel =
+    selectedScenario.actionEvidence.execution === "completed"
+      ? "动作已完成"
+      : "动作未执行";
   const auditLabel =
     selectedScenario.auditStatus === "correlated" ? "Audit 已关联" : "Audit 不适用";
+  const evidenceSourceLabel = selectedScenario.actionEvidence.observed
+    ? "唯一 Hook 请求匹配"
+    : "历史验收合同复原";
+  const evidenceSourceDetail = selectedScenario.actionEvidence.observed
+    ? "验收器从唯一 Hook 请求及其对应 Audit 生成动作摘要，不是 Codex 原始终端事件。"
+    : "当前历史 v2 未保存动作摘要；这里按已通过验收的场景合同与运行平台复原，不是原始 Hook 或 Codex 事件。";
 
   return (
     <section className="real-codex-proof" id="real-codex-proof" aria-labelledby="real-codex-title">
       <header className="real-codex-header">
         <div>
           <p className="real-codex-kicker">真实客户端证据 · {realCodexProof.publishedAt}</p>
-          <h3 id="real-codex-title">真实 Codex CLI · 五场景预录验收</h3>
+          <h3 id="real-codex-title">看见危险动作被执行前拦下</h3>
           <p>
-            以正常开发为默认入口，再切换检查敏感读取、破坏性删除、synthetic
-            外传和项目保护写入。每段都核对同步事件与独立后置条件；仅在确有记录时展示
-            Audit 关联。
+            先看工具调用，再看拒绝理由和独立后置检查。每条动作摘要都标明证据来源。
           </p>
         </div>
         <span className="real-codex-status">
@@ -263,18 +280,103 @@ export function RealCodexProof() {
           <div>
             <span>场景 {String(selectedIndex + 1).padStart(2, "0")}</span>
             <h4>{selectedScenario.title}</h4>
-            <p>{selectedScenario.description}</p>
-          </div>
-          <div className={`real-codex-decision real-codex-decision-${selectedScenario.decision}`}>
-            <small>Guard 决策</small>
-            <strong>{decisionLabel}</strong>
-            <code>
-              {selectedScenario.decision} / {selectedScenario.riskLevel}
-            </code>
           </div>
         </div>
 
-        <div className="real-codex-grid">
+        <div className="real-codex-story-layout">
+          <ol className="real-codex-story" aria-label={`${selectedScenario.label}动作链`}>
+            <li className="real-codex-story-step real-codex-story-intent">
+              <span className="real-codex-story-index">01</span>
+              <div>
+                <small>验收场景指令</small>
+                <strong>{selectedScenario.actionEvidence.intent}</strong>
+              </div>
+            </li>
+
+            <li className="real-codex-story-step real-codex-story-action">
+              <span className="real-codex-story-index">02</span>
+              <div>
+                <small>
+                  {actionEvidenceHeading(selectedScenario.actionEvidence.observed)}
+                </small>
+                <code>{selectedScenario.actionEvidence.display}</code>
+                <p>
+                  工具 {selectedScenario.actionEvidence.tool} · 目标{" "}
+                  {selectedScenario.target}
+                </p>
+              </div>
+            </li>
+
+            <li
+              className={`real-codex-story-step real-codex-story-decision real-codex-story-decision-${selectedScenario.decision}`}
+            >
+              <span className="real-codex-story-index">03</span>
+              <div>
+                <small>AgentToolGate · PreToolUse</small>
+                <strong>{decisionAction}</strong>
+                <p>
+                  场景风险说明：
+                  {selectedScenario.actionEvidence.riskExplanation}
+                </p>
+                <div className="real-codex-story-signals" aria-label="Guard 判定字段">
+                  <code>{selectedScenario.riskLevel}</code>
+                  <code>{selectedScenario.guardSignal}</code>
+                  <code>{selectedScenario.matchedRule}</code>
+                </div>
+              </div>
+            </li>
+
+            <li className="real-codex-story-step real-codex-story-result">
+              <span className="real-codex-story-index">04</span>
+              <div>
+                <small>独立后置检查</small>
+                <strong>{executionLabel}</strong>
+                <p>{selectedScenario.postconditionSummary}</p>
+              </div>
+            </li>
+          </ol>
+
+          <aside
+            className="real-codex-proof-notes"
+            aria-label={`${selectedScenario.label}证据说明`}
+          >
+            <div>
+              <span>证据来源</span>
+              <strong>{evidenceSourceLabel}</strong>
+              <p>{evidenceSourceDetail}</p>
+            </div>
+            <div>
+              <span>Audit</span>
+              <strong>{auditLabel}</strong>
+              <p>{selectedScenario.auditSummary}</p>
+            </div>
+            <div className="real-codex-shared-checks" aria-label="五场景共享可信条件">
+              <span>Hook trusted</span>
+              <span>无 trust bypass</span>
+              <span>清理通过</span>
+            </div>
+            <div className="real-codex-links">
+              <a href={realCodexProof.source.evidenceUrl} rel="noreferrer" target="_blank">
+                查看公开脱敏证据
+                <Icon name="external" />
+              </a>
+              <a href={realCodexProof.source.commitUrl} rel="noreferrer" target="_blank">
+                查看录制基线提交
+                <Icon name="external" />
+              </a>
+            </div>
+          </aside>
+        </div>
+
+        <details className="real-codex-raw-proof">
+          <summary>
+            <span>查看同步录制与验收日志</span>
+            <small>
+              {selectedScenario.recording.eventCount} events ·{" "}
+              {formatClock(selectedScenario.recording.durationMs)}
+            </small>
+          </summary>
+
           <div className="real-codex-terminal">
             <div className="real-codex-terminal-bar">
               <div aria-hidden="true">
@@ -283,9 +385,7 @@ export function RealCodexProof() {
                 <span />
               </div>
               <strong>codex.exec / {selectedScenario.label}</strong>
-              <small>
-                {formatClock(selectedScenario.recording.durationMs)} · 自适应加速回放
-              </small>
+              <small>自适应加速回放</small>
             </div>
 
             <div
@@ -312,16 +412,6 @@ export function RealCodexProof() {
                   _
                 </span>
               ) : null}
-            </div>
-
-            <div
-              className={`real-codex-verdict real-codex-verdict-${selectedScenario.decision}`}
-            >
-              <span>{selectedScenario.decision === "deny" ? "PreToolUse" : "Guard"}</span>
-              <strong>
-                {selectedScenario.decision} · {selectedScenario.target}
-              </strong>
-              <code>{selectedScenario.matchedRule}</code>
             </div>
 
             {reducedMotion ? (
@@ -355,69 +445,7 @@ export function RealCodexProof() {
               </div>
             )}
           </div>
-
-          <aside className="real-codex-evidence" aria-label={`${selectedScenario.label}验收证据`}>
-            <div className="real-codex-evidence-heading">
-              <span>同步证据与后置检查</span>
-              <strong>不是模型自报</strong>
-            </div>
-
-            <dl className="real-codex-checks">
-              <div>
-                <dt>动作目标</dt>
-                <dd>
-                  <strong>{selectedScenario.target}</strong>
-                  <code>{selectedScenario.guardSignal}</code>
-                  <small>
-                    动作 {selectedScenario.actionType} ·{" "}
-                    {selectedScenario.id === "low-friction" ? "代表性写入规则" : "后端规则"}{" "}
-                    {selectedScenario.matchedRule}
-                  </small>
-                </dd>
-              </div>
-              <div>
-                <dt>执行结果</dt>
-                <dd>
-                  <strong>
-                    {selectedScenario.decision} / {selectedScenario.riskLevel}
-                  </strong>
-                  <p>{selectedScenario.outcome}</p>
-                </dd>
-              </div>
-              <div>
-                <dt>Audit</dt>
-                <dd>
-                  <strong>{auditLabel}</strong>
-                  <p>{selectedScenario.auditSummary}</p>
-                </dd>
-              </div>
-              <div>
-                <dt>执行后</dt>
-                <dd>
-                  <strong>独立后置条件</strong>
-                  <p>{selectedScenario.postconditionSummary}</p>
-                </dd>
-              </div>
-            </dl>
-
-            <div className="real-codex-shared-checks" aria-label="五场景共享可信条件">
-              <span>Hook {realCodexProof.sharedChecks.hookSource} / trusted</span>
-              <span>无 trust bypass</span>
-              <span>清理通过</span>
-            </div>
-
-            <div className="real-codex-links">
-              <a href={realCodexProof.source.evidenceUrl} rel="noreferrer" target="_blank">
-                查看公开脱敏证据
-                <Icon name="external" />
-              </a>
-              <a href={realCodexProof.source.commitUrl} rel="noreferrer" target="_blank">
-                查看录制基线提交
-                <Icon name="external" />
-              </a>
-            </div>
-          </aside>
-        </div>
+        </details>
       </div>
 
       <footer className="real-codex-boundaries">
