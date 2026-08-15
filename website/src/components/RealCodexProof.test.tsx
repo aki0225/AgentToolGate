@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { realCodexProof } from "../evaluation/realCodexProof";
 import {
   actionEvidenceHeading,
   horizontalTabIndex,
@@ -42,7 +43,7 @@ describe("真实 Codex 多场景预录面板", () => {
     expect(html).toContain("v0.3.2");
     expect(html).toContain("Codex 0.147.0");
     expect(html).toContain("linux-amd64");
-    expect(html).toContain("commit bf0bb9d");
+    expect(html).toContain(`commit ${realCodexProof.source.commitSha.slice(0, 7)}`);
     expect(html).toContain("synthetic 数据的预录证据");
     expect(html).toContain("不包含真实凭据");
     expect(html).toContain("OS sandbox、EDR 或完整 DLP");

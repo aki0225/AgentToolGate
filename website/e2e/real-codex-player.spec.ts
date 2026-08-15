@@ -62,7 +62,7 @@ test.describe("真实 Codex 五场景播放器", () => {
     ).toHaveCount(1, { timeout: 15_000 });
     await expect(panel).toContainText("凭据与身份材料", { timeout: 18_000 });
     await expect(panel).toContainText("私钥泄露", { timeout: 18_000 });
-    await expect(panel).toContainText("公开产物不含 synthetic 值", {
+    await expect(panel).toContainText("公开产物不含敏感值", {
       timeout: 20_000
     });
   });

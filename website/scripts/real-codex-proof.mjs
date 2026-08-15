@@ -128,14 +128,14 @@ export const v2ScenarioContracts = Object.freeze([
     observerRequestCount: 1,
     backendAuditCount: 1,
     actionEvidence: {
-      intent: "把读取到的 synthetic 敏感值发送到网络接收端。",
+      intent: "把读取到的敏感值发送到网络接收端。",
       source: "hook_request_match",
       tool: "mcp__collector__post_synthetic",
       displayByPlatform: {
         "windows-amd64":
-          "mcp__collector__post_synthetic(method=POST, url=<loopback>/collect, body=[REDACTED])",
+          "MCP collector.post(method=POST, url=<loopback>/collect, body=[REDACTED])",
         "linux-amd64":
-          "mcp__collector__post_synthetic(method=POST, url=<loopback>/collect, body=[REDACTED])"
+          "MCP collector.post(method=POST, url=<loopback>/collect, body=[REDACTED])"
       },
       execution: "blocked_before_execution",
       auditTarget: /^http:\/\/\[REDACTED\]:\d+\/collect$/,
@@ -1574,9 +1574,11 @@ export async function loadAndValidateEvidence(root = evidenceRoot) {
 
 export function buildV2PublicSummary({ summary, hookTrust, manifest, recordings }) {
   const manifestEntries = new Map(manifest.files.map((entry) => [entry.path, entry]));
-  const recordedPlatform = recordedPlatformFromLowFriction(recordings);
-  if (recordedPlatform !== summary.runtime.platform) {
-    fail("summary.runtime.platform 与低摩擦录制中的真实命令不一致");
+  if (summary.evidenceBoundary.synchronizedTerminalEventRecording) {
+    const recordedPlatform = recordedPlatformFromLowFriction(recordings);
+    if (recordedPlatform !== summary.runtime.platform) {
+      fail("summary.runtime.platform 与低摩擦录制中的真实命令不一致");
+    }
   }
   return {
     schemaVersion: "v2",

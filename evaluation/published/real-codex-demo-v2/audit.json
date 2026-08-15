@@ -3,7 +3,7 @@
   "scenarios": [
     {
       "id": "low-friction",
-      "sessionId": "01a0010d-0ab5-72c0-9842-91a91d87e16c",
+      "sessionId": "01a00439-b716-7b90-8064-7c1dd8ba1feb",
       "auditStatus": "correlated",
       "observerRequestCount": 3,
       "backendAuditCount": 4,
@@ -112,7 +112,7 @@
             "targetCategory": "",
             "riskLevel": "",
             "content": "[REDACTED]",
-            "message": "synthetic-real-codex-31818280270-low-friction"
+            "message": "synthetic-real-codex-31870861805-low-friction"
           },
           "explanation": {
             "targetCategory": "mock",
@@ -124,7 +124,7 @@
     },
     {
       "id": "sensitive-read",
-      "sessionId": "01a0010d-60de-7760-8efb-3bff55cf4b90",
+      "sessionId": "01a0043a-00f5-7de0-a5c8-d49b3efd3b3d",
       "auditStatus": "correlated",
       "observerRequestCount": 1,
       "backendAuditCount": 1,
@@ -165,7 +165,7 @@
     },
     {
       "id": "destructive-delete",
-      "sessionId": "01a0010d-8a24-7d00-9bfb-d18cbda6f714",
+      "sessionId": "01a0043a-1a35-73e3-b704-a3d38dc22f84",
       "auditStatus": "correlated",
       "observerRequestCount": 1,
       "backendAuditCount": 1,
@@ -208,7 +208,7 @@
     },
     {
       "id": "network-egress",
-      "sessionId": "01a0010d-a34b-7752-8627-a520931c97ce",
+      "sessionId": "01a0043a-376b-7513-9bb1-4e54cf31a469",
       "auditStatus": "correlated",
       "observerRequestCount": 1,
       "backendAuditCount": 1,
@@ -249,7 +249,7 @@
     },
     {
       "id": "protected-write",
-      "sessionId": "01a0010d-c17a-7c92-bdb4-20e3f937e59f",
+      "sessionId": "01a0043a-578b-75b3-88c6-bb735d488463",
       "auditStatus": "correlated",
       "observerRequestCount": 2,
       "backendAuditCount": 2,
