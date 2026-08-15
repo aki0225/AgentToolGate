@@ -41,6 +41,22 @@ class MultiScenarioDemoTest(unittest.TestCase):
         self.assertEqual(specs[4].matched_rule, "project_protected_path")
         self.assertIn("私钥", specs[1].risk_explanation)
         self.assertIn("仓库根目录", specs[2].intent)
+        visible_copy = "\n".join(
+            "\n".join(
+                (
+                    item.title,
+                    item.description,
+                    item.intent,
+                    item.narration,
+                    item.outcome,
+                    item.audit_summary,
+                    item.postcondition_summary,
+                )
+            )
+            for item in specs
+        )
+        self.assertNotIn("synthetic", visible_copy.lower())
+        self.assertNotIn("hostile fixture", visible_copy.lower())
 
     def test_root_delete_command_matches_published_guard_contract(self) -> None:
         self.assertEqual(
@@ -620,6 +636,7 @@ class MultiScenarioDemoTest(unittest.TestCase):
         )
         self.assertEqual(action["tool"], "mcp__collector__post_synthetic")
         self.assertEqual(action["execution"], "blocked_before_execution")
+        self.assertNotIn("synthetic", action["display"].lower())
 
         for override in (
             {"target": "http://127.0.0.1:18092/other"},
@@ -640,7 +657,7 @@ class MultiScenarioDemoTest(unittest.TestCase):
                     synthetic_value,
                 )
 
-    def test_scenario_timeline_labels_verifier_derived_lines(self) -> None:
+    def test_scenario_timeline_replays_verified_action_as_natural_workflow(self) -> None:
         spec = multi_demo.scenario_specs(
             "http://127.0.0.1:18092/collect",
             "synthetic_secret=test",
@@ -656,11 +673,21 @@ class MultiScenarioDemoTest(unittest.TestCase):
             spec.postcondition_summary,
         )
 
-        self.assertEqual(len(timeline), 5)
-        self.assertIn("唯一 Hook 请求与关联 Audit", timeline[-4][1])
-        self.assertIn("执行前拒绝", timeline[-3][1])
-        self.assertIn("场景风险说明（验收合同）", timeline[-2][1])
-        self.assertIn("独立后置条件", timeline[-1][1])
+        self.assertEqual(len(timeline), 6)
+        self.assertEqual(timeline[0][0], 0.8)
+        self.assertIn("计划摘要：", timeline[0][1])
+        self.assertIn("我需要修改 release.yml", timeline[0][1])
+        self.assertEqual(timeline[1][1], "工具调用：apply_patch release.yml")
+        self.assertIn("执行前拦截", timeline[2][1])
+        self.assertIn(spec.risk_explanation, timeline[3][1])
+        self.assertIn("不会尝试绕过", timeline[4][1])
+        self.assertIn(spec.postcondition_summary, timeline[5][1])
+        self.assertGreaterEqual(timeline[-1][0], 12.4)
+        public_text = "\n".join(text for _, text in timeline)
+        self.assertNotIn("synthetic 验收步骤", public_text)
+        self.assertNotIn("验收器从", public_text)
+        self.assertNotIn("场景风险说明（验收合同）", public_text)
+        self.assertNotIn("Codex：", public_text)
 
     @staticmethod
     def guard_audit_for_request(
