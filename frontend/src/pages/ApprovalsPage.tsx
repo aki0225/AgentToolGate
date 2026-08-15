@@ -1,13 +1,21 @@
 import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { CheckCircle2, CircleAlert, Clock, ExternalLink, RefreshCw, ShieldCheck, XCircle } from "lucide-react";
+import {
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  CircleAlert,
+  Clock,
+  ExternalLink,
+  RefreshCw,
+  ShieldCheck,
+  XCircle,
+} from "lucide-react";
 import {
   ApiError,
   approveApproval,
   connectApprovalStream,
-  getApiErrorMessage,
-  listApprovals,
-  listToolCalls,
+  listApprovalRequestsPage,
   rejectApproval,
 } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -30,20 +38,31 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { useI18n, type TranslationKey } from "../i18n";
 import { governanceActionLabel, governanceRiskLabel, governanceStatusLabel } from "../lib/governanceLabels";
-import type { ApprovalRequest } from "../types";
+import type {
+  ApprovalRequest,
+  ApprovalRequestPage,
+  ApprovalStatus,
+  ApprovalStatusCounts,
+} from "../types";
 
-type Feedback = {
+type FeedbackMessage = {
   kind: "success" | "error" | "warning";
   text: string;
   callId?: string;
-} | null;
+};
+
+type Feedback = FeedbackMessage | null;
+type Translate = ReturnType<typeof useI18n>["t"];
 
 const approvalTabs = [
   { value: "pending", labelKey: "approvals.tab.pending" },
   { value: "approved", labelKey: "approvals.tab.approved" },
   { value: "rejected", labelKey: "approvals.tab.rejected" },
   { value: "expired", labelKey: "approvals.tab.expired" },
-] satisfies Array<{ value: ApprovalRequest["status"]; labelKey: TranslationKey }>;
+  { value: "consumed", labelKey: "approvals.tab.consumed" },
+] satisfies Array<{ value: ApprovalStatus; labelKey: TranslationKey }>;
+
+const approvalPageSize = 20;
 
 const textareaClassName =
   "min-h-28 w-full rounded-[14px] border border-input bg-background/55 px-3 py-2 text-sm text-foreground ring-offset-background transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50";
@@ -61,64 +80,63 @@ export function ApprovalsPage() {
   // AuthContext 会先加载 workspace，再异步加载 me；me 未就绪时不能误判为无审批权限。
   const authReady = auth.me !== null || auth.error !== null;
   const canReview = canReviewApprovals(auth.me?.user.role);
-  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [approvalPage, setApprovalPage] = useState<ApprovalRequestPage>(() => emptyApprovalPage());
+  const [activeStatus, setActiveStatus] = useState<ApprovalStatus>("pending");
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [reviewDialog, setReviewDialog] = useState<ReviewDialogState>(null);
   const [reviewReason, setReviewReason] = useState("");
   const [localReviewerToken, setLocalReviewerToken] = useState("");
-  const [approvalCallIds, setApprovalCallIds] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     async function load() {
       if (!authReady) {
         setLoading(true);
         return;
       }
       if (!canReview) {
-        setApprovals([]);
-        setApprovalCallIds({});
-        setFeedback({ kind: "error", text: t("common.permissionDenied") });
+        setApprovalPage(emptyApprovalPage());
+        setListError(t("approvals.error.permissionDenied"));
         setLoading(false);
         return;
       }
       setLoading(true);
       try {
-        const [result, callsPage] = await Promise.all([
-          listApprovals(token, workspaceOrgId),
-          listToolCalls(token, workspaceOrgId, { page: 1, pageSize: 200 }).catch(() => null),
-        ]);
-        if (!cancelled) {
-          setApprovals(result.items);
-          setApprovalCallIds(
-            Object.fromEntries(
-              (callsPage?.items ?? [])
-                .filter((call) => call.approvalId)
-                .map((call) => [call.approvalId as string, call.id]),
-            ),
-          );
+        const result = await listApprovalRequestsPage(token, workspaceOrgId, {
+          status: activeStatus,
+          page,
+          pageSize: approvalPageSize,
+        }, controller.signal);
+        if (controller.signal.aborted) {
+          return;
         }
+        const normalizedTotalPages = Math.max(1, Math.ceil(result.total / result.pageSize));
+        if (page > normalizedTotalPages) {
+          setPage(normalizedTotalPages);
+          return;
+        }
+        setApprovalPage(result);
+        setListError(null);
       } catch (error) {
-        if (!cancelled) {
-          setFeedback({
-            kind: "error",
-            text: getApiErrorMessage(error, t("approvals.loadError"), t("common.permissionDenied")),
-          });
+        if (!controller.signal.aborted && !isAbortError(error)) {
+          setListError(approvalFailureFeedback(error, t, "approvals.loadError").text);
         }
       } finally {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setLoading(false);
         }
       }
     }
     void load();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [authReady, canReview, token, workspaceOrgId, refreshTick, t]);
+  }, [activeStatus, authReady, canReview, page, token, workspaceOrgId, refreshTick, t]);
 
   useEffect(() => {
     if (!workspaceOrgId || !canReview) {
@@ -185,6 +203,17 @@ export function ApprovalsPage() {
     setLocalReviewerToken("");
   }
 
+  function closeReviewDialog() {
+    setReviewDialog(null);
+    setReviewReason("");
+    setLocalReviewerToken("");
+  }
+
+  function refreshAfterReview() {
+    setPage(1);
+    setRefreshTick((tick) => tick + 1);
+  }
+
   async function handleReviewSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!reviewDialog) {
@@ -195,7 +224,7 @@ export function ApprovalsPage() {
 
   async function handleReview(approvalId: string, decision: "approve" | "reject", reason: string) {
     if (!canReview) {
-      setFeedback({ kind: "error", text: t("common.permissionDenied") });
+      setFeedback({ kind: "error", text: t("approvals.error.permissionDenied") });
       return;
     }
     setSavingId(approvalId);
@@ -203,20 +232,28 @@ export function ApprovalsPage() {
     try {
       const reviewerToken =
         auth.authMode === "local" && localReviewerToken.trim() ? localReviewerToken.trim() : token;
-      const response =
-        decision === "approve"
-          ? await approveApproval(approvalId, { reason }, reviewerToken, workspaceOrgId)
-          : await rejectApproval(approvalId, { reason }, reviewerToken, workspaceOrgId);
+      const response = decision === "approve"
+        ? await approveApproval(approvalId, { reason }, reviewerToken, workspaceOrgId)
+        : await rejectApproval(approvalId, { reason }, reviewerToken, workspaceOrgId);
+      const callId = firstNonEmptyText(response.approval.callId, response.toolCall.id);
 
-      setApprovals((current) =>
-        current.map((approval) => (approval.id === response.approval.id ? response.approval : approval))
-      );
-      setApprovalCallIds((current) => ({ ...current, [response.approval.id]: response.toolCall.id }));
-      if (decision === "reject") {
+      if (response.code === "approval_revalidation_failed") {
+        setFeedback({
+          kind: "error",
+          text: t("approvals.error.revalidationFailed"),
+          callId,
+        });
+      } else if (response.approval.status === "consumed") {
+        setFeedback({
+          kind: "warning",
+          text: t("approvals.consumedFeedback", { tool: response.approval.toolDisplayName }),
+          callId,
+        });
+      } else if (decision === "reject") {
         setFeedback({
           kind: "success",
           text: t("approvals.rejectedFeedback", { tool: response.approval.toolDisplayName }),
-          callId: response.toolCall.id,
+          callId,
         });
       } else {
         const executionStatus = response.toolCall.status.trim().toLowerCase();
@@ -224,7 +261,7 @@ export function ApprovalsPage() {
           setFeedback({
             kind: "success",
             text: t("approvals.approvedFeedback", { tool: response.approval.toolDisplayName }),
-            callId: response.toolCall.id,
+            callId,
           });
         } else if (executionStatus === "failed") {
           setFeedback({
@@ -233,13 +270,13 @@ export function ApprovalsPage() {
               tool: response.approval.toolDisplayName,
               error: "",
             }).replace(/[:：]\s*$/, ""),
-            callId: response.toolCall.id,
+            callId,
           });
         } else if (executionStatus === "approval_required") {
           setFeedback({
             kind: "warning",
             text: t("approvals.approvedPendingRetry", { tool: response.approval.toolDisplayName }),
-            callId: response.toolCall.id,
+            callId,
           });
         } else {
           setFeedback({
@@ -248,20 +285,18 @@ export function ApprovalsPage() {
               tool: response.approval.toolDisplayName,
               status: governanceStatusLabel(t, executionStatus),
             }),
-            callId: response.toolCall.id,
+            callId,
           });
         }
       }
-      setReviewDialog(null);
-      setReviewReason("");
-      setLocalReviewerToken("");
+      closeReviewDialog();
+      refreshAfterReview();
     } catch (error) {
-      setFeedback({
-        kind: "error",
-        text: error instanceof ApiError && error.status === 403
-          ? t("common.permissionDenied")
-          : t("approvals.actionError"),
-      });
+      setFeedback(approvalFailureFeedback(error, t, "approvals.actionError"));
+      if (approvalStateIsStale(error)) {
+        closeReviewDialog();
+        refreshAfterReview();
+      }
     } finally {
       setSavingId(null);
     }
@@ -314,9 +349,9 @@ export function ApprovalsPage() {
               </TableCell>
               <TableCell>
                 <div className="flex justify-end gap-2">
-                  {approvalCallIds[approval.id] ? (
+                  {approval.callId ? (
                     <Button asChild type="button" size="sm" variant="outline">
-                      <Link to={`/audit?call=${encodeURIComponent(approvalCallIds[approval.id])}`}>
+                      <Link to={`/audit?call=${encodeURIComponent(approval.callId)}`}>
                         <ExternalLink className="h-4 w-4" />
                         {t("approvals.reviewDialog.openAudit")}
                       </Link>
@@ -324,23 +359,23 @@ export function ApprovalsPage() {
                   ) : null}
                   {approval.status === "pending" && canReview ? (
                     <>
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={savingId === approval.id}
-                      onClick={() => openReviewDialog(approval, "approve")}
-                    >
-                      {t("approvals.approve")}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="destructive"
-                      disabled={savingId === approval.id}
-                      onClick={() => openReviewDialog(approval, "reject")}
-                    >
-                      {t("approvals.reject")}
-                    </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        disabled={loading || savingId === approval.id}
+                        onClick={() => openReviewDialog(approval, "approve")}
+                      >
+                        {t("approvals.approve")}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="destructive"
+                        disabled={loading || savingId === approval.id}
+                        onClick={() => openReviewDialog(approval, "reject")}
+                      >
+                        {t("approvals.reject")}
+                      </Button>
                     </>
                   ) : (
                     <span className="self-center text-sm text-muted-foreground">{t("approvals.reviewComplete")}</span>
@@ -355,9 +390,16 @@ export function ApprovalsPage() {
   }
 
   const selectedApproval = reviewDialog?.approval ?? null;
-  const selectedCallId = selectedApproval ? approvalCallIds[selectedApproval.id] : undefined;
+  const selectedCallId = selectedApproval?.callId || undefined;
   const selectedDecisionSummary = selectedApproval ? buildDecisionSummary(selectedApproval) : null;
   const selectedRiskLevel = selectedApproval ? approvalRiskLevel(selectedApproval) : "";
+  const totalApprovalCount = Math.max(
+    approvalPage.total,
+    Object.values(approvalPage.statusCounts).reduce((total, count) => total + count, 0),
+  );
+  const totalPages = Math.max(1, Math.ceil(approvalPage.total / approvalPage.pageSize));
+  const activeTabLabelKey =
+    approvalTabs.find((tab) => tab.value === activeStatus)?.labelKey ?? "approvals.tab.pending";
 
   return (
     <div className="grid gap-6">
@@ -411,9 +453,7 @@ export function ApprovalsPage() {
 
       <Dialog open={reviewDialog !== null} onOpenChange={(open) => {
         if (!open) {
-          setReviewDialog(null);
-          setReviewReason("");
-          setLocalReviewerToken("");
+          closeReviewDialog();
         }
       }}>
         <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
@@ -441,7 +481,7 @@ export function ApprovalsPage() {
                       </Link>
                     </Button>
                   ) : (
-                    <span className="text-xs text-muted-foreground">{t("approvals.reviewDialog.auditPending")}</span>
+                    <span className="text-xs text-muted-foreground">{t("approvals.reviewDialog.auditUnavailable")}</span>
                   )}
                 </div>
 
@@ -558,11 +598,7 @@ export function ApprovalsPage() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => {
-                  setReviewDialog(null);
-                  setReviewReason("");
-                  setLocalReviewerToken("");
-                }}
+                onClick={closeReviewDialog}
               >
                 {t("approvals.reviewDialog.cancel")}
               </Button>
@@ -585,51 +621,193 @@ export function ApprovalsPage() {
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <CardTitle>{t("approvals.queue.title")}</CardTitle>
-              <CardDescription>{t("approvals.queue.count", { count: approvals.length })}</CardDescription>
+              <CardDescription>{t("approvals.queue.count", { count: approvalPage.total })}</CardDescription>
             </div>
-            <Button type="button" variant="outline" onClick={() => setRefreshTick((tick) => tick + 1)}>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={loading}
+              onClick={() => setRefreshTick((tick) => tick + 1)}
+            >
               <RefreshCw className="h-4 w-4" />
               {t("approvals.refresh")}
             </Button>
           </div>
         </CardHeader>
-        <CardContent>
-          {loading ? (
-            <p className="m-0 text-sm text-muted-foreground">{t("approvals.loading")}</p>
-          ) : approvals.length === 0 ? (
-            <div className="grid gap-3 rounded-[20px] border border-border bg-white/[0.03] p-5 text-sm text-muted-foreground">
-              <p className="m-0">{t("approvals.empty.title")}</p>
-              <Button asChild variant="outline" className="w-fit">
-                <Link to="/tools">{t("approvals.empty.openTools")}</Link>
-              </Button>
-            </div>
-          ) : (
-            <Tabs defaultValue="pending">
-              <TabsList className="mb-4 flex w-fit">
-                {approvalTabs.map((tab) => {
-                  const count = approvals.filter((approval) => approval.status === tab.value).length;
-                  return (
-                    <TabsTrigger key={tab.value} value={tab.value} className="gap-2">
-                      {t(tab.labelKey)}
-                      <Badge variant={statusBadgeVariant(tab.value)}>{count}</Badge>
-                    </TabsTrigger>
-                  );
-                })}
-              </TabsList>
-              {approvalTabs.map((tab) => (
-                <TabsContent key={tab.value} value={tab.value}>
-                  {renderApprovalTable(
-                    approvals.filter((approval) => approval.status === tab.value),
-                    t("approvals.emptyTab", { status: t(tab.labelKey).toLowerCase() }),
-                  )}
-                </TabsContent>
-              ))}
-            </Tabs>
-          )}
+        <CardContent aria-busy={loading}>
+          {listError ? (
+            <p
+              className="mb-4 rounded-[14px] border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+              role="alert"
+            >
+              {listError}
+            </p>
+          ) : null}
+          <Tabs
+            value={activeStatus}
+            onValueChange={(value) => {
+              if (!isApprovalStatus(value) || value === activeStatus) {
+                return;
+              }
+              setListError(null);
+              setLoading(true);
+              setActiveStatus(value);
+              setPage(1);
+              setApprovalPage((current) => ({
+                items: [],
+                total: current.statusCounts[value],
+                page: 1,
+                pageSize: current.pageSize,
+                statusCounts: current.statusCounts,
+              }));
+            }}
+          >
+            <TabsList className="mb-4 flex w-fit max-w-full overflow-x-auto">
+              {approvalTabs.map((tab) => {
+                const count = approvalPage.statusCounts[tab.value];
+                return (
+                  <TabsTrigger key={tab.value} value={tab.value} className="gap-2">
+                    {t(tab.labelKey)}
+                    <Badge variant={statusBadgeVariant(tab.value)}>{count}</Badge>
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
+            <TabsContent value={activeStatus}>
+              {loading ? (
+                <p className="mb-4 text-sm text-muted-foreground" role="status" aria-live="polite">
+                  {t("approvals.loading")}
+                </p>
+              ) : null}
+              {!loading && totalApprovalCount === 0 ? (
+                <div className="grid gap-3 rounded-[20px] border border-border bg-white/[0.03] p-5 text-sm text-muted-foreground">
+                  <p className="m-0">{t("approvals.empty.title")}</p>
+                  <Button asChild variant="outline" className="w-fit">
+                    <Link to="/tools">{t("approvals.empty.openTools")}</Link>
+                  </Button>
+                </div>
+              ) : loading && approvalPage.items.length === 0 ? null : (
+                renderApprovalTable(
+                  approvalPage.items,
+                  t("approvals.emptyTab", {
+                    status: t(activeTabLabelKey).toLowerCase(),
+                  }),
+                )
+              )}
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+                <span className="text-sm text-muted-foreground">
+                  {t("approvals.pagination", {
+                    page,
+                    totalPages,
+                    total: approvalPage.total,
+                  })}
+                </span>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={page <= 1}
+                    onClick={() => {
+                      setListError(null);
+                      setPage(Math.max(1, page - 1));
+                    }}
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    {t("approvals.pagination.previous")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={page >= totalPages}
+                    onClick={() => {
+                      setListError(null);
+                      setPage(Math.min(totalPages, page + 1));
+                    }}
+                  >
+                    {t("approvals.pagination.next")}
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            </TabsContent>
+          </Tabs>
         </CardContent>
       </Card>
     </div>
   );
+}
+
+function approvalFailureFeedback(
+  error: unknown,
+  t: Translate,
+  fallbackKey: "approvals.loadError" | "approvals.actionError",
+): FeedbackMessage {
+  if (error instanceof TypeError || (error instanceof ApiError && error.status >= 500)) {
+    return { kind: "error", text: t("approvals.error.serviceUnavailable") };
+  }
+  if (error instanceof ApiError) {
+    switch (error.code) {
+      case "approval_expired":
+        return { kind: "warning", text: t("approvals.error.expired") };
+      case "approval_already_reviewed":
+        return { kind: "warning", text: t("approvals.error.alreadyReviewed") };
+      case "approval_revalidation_failed":
+        return { kind: "error", text: t("approvals.error.revalidationFailed") };
+      case "permission_denied":
+        return { kind: "error", text: t("approvals.error.permissionDenied") };
+      case "approval_self_review_denied":
+        return { kind: "error", text: t("approvals.error.selfReviewDenied") };
+      default:
+        if (error.status === 403) {
+          return { kind: "error", text: t("approvals.error.permissionDenied") };
+        }
+    }
+  }
+  return { kind: "error", text: t(fallbackKey) };
+}
+
+function approvalStateIsStale(error: unknown): boolean {
+  return error instanceof ApiError
+    && (error.code === "approval_expired" || error.code === "approval_already_reviewed");
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function emptyApprovalPage(): ApprovalRequestPage {
+  return {
+    items: [],
+    total: 0,
+    page: 1,
+    pageSize: approvalPageSize,
+    statusCounts: emptyApprovalStatusCounts(),
+  };
+}
+
+function emptyApprovalStatusCounts(): ApprovalStatusCounts {
+  return {
+    pending: 0,
+    approved: 0,
+    rejected: 0,
+    expired: 0,
+    consumed: 0,
+  };
+}
+
+function firstNonEmptyText(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function isApprovalStatus(value: unknown): value is ApprovalStatus {
+  return typeof value === "string" && approvalTabs.some((tab) => tab.value === value);
 }
 
 function statusBadgeVariant(status: string): "success" | "pending" | "destructive" | "secondary" {

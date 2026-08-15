@@ -73,14 +73,16 @@ test.describe("Requester 阶段", () => {
       await page.goto("/approvals");
       const pendingRow = page.getByRole("row").filter({ hasText: toolDisplayName });
       await expect(pendingRow).toBeVisible({ timeout: 30_000 });
-      await expect(pendingRow).toContainText("pending");
+      await expect(pendingRow).toContainText("待处理");
       await expect(pendingRow).toContainText(requesterSubject);
 
       await pendingRow.getByRole("button", { name: "批准" }).click();
       await expect(page.getByRole("heading", { name: "批准工具调用" })).toBeVisible();
       await page.getByLabel("审批备注").fill("self review must be blocked");
       await page.getByRole("button", { name: "批准并执行" }).click();
-      await expect(page.getByText("当前角色无权执行该操作")).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText("请求人不能审批自己的请求，请交由独立审批人处理。")).toBeVisible({
+        timeout: 30_000,
+      });
       await page.getByRole("button", { name: "关闭" }).click();
 
       const approvalAfterReview = await readApproval(api, createBody.approvalId!);
@@ -126,7 +128,7 @@ test.describe("Reviewer 阶段", () => {
       await page.goto("/approvals");
       const pendingRow = page.getByRole("row").filter({ hasText: toolDisplayName });
       await expect(pendingRow).toBeVisible({ timeout: 30_000 });
-      await expect(pendingRow).toContainText("pending");
+      await expect(pendingRow).toContainText("待处理");
       await expect(pendingRow).toContainText(approval?.requestedBy ?? "");
 
       await pendingRow.getByRole("button", { name: "批准" }).click();
@@ -139,7 +141,7 @@ test.describe("Reviewer 阶段", () => {
       await page.getByRole("tab", { name: "已批准" }).click();
       const approvedRow = page.getByRole("row").filter({ hasText: toolDisplayName });
       await expect(approvedRow).toBeVisible({ timeout: 30_000 });
-      await expect(approvedRow).toContainText("approved");
+      await expect(approvedRow).toContainText("已批准");
       await expect(approvedRow).toContainText(approvalReason);
       await expect(approvedRow).toContainText(reviewerSubject);
 

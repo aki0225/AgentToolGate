@@ -2,6 +2,10 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomUUID } from "node:crypto";
 import { expect, request, test, type Page } from "@playwright/test";
 
+const mockMcpPort = parseMockMcpPort(process.env.E2E_MCP_MOCK_PORT);
+const mockMcpListenHost = process.env.E2E_MCP_MOCK_LISTEN_HOST?.trim() || "127.0.0.1";
+const mockMcpConnectHost = process.env.E2E_MCP_MOCK_CONNECT_HOST?.trim() || "127.0.0.1";
+
 test("连接器：创建 MCP connector 并同步到工具列表", async ({ page }) => {
   const mockServer = await startMockMcpServer();
   const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -188,11 +192,8 @@ async function startMockMcpServer(): Promise<MockMcpServer> {
     res.end("not found");
   });
 
-  const listenHost = process.env.E2E_MCP_MOCK_LISTEN_HOST?.trim() || "127.0.0.1";
-  const connectHost = process.env.E2E_MCP_MOCK_CONNECT_HOST?.trim() || listenHost;
-
   await new Promise<void>((resolve) => {
-    server.listen(0, listenHost, resolve);
+    server.listen(mockMcpPort, mockMcpListenHost, resolve);
   });
 
   const address = server.address();
@@ -202,7 +203,7 @@ async function startMockMcpServer(): Promise<MockMcpServer> {
   }
 
   return {
-    url: `http://${connectHost}:${address.port}`,
+    url: `http://${mockMcpConnectHost}:${mockMcpPort}`,
     methods,
     async close() {
       await new Promise<void>((resolve) => {
@@ -214,6 +215,17 @@ async function startMockMcpServer(): Promise<MockMcpServer> {
       });
     },
   };
+}
+
+function parseMockMcpPort(raw: string | undefined): number {
+  if (!raw?.trim()) {
+    return 38081;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
+    throw new Error("E2E_MCP_MOCK_PORT must be a valid TCP port");
+  }
+  return parsed;
 }
 
 function buildMcpResponse(payload: { method?: string; id?: unknown }) {

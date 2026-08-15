@@ -204,8 +204,8 @@ func (h *governanceHarness) evaluateRequesterCannotSelfApprove(
 	}
 	switch {
 	case status == 403:
-		if errorBody.Error != "forbidden" {
-			return evaluation, fmt.Errorf("自批拒绝未返回稳定 forbidden 错误")
+		if errorBody.Code != "approval_self_review_denied" {
+			return evaluation, fmt.Errorf("自批拒绝未返回稳定机器码")
 		}
 		evaluation.Decision = model.DecisionDeny
 	case status >= 200 && status < 300:

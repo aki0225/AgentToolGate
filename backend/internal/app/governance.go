@@ -279,13 +279,13 @@ func (a *App) approvalReviewerForRequest(reqCtx RequestContext, requestedBy, rev
 		return approvalActorID(reqCtx), nil
 	}
 	if !strings.EqualFold(strings.TrimSpace(a.cfg.AuthMode), "local") {
-		return "", forbidden("approval requester cannot review their own approval")
+		return "", errApprovalSelfReviewDenied
 	}
 
 	expected := strings.TrimSpace(os.Getenv(localReviewerTokenEnv))
 	provided := strings.TrimSpace(reviewerToken)
 	if len(expected) < 24 || len(provided) == 0 || subtle.ConstantTimeCompare([]byte(expected), []byte(provided)) != 1 {
-		return "", forbidden("approval requester cannot review their own approval")
+		return "", errApprovalSelfReviewDenied
 	}
 	return localReviewerActorID, nil
 }

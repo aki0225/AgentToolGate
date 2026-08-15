@@ -124,7 +124,7 @@ AgentToolGate 不碰系统策略、注册表或 shell profile。Claude Code 的�
 
 `init` 同时生成 `.agenttoolgate/protected.json`。默认规则为空，不改变普通开发行为；你可以把核心算法、生产配置等 repo-relative 路径设置为“读取/修改需审批”或“直接拒绝”，也可以对 Hook 可见的网络写入增加项目级 host allowlist。规则只会收紧 Guard Core，不会把原本需要审批的动作改成静默放行。配置示例与边界见 [本地日常使用指南](docs/local-daily-use.md#配置项目内保护规则)。
 
-也可以从源码构建单二进制（需要 Go 1.26+ 与 Node.js 20+）：
+也可以从源码构建单二进制（需要 Go 1.26+ 与 Node.js 20.x）：
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
@@ -141,7 +141,8 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
   不会改变已发布附件。
 - 最新状态、已验证能力和维护边界见
   [当前项目状态](docs/current-status.md)；发布级证据见
-  [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)。
+  [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)，稳定版、开发门禁和历史
+  快照的统一入口见 [证据索引](docs/evidence-index.md)。
 
 ## 生产部署前必读
 
@@ -171,6 +172,8 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 
 ### 证据分层
 
+- **统一索引**：[证据索引](docs/evidence-index.md)区分当前稳定版证据、尚待远端
+  run 验证的开发门禁和历史版本快照。
 - **正式发布验收**：[v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)记录正式标签、
   双平台 Release workflow、附件 SHA256，以及使用正式 Linux 包完成的五场景真实
   Codex CLI 验收。
@@ -222,6 +225,7 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 ## 深入文档
 
 - [当前项目状态](docs/current-status.md)：稳定版本、维护基线、已验证能力和后续变更边界。
+- [证据索引](docs/evidence-index.md)：当前稳定版证据、v0.4 开发门禁和历史快照入口。
 - [架构说明](docs/architecture.md)：项目定位、REST/MCP/Local Action 主链路、核心模块、数据流与信任边界。
 - [MCP 治理](docs/mcp-governance.md)：MCP Inbound Streamable HTTP `/mcp`、SSE fallback `/mcp/sse`、MCP Outbound `mcp_<connector>.<tool>`、ATG 管理的 Connector Secret 与 Connector、Approval 的关系。
 - [本地动作防火墙](docs/local-action-firewall.md)：off / dry-run / live、`deny_with_ticket`、remembered allow、Claude / Codex 差异和 TOCTOU 风险。

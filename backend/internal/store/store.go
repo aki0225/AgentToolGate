@@ -57,6 +57,7 @@ type Store interface {
 	DeletePolicyRule(ctx context.Context, workspaceID, ruleID string) error
 
 	ListApprovalRequests(ctx context.Context, workspaceID string) ([]model.ApprovalRequest, error)
+	ListApprovalRequestsPage(ctx context.Context, workspaceID string, query model.ApprovalRequestQuery) (model.ApprovalRequestPage, error)
 	GetApprovalRequestByID(ctx context.Context, workspaceID, approvalID string) (model.ApprovalRequest, error)
 	CreateApprovalRequest(ctx context.Context, input model.CreateApprovalRequestInput) (model.ApprovalRequest, error)
 	UpdateApprovalRequest(ctx context.Context, workspaceID, approvalID string, input model.UpdateApprovalRequestInput) (model.ApprovalRequest, error)

@@ -26,10 +26,49 @@ const policyRuleColumnList = `
 `
 
 const approvalRequestColumnList = `
-	id, workspace_id, tool_key, tool_display_name, status, requested_by, reviewed_by, reason,
+	id, call_id, workspace_id, tool_key, tool_display_name, status, requested_by, reviewed_by, reason,
 	fingerprint, adapter, action_type, target, canonical_target, content_encoding, content_hash,
 	script_hash, resolved_file_identity, parent_identity, decision_payload_json, expires_at, created_at, updated_at
 `
+
+const (
+	postgresApprovalPageWorkspaceFilter = "workspace_id = $1"
+	postgresApprovalPageStatusFilter    = "status = $2"
+	postgresApprovalPageOrder           = "created_at DESC, id DESC"
+)
+
+const (
+	// 索引定义变化时提升版本后缀，避免 IF NOT EXISTS 静默保留旧定义。
+	postgresApprovalDefaultPageIndexName = "approval_requests_workspace_created_id_v1_idx"
+	postgresApprovalDefaultPageIndexSQL  = `CREATE INDEX CONCURRENTLY IF NOT EXISTS approval_requests_workspace_created_id_v1_idx
+		ON approval_requests (workspace_id, created_at DESC, id DESC)`
+	postgresApprovalStatusPageIndexName = "approval_requests_workspace_status_created_id_v1_idx"
+	postgresApprovalStatusPageIndexSQL  = `CREATE INDEX CONCURRENTLY IF NOT EXISTS approval_requests_workspace_status_created_id_v1_idx
+		ON approval_requests (workspace_id, status, created_at DESC, id DESC)`
+	postgresApprovalCallIndexName = "tool_calls_workspace_approval_created_id_v1_idx"
+	postgresApprovalCallIndexSQL  = `CREATE INDEX CONCURRENTLY IF NOT EXISTS tool_calls_workspace_approval_created_id_v1_idx
+		ON tool_calls (workspace_id, approval_id, created_at, id)
+		WHERE approval_id <> ''`
+	postgresApprovalCallIDBackfillSQL = `
+		WITH first_calls AS (
+			SELECT DISTINCT ON (linked_call.workspace_id, linked_call.approval_id)
+			       linked_call.workspace_id, linked_call.approval_id, linked_call.id
+			FROM tool_calls AS linked_call
+			JOIN approval_requests AS empty_approval
+			  ON empty_approval.workspace_id = linked_call.workspace_id
+			 AND empty_approval.id = linked_call.approval_id
+			 AND empty_approval.call_id = ''
+			WHERE linked_call.approval_id <> ''
+			ORDER BY linked_call.workspace_id, linked_call.approval_id, linked_call.created_at, linked_call.id
+		)
+		UPDATE approval_requests AS approval
+		SET call_id = first_call.id
+		FROM first_calls AS first_call
+		WHERE approval.call_id = ''
+		  AND approval.workspace_id = first_call.workspace_id
+		  AND approval.id = first_call.approval_id
+	`
+)
 
 const postgresSchemaAdvisoryLockKey int64 = 41740320240609
 
@@ -353,8 +392,21 @@ func (s *PostgresStore) GetToolCallByApprovalID(ctx context.Context, workspaceID
 		FROM tool_calls tc
 		LEFT JOIN approval_requests ar
 		       ON ar.id = tc.approval_id AND ar.workspace_id = tc.workspace_id
-		WHERE tc.workspace_id = $1 AND tc.approval_id = $2
-		ORDER BY CASE WHEN tc.status = 'approval_required' THEN 0 ELSE 1 END, tc.created_at ASC, tc.id ASC
+		WHERE tc.workspace_id = $1
+		  AND tc.id = COALESCE(
+			  NULLIF((
+				  SELECT linked_approval.call_id
+				  FROM approval_requests linked_approval
+				  WHERE linked_approval.workspace_id = $1 AND linked_approval.id = $2
+			  ), ''),
+			  (
+				  SELECT linked_call.id
+				  FROM tool_calls linked_call
+				  WHERE linked_call.workspace_id = $1 AND linked_call.approval_id = $2
+				  ORDER BY linked_call.created_at ASC, linked_call.id ASC
+				  LIMIT 1
+			  )
+		  )
 		LIMIT 1
 	`, workspaceID, approvalID)
 }
@@ -363,11 +415,16 @@ func (s *PostgresStore) CreateToolCall(ctx context.Context, input model.CreateTo
 	now := time.Now().UTC()
 	call := model.ToolCall{}
 	var explanationJSON []byte
-	approvalID := input.ApprovalID
-	if strings.TrimSpace(approvalID) == "" {
-		approvalID = ""
+	approvalID := strings.TrimSpace(input.ApprovalID)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return model.ToolCall{}, err
 	}
-	err := s.pool.QueryRow(ctx, `
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	err = tx.QueryRow(ctx, `
 		INSERT INTO tool_calls (
 			id, request_id, workspace_id, actor_id, actor_subject, actor_email, actor_name, tool_id, tool_key,
 			status, risk_level, policy_decision, approval_id, duration_ms, input_redacted_json, input_execution_json, output_redacted_json,
@@ -394,6 +451,18 @@ func (s *PostgresStore) CreateToolCall(ctx context.Context, input model.CreateTo
 		return model.ToolCall{}, err
 	}
 	call.Explanation = explanation
+	if approvalID != "" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE approval_requests
+			SET call_id = $3
+			WHERE workspace_id = $1 AND id = $2 AND call_id = ''
+		`, input.WorkspaceID, approvalID, call.ID); err != nil {
+			return model.ToolCall{}, mapPgErr(err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return model.ToolCall{}, mapPgErr(err)
+	}
 	return call, nil
 }
 
@@ -660,7 +729,7 @@ func (s *PostgresStore) ListApprovalRequests(ctx context.Context, workspaceID st
 		SELECT `+approvalRequestColumnList+`
 		FROM approval_requests
 		WHERE workspace_id = $1
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 	`, workspaceID)
 	if err != nil {
 		return nil, err
@@ -676,6 +745,102 @@ func (s *PostgresStore) ListApprovalRequests(ctx context.Context, workspaceID st
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (s *PostgresStore) ListApprovalRequestsPage(ctx context.Context, workspaceID string, query model.ApprovalRequestQuery) (model.ApprovalRequestPage, error) {
+	status, ok := NormalizeApprovalStatus(query.Status)
+	if !ok {
+		return model.ApprovalRequestPage{}, fmt.Errorf("unsupported approval status %q", query.Status)
+	}
+	page, pageSize, offset, err := normalizeApprovalPage(query.Page, query.PageSize)
+	if err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	if err := s.expirePendingApprovals(ctx, workspaceID); err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+	statusCounts := newApprovalStatusCounts()
+	countRows, err := tx.Query(ctx, `
+		SELECT status, COUNT(*)
+		FROM approval_requests
+		WHERE workspace_id = $1
+		GROUP BY status
+	`, workspaceID)
+	if err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	for countRows.Next() {
+		var itemStatus string
+		var count int64
+		if err := countRows.Scan(&itemStatus, &count); err != nil {
+			countRows.Close()
+			return model.ApprovalRequestPage{}, err
+		}
+		if normalized, valid := NormalizeApprovalStatus(itemStatus); valid && normalized != "" {
+			statusCounts[normalized] = count
+		}
+	}
+	countRows.Close()
+	if err := countRows.Err(); err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+
+	whereClause := postgresApprovalPageWorkspaceFilter
+	args := []any{workspaceID}
+	if status != "" {
+		args = append(args, status)
+		whereClause += " AND " + postgresApprovalPageStatusFilter
+	}
+	var total int64
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM approval_requests WHERE `+whereClause, args...).Scan(&total); err != nil {
+		return model.ApprovalRequestPage{}, mapPgErr(err)
+	}
+
+	pagedArgs := append(append([]any(nil), args...), pageSize, offset)
+	rows, err := tx.Query(ctx, fmt.Sprintf(`
+		SELECT %s
+		FROM approval_requests
+		WHERE %s
+		ORDER BY %s
+		LIMIT $%d OFFSET $%d
+	`, approvalRequestColumnList, whereClause, postgresApprovalPageOrder, len(args)+1, len(args)+2), pagedArgs...)
+	if err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	defer rows.Close()
+
+	items := make([]model.ApprovalRequest, 0)
+	for rows.Next() {
+		item, err := scanApprovalRequest(rows)
+		if err != nil {
+			return model.ApprovalRequestPage{}, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
+		return model.ApprovalRequestPage{}, mapPgErr(err)
+	}
+	return model.ApprovalRequestPage{
+		Items:        items,
+		Total:        total,
+		Page:         page,
+		PageSize:     pageSize,
+		StatusCounts: statusCounts,
+	}, nil
 }
 
 func (s *PostgresStore) ensureBuiltinConnectors(ctx context.Context, inputs []model.BootstrapConnectorInput) error {
@@ -707,11 +872,15 @@ func (s *PostgresStore) GetApprovalRequestByID(ctx context.Context, workspaceID,
 	if err := s.expirePendingApprovals(ctx, workspaceID); err != nil {
 		return model.ApprovalRequest{}, err
 	}
-	return s.getApprovalRequest(ctx, `
+	approval, err := scanApprovalRequest(s.pool.QueryRow(ctx, `
 		SELECT `+approvalRequestColumnList+`
 		FROM approval_requests
 		WHERE workspace_id = $1 AND id = $2
-	`, workspaceID, approvalID)
+	`, workspaceID, approvalID))
+	if err != nil {
+		return model.ApprovalRequest{}, mapPgErr(err)
+	}
+	return approval, nil
 }
 
 func (s *PostgresStore) CreateApprovalRequest(ctx context.Context, input model.CreateApprovalRequestInput) (model.ApprovalRequest, error) {
@@ -739,7 +908,7 @@ func (s *PostgresStore) CreateApprovalRequest(ctx context.Context, input model.C
 		strings.TrimSpace(input.CanonicalTarget), strings.TrimSpace(input.ContentEncoding), strings.TrimSpace(input.ContentHash),
 		strings.TrimSpace(input.ScriptHash), strings.TrimSpace(input.ResolvedFileIdentity), strings.TrimSpace(input.ParentIdentity),
 		mustJSON(defaultJSON(input.DecisionPayloadJSON)), expiresAt, now).Scan(
-		&approval.ID, &approval.WorkspaceID, &approval.ToolKey, &approval.ToolDisplayName, &approval.Status, &approval.RequestedBy,
+		&approval.ID, &approval.CallID, &approval.WorkspaceID, &approval.ToolKey, &approval.ToolDisplayName, &approval.Status, &approval.RequestedBy,
 		&approval.ReviewedBy, &approval.Reason, &approval.Fingerprint, &approval.Adapter, &approval.ActionType, &approval.Target,
 		&approval.CanonicalTarget, &approval.ContentEncoding, &approval.ContentHash, &approval.ScriptHash, &approval.ResolvedFileIdentity,
 		&approval.ParentIdentity, &approval.DecisionPayloadJSON, &approval.ExpiresAt, &approval.CreatedAt, &approval.UpdatedAt,
@@ -752,31 +921,20 @@ func (s *PostgresStore) CreateApprovalRequest(ctx context.Context, input model.C
 
 func (s *PostgresStore) UpdateApprovalRequest(ctx context.Context, workspaceID, approvalID string, input model.UpdateApprovalRequestInput) (model.ApprovalRequest, error) {
 	now := time.Now().UTC()
-	if err := s.expirePendingApprovals(ctx, workspaceID); err != nil {
-		return model.ApprovalRequest{}, err
-	}
-	current, err := s.getApprovalRequest(ctx, `
-		SELECT `+approvalRequestColumnList+`
-		FROM approval_requests
-		WHERE workspace_id = $1 AND id = $2
-	`, workspaceID, approvalID)
-	if err != nil {
-		return model.ApprovalRequest{}, err
-	}
-	if strings.EqualFold(strings.TrimSpace(current.Status), "expired") {
-		return model.ApprovalRequest{}, ErrExpired
-	}
 	approval := model.ApprovalRequest{}
-	err = s.pool.QueryRow(ctx, `
+	err := s.pool.QueryRow(ctx, `
 		UPDATE approval_requests
 		SET status = $3,
 		    reviewed_by = $4,
 		    reason = CASE WHEN $5 = '' THEN reason ELSE $5 END,
 		    updated_at = $6
-		WHERE workspace_id = $1 AND id = $2
+		WHERE workspace_id = $1
+		  AND id = $2
+		  AND status <> 'expired'
+		  AND NOT (status = 'pending' AND expires_at <= NOW())
 		RETURNING `+approvalRequestColumnList+`
 	`, workspaceID, approvalID, input.Status, strings.TrimSpace(input.ReviewedBy), strings.TrimSpace(input.Reason), now).Scan(
-		&approval.ID, &approval.WorkspaceID, &approval.ToolKey, &approval.ToolDisplayName, &approval.Status, &approval.RequestedBy,
+		&approval.ID, &approval.CallID, &approval.WorkspaceID, &approval.ToolKey, &approval.ToolDisplayName, &approval.Status, &approval.RequestedBy,
 		&approval.ReviewedBy, &approval.Reason, &approval.Fingerprint, &approval.Adapter, &approval.ActionType, &approval.Target,
 		&approval.CanonicalTarget, &approval.ContentEncoding, &approval.ContentHash, &approval.ScriptHash, &approval.ResolvedFileIdentity,
 		&approval.ParentIdentity, &approval.DecisionPayloadJSON, &approval.ExpiresAt, &approval.CreatedAt, &approval.UpdatedAt,
@@ -785,6 +943,9 @@ func (s *PostgresStore) UpdateApprovalRequest(ctx context.Context, workspaceID, 
 		mappedErr := mapPgErr(err)
 		if !errors.Is(mappedErr, ErrNotFound) {
 			return model.ApprovalRequest{}, mappedErr
+		}
+		if expireErr := s.expireApprovalByIDIfNeeded(ctx, workspaceID, approvalID); expireErr != nil {
+			return model.ApprovalRequest{}, expireErr
 		}
 		refreshedCurrent, getErr := s.getApprovalRequest(ctx, `
 			SELECT `+approvalRequestColumnList+`
@@ -804,9 +965,6 @@ func (s *PostgresStore) UpdateApprovalRequest(ctx context.Context, workspaceID, 
 
 func (s *PostgresStore) TransitionApprovalRequest(ctx context.Context, workspaceID, approvalID, fromStatus string, input model.UpdateApprovalRequestInput) (model.ApprovalRequest, error) {
 	now := time.Now().UTC()
-	if err := s.expirePendingApprovals(ctx, workspaceID); err != nil {
-		return model.ApprovalRequest{}, err
-	}
 	approval := model.ApprovalRequest{}
 	err := s.pool.QueryRow(ctx, `
 		UPDATE approval_requests
@@ -814,10 +972,13 @@ func (s *PostgresStore) TransitionApprovalRequest(ctx context.Context, workspace
 		    reviewed_by = $5,
 		    reason = CASE WHEN $6 = '' THEN reason ELSE $6 END,
 		    updated_at = $7
-		WHERE workspace_id = $1 AND id = $2 AND status = $3
+		WHERE workspace_id = $1
+		  AND id = $2
+		  AND status = $3
+		  AND ($3 <> 'pending' OR expires_at > NOW())
 		RETURNING `+approvalRequestColumnList+`
 	`, workspaceID, approvalID, strings.TrimSpace(fromStatus), strings.TrimSpace(input.Status), strings.TrimSpace(input.ReviewedBy), strings.TrimSpace(input.Reason), now).Scan(
-		&approval.ID, &approval.WorkspaceID, &approval.ToolKey, &approval.ToolDisplayName, &approval.Status, &approval.RequestedBy,
+		&approval.ID, &approval.CallID, &approval.WorkspaceID, &approval.ToolKey, &approval.ToolDisplayName, &approval.Status, &approval.RequestedBy,
 		&approval.ReviewedBy, &approval.Reason, &approval.Fingerprint, &approval.Adapter, &approval.ActionType, &approval.Target,
 		&approval.CanonicalTarget, &approval.ContentEncoding, &approval.ContentHash, &approval.ScriptHash, &approval.ResolvedFileIdentity,
 		&approval.ParentIdentity, &approval.DecisionPayloadJSON, &approval.ExpiresAt, &approval.CreatedAt, &approval.UpdatedAt,
@@ -828,6 +989,9 @@ func (s *PostgresStore) TransitionApprovalRequest(ctx context.Context, workspace
 	mappedErr := mapPgErr(err)
 	if !errors.Is(mappedErr, ErrNotFound) {
 		return model.ApprovalRequest{}, mappedErr
+	}
+	if expireErr := s.expireApprovalByIDIfNeeded(ctx, workspaceID, approvalID); expireErr != nil {
+		return model.ApprovalRequest{}, expireErr
 	}
 	current, getErr := s.getApprovalRequest(ctx, `
 		SELECT `+approvalRequestColumnList+`
@@ -905,6 +1069,7 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) (err error) {
 			ON policy_rules (workspace_id, priority, created_at, id)`,
 		`CREATE TABLE IF NOT EXISTS approval_requests (
 			id TEXT PRIMARY KEY,
+			call_id TEXT NOT NULL DEFAULT '',
 			workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
 			tool_key TEXT NOT NULL,
 			tool_display_name TEXT NOT NULL,
@@ -927,6 +1092,7 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) (err error) {
 			created_at TIMESTAMPTZ NOT NULL,
 			updated_at TIMESTAMPTZ NOT NULL
 		)`,
+		`ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS call_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS fingerprint TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS adapter TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS action_type TEXT NOT NULL DEFAULT ''`,
@@ -1018,6 +1184,46 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) (err error) {
 		if _, err := conn.Exec(ctx, statement); err != nil {
 			return err
 		}
+	}
+	for _, index := range []struct {
+		name      string
+		statement string
+	}{
+		{name: postgresApprovalCallIndexName, statement: postgresApprovalCallIndexSQL},
+		{name: postgresApprovalDefaultPageIndexName, statement: postgresApprovalDefaultPageIndexSQL},
+		{name: postgresApprovalStatusPageIndexName, statement: postgresApprovalStatusPageIndexSQL},
+	} {
+		if err := ensurePostgresIndexConcurrently(ctx, conn, index.name, index.statement); err != nil {
+			return err
+		}
+	}
+	if _, err := conn.Exec(ctx, postgresApprovalCallIDBackfillSQL); err != nil {
+		return fmt.Errorf("backfill postgres approval call id: %w", err)
+	}
+	return nil
+}
+
+func ensurePostgresIndexConcurrently(ctx context.Context, conn *pgxpool.Conn, indexName, statement string) error {
+	var valid bool
+	err := conn.QueryRow(ctx, `
+		SELECT index_state.indisvalid
+		FROM pg_index index_state
+		WHERE index_state.indexrelid = to_regclass($1)
+	`, indexName).Scan(&valid)
+	switch {
+	case err == nil && valid:
+		return nil
+	case err == nil:
+		identifier := pgx.Identifier{indexName}.Sanitize()
+		if _, dropErr := conn.Exec(ctx, `DROP INDEX CONCURRENTLY IF EXISTS `+identifier); dropErr != nil {
+			return fmt.Errorf("drop invalid postgres index %s: %w", indexName, dropErr)
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+	default:
+		return fmt.Errorf("inspect postgres index %s: %w", indexName, err)
+	}
+	if _, err := conn.Exec(ctx, statement); err != nil {
+		return fmt.Errorf("create postgres index %s concurrently: %w", indexName, err)
 	}
 	return nil
 }
@@ -1184,7 +1390,14 @@ func scanConnector(row interface{ Scan(...any) error }) (model.Connector, error)
 func scanApprovalRequest(row interface{ Scan(...any) error }) (model.ApprovalRequest, error) {
 	var approval model.ApprovalRequest
 	var decisionPayload []byte
-	if err := row.Scan(&approval.ID, &approval.WorkspaceID, &approval.ToolKey, &approval.ToolDisplayName, &approval.Status, &approval.RequestedBy, &approval.ReviewedBy, &approval.Reason, &approval.Fingerprint, &approval.Adapter, &approval.ActionType, &approval.Target, &approval.CanonicalTarget, &approval.ContentEncoding, &approval.ContentHash, &approval.ScriptHash, &approval.ResolvedFileIdentity, &approval.ParentIdentity, &decisionPayload, &approval.ExpiresAt, &approval.CreatedAt, &approval.UpdatedAt); err != nil {
+	destinations := []any{
+		&approval.ID, &approval.CallID, &approval.WorkspaceID, &approval.ToolKey, &approval.ToolDisplayName, &approval.Status,
+		&approval.RequestedBy, &approval.ReviewedBy, &approval.Reason, &approval.Fingerprint, &approval.Adapter,
+		&approval.ActionType, &approval.Target, &approval.CanonicalTarget, &approval.ContentEncoding,
+		&approval.ContentHash, &approval.ScriptHash, &approval.ResolvedFileIdentity, &approval.ParentIdentity,
+		&decisionPayload, &approval.ExpiresAt, &approval.CreatedAt, &approval.UpdatedAt,
+	}
+	if err := row.Scan(destinations...); err != nil {
 		return model.ApprovalRequest{}, err
 	}
 	approval.DecisionPayloadJSON = json.RawMessage(decisionPayload)
@@ -1192,7 +1405,15 @@ func scanApprovalRequest(row interface{ Scan(...any) error }) (model.ApprovalReq
 }
 
 func (s *PostgresStore) expirePendingApprovals(ctx context.Context, workspaceID string) error {
-	_, err := s.pool.Exec(ctx, `
+	return expirePendingApprovalsPostgres(ctx, s.pool, workspaceID)
+}
+
+type postgresApprovalExecer interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+func expirePendingApprovalsPostgres(ctx context.Context, executor postgresApprovalExecer, workspaceID string) error {
+	_, err := executor.Exec(ctx, `
 		UPDATE approval_requests
 		SET status = 'expired',
 		    updated_at = NOW()
@@ -1200,6 +1421,19 @@ func (s *PostgresStore) expirePendingApprovals(ctx context.Context, workspaceID 
 		  AND status = 'pending'
 		  AND expires_at <= NOW()
 	`, workspaceID)
+	return err
+}
+
+func (s *PostgresStore) expireApprovalByIDIfNeeded(ctx context.Context, workspaceID, approvalID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE approval_requests
+		SET status = 'expired',
+		    updated_at = NOW()
+		WHERE workspace_id = $1
+		  AND id = $2
+		  AND status = 'pending'
+		  AND expires_at <= NOW()
+	`, workspaceID, approvalID)
 	return err
 }
 

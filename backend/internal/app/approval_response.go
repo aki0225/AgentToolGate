@@ -13,6 +13,11 @@ import (
 const (
 	approvalExecutionFailedMessage    = "connector execution failed"
 	approvalRevalidationFailedMessage = "approval revalidation failed"
+	approvalExpiredCode               = "approval_expired"
+	approvalAlreadyReviewedCode       = "approval_already_reviewed"
+	approvalRevalidationFailedCode    = "approval_revalidation_failed"
+	approvalPermissionDeniedCode      = "permission_denied"
+	approvalSelfReviewDeniedCode      = "approval_self_review_denied"
 )
 
 var (
@@ -33,6 +38,7 @@ var (
 
 type approvalResponse struct {
 	ID                  string          `json:"id"`
+	CallID              string          `json:"callId"`
 	WorkspaceID         string          `json:"workspaceId"`
 	ToolKey             string          `json:"toolKey"`
 	ToolDisplayName     string          `json:"toolDisplayName"`
@@ -54,10 +60,19 @@ type approvalResponse struct {
 	UpdatedAt           time.Time       `json:"updatedAt"`
 }
 
+type approvalListResponse struct {
+	Items        []approvalResponse `json:"items"`
+	Total        int64              `json:"total"`
+	Page         int                `json:"page"`
+	PageSize     int                `json:"pageSize"`
+	StatusCounts map[string]int64   `json:"statusCounts"`
+}
+
 type approvalActionResponse struct {
 	Approval approvalResponse `json:"approval"`
 	ToolCall model.ToolCall   `json:"toolCall"`
 	Result   any              `json:"result,omitempty"`
+	Code     string           `json:"code,omitempty"`
 }
 
 func newApprovalResponses(approvals []model.ApprovalRequest) []approvalResponse {
@@ -71,6 +86,7 @@ func newApprovalResponses(approvals []model.ApprovalRequest) []approvalResponse 
 func newApprovalResponse(approval model.ApprovalRequest) approvalResponse {
 	return approvalResponse{
 		ID:                  approval.ID,
+		CallID:              approval.CallID,
 		WorkspaceID:         approval.WorkspaceID,
 		ToolKey:             approval.ToolKey,
 		ToolDisplayName:     approval.ToolDisplayName,
@@ -93,7 +109,20 @@ func newApprovalResponse(approval model.ApprovalRequest) approvalResponse {
 	}
 }
 
+func newApprovalListResponse(page model.ApprovalRequestPage) approvalListResponse {
+	return approvalListResponse{
+		Items:        newApprovalResponses(page.Items),
+		Total:        page.Total,
+		Page:         page.Page,
+		PageSize:     page.PageSize,
+		StatusCounts: page.StatusCounts,
+	}
+}
+
 func newApprovalActionResponse(approval model.ApprovalRequest, call model.ToolCall) approvalActionResponse {
+	if approval.CallID == "" {
+		approval.CallID = call.ID
+	}
 	safeCall := call
 	safeCall.InputRedactedJSON = redactApprovalJSON(safeCall.InputRedactedJSON)
 	safeCall.OutputRedactedJSON = redactApprovalJSON(safeCall.OutputRedactedJSON)
@@ -111,10 +140,15 @@ func newApprovalActionResponse(approval model.ApprovalRequest, call model.ToolCa
 	} else if strings.EqualFold(strings.TrimSpace(safeCall.Status), "success") {
 		_ = json.Unmarshal(defaultJSON(safeCall.OutputRedactedJSON), &result)
 	}
+	code := ""
+	if safeCall.ErrorMessage == approvalRevalidationFailedMessage {
+		code = approvalRevalidationFailedCode
+	}
 	return approvalActionResponse{
 		Approval: newApprovalResponse(approval),
 		ToolCall: safeCall,
 		Result:   result,
+		Code:     code,
 	}
 }
 

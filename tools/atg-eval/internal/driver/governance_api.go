@@ -21,6 +21,7 @@ type governanceAPI struct {
 
 type governanceErrorResponse struct {
 	Error string `json:"error"`
+	Code  string `json:"code"`
 }
 
 type governanceToolCallResponse struct {

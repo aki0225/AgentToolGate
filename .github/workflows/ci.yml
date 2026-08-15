@@ -9,10 +9,14 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   backend:
     name: Go
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: backend
@@ -27,7 +31,30 @@ jobs:
           cache-dependency-path: backend/go.sum
 
       - name: Test
-        run: go test ./...
+        run: go test -count=1 -timeout 60s ./...
+
+      - name: Vet
+        run: go vet ./...
+
+  backend-windows:
+    name: Go Windows
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: backend/go.sum
+
+      - name: Test
+        run: go test -count=1 -timeout 60s ./...
 
       - name: Vet
         run: go vet ./...
@@ -35,6 +62,7 @@ jobs:
   backend-postgres:
     name: Go Postgres
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     services:
       postgres:
         image: postgres:16
@@ -83,6 +111,7 @@ jobs:
   evaluation:
     name: Agent Safety Evaluation Contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       ATG_EVAL_REQUIRE_PYTHON: "1"
       GOCACHE: ${{ github.workspace }}/.tmp/ci-go-cache
@@ -111,6 +140,13 @@ jobs:
 
       - name: Test Claude Hook Bridge
         run: python .claude/hooks/test_agent_guard_pretool.py
+
+      - name: Test real Codex evidence scripts
+        run: python -m unittest discover -s scripts/real-codex-demo -p "test_*.py"
+
+      - name: Test release tag validation
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/tests/validate-release-tag.tests.ps1
 
       - name: Test evaluation tool
         run: go -C tools/atg-eval test -count=1 -timeout 60s ./...
@@ -295,6 +331,7 @@ jobs:
   frontend:
     name: Node
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: frontend
@@ -305,7 +342,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -321,6 +358,7 @@ jobs:
   website:
     name: 产品展示站
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: website
@@ -331,7 +369,7 @@ jobs:
       - name: 安装 Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: website/package-lock.json
 
@@ -365,6 +403,7 @@ jobs:
   smoke:
     name: 核心 smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs:
       - backend
       - frontend
@@ -379,6 +418,9 @@ jobs:
       E2E_HTTP_MOCK_CONNECT_HOST: 127.0.0.1
       E2E_HTTP_MOCK_LISTEN_HOST: 127.0.0.1
       E2E_HTTP_MOCK_PORT: "18080"
+      E2E_MCP_MOCK_CONNECT_HOST: 127.0.0.1
+      E2E_MCP_MOCK_LISTEN_HOST: 127.0.0.1
+      E2E_MCP_MOCK_PORT: "38081"
       E2E_VIDEO: "off"
       HOST: 127.0.0.1
       HTTP_ALLOWED_HOSTS: 127.0.0.1:18080,localhost:18080
@@ -387,6 +429,7 @@ jobs:
       LOCAL_ROLE: owner
       LOCAL_SUBJECT: ci-dev
       AUTH_MODE: local
+      MCP_ALLOWED_HOSTS: 127.0.0.1:38081
       OTEL_EXPORTER_OTLP_ENDPOINT: ""
       POLICY_CONFIG_PATH: ../configs/policies.yaml
       PORT: "8080"
@@ -406,7 +449,7 @@ jobs:
       - name: 安装 Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -465,6 +508,10 @@ jobs:
         working-directory: frontend
         run: npm run e2e -- e2e/approval-usability.spec.ts e2e/policies-role-guard.spec.ts e2e/local-real-demo.spec.ts
 
+      - name: 运行 Connector 回归
+        working-directory: frontend
+        run: npm run e2e -- e2e/connectors.spec.ts
+
       - name: 失败时上传 Playwright 诊断产物
         if: failure()
         uses: actions/upload-artifact@v4
@@ -482,6 +529,189 @@ jobs:
         run: |
           set +e
           for pidfile in "$RUNNER_TEMP/agenttoolgate-backend.pid" "$RUNNER_TEMP/agenttoolgate-frontend.pid"; do
+            if [[ -f "$pidfile" ]]; then
+              pid="$(cat "$pidfile")"
+              pkill -TERM -P "$pid" >/dev/null 2>&1 || true
+              kill "$pid" >/dev/null 2>&1 || true
+            fi
+          done
+
+  multi-actor-postgres:
+    name: PostgreSQL 多 Actor E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: agenttoolgate
+          POSTGRES_USER: agenttoolgate
+          POSTGRES_PASSWORD: agenttoolgate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agenttoolgate -d agenttoolgate"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CORS_ALLOWED_ORIGINS: http://127.0.0.1:5173
+      DATABASE_URL: postgres://agenttoolgate:agenttoolgate@127.0.0.1:5432/agenttoolgate?sslmode=disable
+      DEFAULT_WORKSPACE_ORG_ID: local-org
+      E2E_API_BASE_URL: http://127.0.0.1:8080
+      E2E_BASE_URL: http://127.0.0.1:5173
+      E2E_BROWSER_CHANNEL: chrome
+      E2E_MULTI_ACTOR_APPROVAL: "1"
+      E2E_VIDEO: "off"
+      E2E_WORKSPACE_ORG_ID: local-org
+      HOST: 127.0.0.1
+      OTEL_EXPORTER_OTLP_ENDPOINT: ""
+      PORT: "8080"
+      STORE_DRIVER: postgres
+      VITE_API_BASE_URL: http://127.0.0.1:8080
+      VITE_AUTH_MODE: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: backend/go.sum
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: frontend
+        run: npm ci
+
+      - name: 构建 backend
+        working-directory: backend
+        run: go build -buildvcs=false -o "$RUNNER_TEMP/agenttoolgate" ./cmd/server
+
+      - name: 准备两阶段运行标识
+        shell: bash
+        run: echo "E2E_MULTI_ACTOR_RUN_ID=ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+
+      - name: 启动 frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          frontend_log="$RUNNER_TEMP/agenttoolgate-multi-actor-frontend.log"
+          nohup npm run dev -- --host 127.0.0.1 --port 5173 --strictPort >"$frontend_log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/agenttoolgate-multi-actor-frontend.pid"
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:5173 >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$frontend_log" || true
+          exit 1
+        working-directory: frontend
+
+      - name: 运行 requester 阶段
+        shell: bash
+        run: |
+          set -euo pipefail
+          backend_log="$RUNNER_TEMP/agenttoolgate-multi-actor-requester.log"
+          cleanup() {
+            if [[ -f "$RUNNER_TEMP/agenttoolgate-multi-actor-backend.pid" ]]; then
+              pid="$(cat "$RUNNER_TEMP/agenttoolgate-multi-actor-backend.pid")"
+              pkill -TERM -P "$pid" >/dev/null 2>&1 || true
+              kill "$pid" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
+          nohup env \
+            AUTH_MODE=local \
+            LOCAL_SUBJECT="requester-${E2E_MULTI_ACTOR_RUN_ID}" \
+            LOCAL_EMAIL="requester+${E2E_MULTI_ACTOR_RUN_ID}@agenttoolgate.local" \
+            LOCAL_NAME="Requester ${E2E_MULTI_ACTOR_RUN_ID}" \
+            LOCAL_ROLE=owner \
+            POLICY_CONFIG_PATH="$GITHUB_WORKSPACE/configs/policies.yaml" \
+            "$RUNNER_TEMP/agenttoolgate" >"$backend_log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/agenttoolgate-multi-actor-backend.pid"
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then
+              E2E_MULTI_ACTOR_PHASE=requester npm run e2e -- e2e/multi-actor-approval.spec.ts
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$backend_log" || true
+          exit 1
+        working-directory: frontend
+
+      - name: 等待 requester backend 退出
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if ! curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 1
+          done
+          exit 1
+
+      - name: 运行 reviewer 阶段
+        shell: bash
+        run: |
+          set -euo pipefail
+          backend_log="$RUNNER_TEMP/agenttoolgate-multi-actor-reviewer.log"
+          cleanup() {
+            if [[ -f "$RUNNER_TEMP/agenttoolgate-multi-actor-backend.pid" ]]; then
+              pid="$(cat "$RUNNER_TEMP/agenttoolgate-multi-actor-backend.pid")"
+              pkill -TERM -P "$pid" >/dev/null 2>&1 || true
+              kill "$pid" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup EXIT
+          nohup env \
+            AUTH_MODE=local \
+            LOCAL_SUBJECT="reviewer-${E2E_MULTI_ACTOR_RUN_ID}" \
+            LOCAL_EMAIL="reviewer+${E2E_MULTI_ACTOR_RUN_ID}@agenttoolgate.local" \
+            LOCAL_NAME="Reviewer ${E2E_MULTI_ACTOR_RUN_ID}" \
+            LOCAL_ROLE=approver \
+            POLICY_CONFIG_PATH="$GITHUB_WORKSPACE/configs/policies.yaml" \
+            "$RUNNER_TEMP/agenttoolgate" >"$backend_log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/agenttoolgate-multi-actor-backend.pid"
+          for i in $(seq 1 120); do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then
+              E2E_MULTI_ACTOR_PHASE=reviewer npm run e2e -- e2e/multi-actor-approval.spec.ts
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$backend_log" || true
+          exit 1
+        working-directory: frontend
+
+      - name: 失败时上传多 Actor 诊断产物
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-actor-postgres-artifacts
+          path: |
+            frontend/playwright-report
+            frontend/test-results
+            ${{ runner.temp }}/agenttoolgate-multi-actor-frontend.log
+            ${{ runner.temp }}/agenttoolgate-multi-actor-requester.log
+            ${{ runner.temp }}/agenttoolgate-multi-actor-reviewer.log
+
+      - name: 停止多 Actor 服务
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          for pidfile in "$RUNNER_TEMP/agenttoolgate-multi-actor-backend.pid" "$RUNNER_TEMP/agenttoolgate-multi-actor-frontend.pid"; do
             if [[ -f "$pidfile" ]]; then
               pid="$(cat "$pidfile")"
               pkill -TERM -P "$pid" >/dev/null 2>&1 || true

@@ -25,7 +25,7 @@
 
 - Go：`go`
 - PostgreSQL：可选；如需本地 PG，请通过 `AGT_PG_CTL` / `AGT_PG_DATA` 指定路径
-- Node.js 20+
+- Node.js 20.x
 - 后端端口：`8080`
 - 前端端口：`5173`
 - 默认 workspace：`local-org`

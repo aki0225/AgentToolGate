@@ -13,11 +13,14 @@ ATG 当前选择由 `init codex` 生成 `.codex/config.toml`、`.codex/hooks/age
 默认 endpoint：
 
 ```text
-Codex Streamable HTTP:  http://127.0.0.1:8080/mcp
-Claude Streamable HTTP: http://127.0.0.1:8080/mcp
-SSE fallback:           http://127.0.0.1:8080/mcp/sse
-Workspace header:       X-Workspace-Org-Id: local-org
+MCP Inbound（Codex / Claude Code）: http://127.0.0.1:8080/mcp
+旧客户端 Inbound SSE fallback:     http://127.0.0.1:8080/mcp/sse
+Workspace header:                   X-Workspace-Org-Id: local-org
 ```
+
+这些片段描述 AI 客户端连接 ATG 的 MCP Inbound。ATG 管理的 MCP Connector 属于
+Outbound，当前配置中的 `transport` 必须是 `sse`，不能把 Inbound `/mcp` 的
+Streamable HTTP 支持写成 Outbound Connector 已支持同一传输。
 
 不要把真实敏感凭据、密钥明文、`.env` 内容或连接串密码写入这些片段。
 可复制的 JSON 片段根部只保留客户端可消费字段，说明文字放在本文档，不写进 Claude 配置 JSON。

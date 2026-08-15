@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.tmp/
+bin/
+dist/
+coverage/
+*.log
+*.out
+*.test
+**/__pycache__/

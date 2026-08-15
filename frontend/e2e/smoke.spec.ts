@@ -93,7 +93,7 @@ test("审批硬化：本地同一发起人不能自批，审批弹窗与错误�
   await expect(page.getByRole("heading", { name: "Approve tool call" })).toBeVisible();
   await page.getByLabel("Review note").fill("self review should be blocked");
   await page.getByRole("button", { name: "Approve and execute" }).click();
-  await expect(page.getByText(/Current role is not allowed to perform this action|当前角色无权执行该操作/)).toBeVisible({
+  await expect(page.getByText(/You cannot review your own request|请求人不能审批自己的请求/)).toBeVisible({
     timeout: 30_000,
   });
   await expect.poll(async () => readPendingApprovalCount(approvalsNav), { timeout: 15_000 }).toBe(approvalsBaseline + 1);

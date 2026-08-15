@@ -6,13 +6,17 @@
 >
 > 稳定版产品提交：`60dd6dbd5dc7e59defd83cbad5f2508d11f4ec98`
 >
-> 本页更新前的 `main` 基线：`234cc3c21e62de0914e19026547a2d52b721bbc4`
+> 本页更新前的 `main` 基线：`aa9efe7a95d1c9ad3d33430c0d9ecd2412cf540d`
 
 ## 1. 版本状态
 
 `v0.3.2` 已冻结，Release 标签与验收过的产品提交保持一致。正式附件、双平台
 Release workflow、原生 runner smoke，以及使用正式 Linux 包完成的五场景真实 Codex
 CLI 验收见 [`v0.3.2 发布验收`](v0.3.2-release-acceptance.md)。
+
+统一的稳定版、开发门禁和历史快照入口见
+[`证据索引`](evidence-index.md)。`v0.4` 仍是开发版本；开发分支新增的 CI 或 Release
+门禁只有在对应 GitHub Actions run 完成后才能记为通过证据。
 
 `v0.3.2` 之后的 `main` 目前只增加或维护：
 
@@ -39,7 +43,8 @@ CLI 验收见 [`v0.3.2 发布验收`](v0.3.2-release-acceptance.md)。
   Codex 五场景回放，不再展示早期 synthetic 交互状态机。
 - **展示站门禁**：类型检查、静态证据校验、Vitest、生产构建和 Playwright 浏览器交互。
 
-本页更新前的 `main` 已通过：
+以下运行记录保留为 `bf0bb9d` 阶段的历史快照，不用于证明当前 `main` 或尚未合入的
+`v0.4` 开发分支：
 
 - CI run
   [`31818092277`](https://github.com/aki0225/AgentToolGate/actions/runs/31818092277)。
@@ -49,6 +54,7 @@ CLI 验收见 [`v0.3.2 发布验收`](v0.3.2-release-acceptance.md)。
 ## 3. 当前使用入口
 
 - 安装和日常运行：[`README.md`](../README.md)。
+- 稳定版、开发门禁和历史快照：[`evidence-index.md`](evidence-index.md)。
 - 本地开发与 Hook control：[`local-daily-use.md`](local-daily-use.md)。
 - Codex / Claude 接入：[`ai-client-integration.md`](ai-client-integration.md)。
 - 项目内保护规则：[`project-protection-rules-live-dogfood.md`](project-protection-rules-live-dogfood.md)。
