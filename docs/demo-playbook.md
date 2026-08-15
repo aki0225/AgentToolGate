@@ -2,6 +2,10 @@
 
 > 读者：负责给业务、架构、安全或研发团队演示 AgentToolGate 的人。
 > 目标：用一轮可复现演示讲清“Agent 调工具前必须经过治理”的产品价值。
+>
+> 本文用于本地 Console、Connector、Policy、Approval 与 Audit 的现场演示，不是
+> GitHub Pages 展示站的实施说明。在线站只播放经过校验的真实 Codex 预录证据，见
+> [`real-codex-pages-demo.md`](real-codex-pages-demo.md)。
 
 ## 1. 演示主线
 

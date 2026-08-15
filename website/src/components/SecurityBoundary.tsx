@@ -1,15 +1,15 @@
 import { Icon } from "./Icon";
 
 const canDo = [
-  "让接入 ATG 的工具调用先经过确定性 Policy、硬护栏和必要的人工审批。",
-  "在批准后才执行冻结参数，并在 Connector Runtime 解析 env-backed Secret。",
-  "为主链路留下脱敏 Audit，并用一次性 ticket 保守处理本地高危动作。"
+  "接入 ATG 的调用先经过 Policy、硬护栏与必要审批。",
+  "批准后才执行冻结参数，并解析 env-backed Secret。",
+  "记录脱敏 Audit；本地高危动作使用一次性 ticket。"
 ];
 
 const cannotReplace = [
-  "OS sandbox、kernel enforcement、EDR、企业 DLP 或完整提示词注入防御。",
-  "KMS / Vault、完整凭据生命周期，以及所有 MCP transport 与 OAuth 场景。",
-  "生产身份、网络隔离、上游最小权限、企业 RBAC、告警、SLO 与灾备。"
+  "OS sandbox、EDR、企业 DLP 或完整提示词注入防御。",
+  "KMS / Vault、完整凭据生命周期与全部 MCP / OAuth 场景。",
+  "生产身份、网络隔离、最小权限、RBAC、告警与灾备。"
 ];
 
 const threatModelUrl =

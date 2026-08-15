@@ -18,9 +18,7 @@ test.describe("真实 Codex 五场景播放器", () => {
 
     await expect(page).toHaveURL(/#real-codex-proof$/);
     await expect(page.locator(proofSelector)).toBeInViewport();
-    await expect(page.locator(proofSelector)).toContainText(
-      "从行动意图，到执行前拦截"
-    );
+    await expect(page.locator(proofSelector)).toContainText("真实 Codex 回放");
   });
 
   test("默认展示破坏性删除的命令、拒绝理由和未发生后果", async ({ page }) => {

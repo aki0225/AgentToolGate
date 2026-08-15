@@ -1,5 +1,10 @@
 # 真实 Codex 五场景 Pages 展示改造计划
 
+> 状态：历史实施计划；五场景证据与播放器已完成，本文不再作为当前恢复入口。
+> 现行项目状态见 [`current-status.md`](current-status.md)，展示站验证方式见
+> [`website/README.md`](../website/README.md)，发布级结论见
+> [`v0.3.2-release-acceptance.md`](v0.3.2-release-acceptance.md)。
+
 ## 目标
 
 把现有单场景真实 Codex CLI 预录验收升级为五个彼此独立、可复核的短场景，并在 GitHub Pages 以可访问的多场景播放器展示。页面只消费经过严格校验的公开派生证据，不实时连接访问者电脑、AgentToolGate 或模型上游。

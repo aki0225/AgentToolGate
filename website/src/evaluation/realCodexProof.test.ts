@@ -181,6 +181,8 @@ describe("真实 Codex 多场景证据", () => {
       height: 24,
       title: "invalid"
     });
+    expect(() => parseRealCodexRecording("")).toThrow(/文件为空/);
+
     expect(() =>
       parseRealCodexRecording(
         [header, JSON.stringify([1, "o", "第一步\r\n"]), JSON.stringify([0.5, "i", "\u0007"])]

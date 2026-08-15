@@ -1,14 +1,19 @@
 # 真实 Codex 五场景展示交接
 
+> 本文是历史实施与证据追溯记录，不再作为当前恢复入口。文中的续做分支、PR、
+> 测试数量和播放器文案均记录当时状态；现行项目状态见
+> [`docs/current-status.md`](current-status.md)，现行展示站验证方式见
+> [`website/README.md`](../website/README.md)。
+>
 > 首次交接日期：2026-08-13
 >
 > 最近续做更新：2026-08-14
 >
-> 当前续做分支：`codex/real-codex-observed-evidence`
+> 交接时续做分支：`codex/real-codex-observed-evidence`
 >
-> 当前续做提交：`e1c462e`
+> 交接时续做提交：`e1c462e`
 >
-> 当前 PR：`#13`，交接时仍未合并，必须等待远端检查通过
+> 交接时 PR：`#13`，当时仍未合并，需等待远端检查通过
 >
 > 播放器初始实现提交：`6bb1459`
 >
@@ -16,7 +21,7 @@
 >
 > Playwright 浏览器门禁：`198a60b`
 >
-> 当前恢复入口：[`docs/current-status.md`](current-status.md)
+> 现行恢复入口：[`docs/current-status.md`](current-status.md)
 
 ## 2026-08-14：`observed=true` 真实重录续做状态
 

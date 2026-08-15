@@ -7,7 +7,7 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary"],
-      include: ["src/demo/stateMachine.ts"],
+      include: ["src/evaluation/realCodexProof.ts"],
       thresholds: {
         branches: 85,
         functions: 85,

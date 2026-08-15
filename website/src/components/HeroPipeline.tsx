@@ -25,21 +25,6 @@ const pipelineStages = [
   }
 ] as const;
 
-const pipelineFacts = [
-  {
-    label: "批准前",
-    value: "高风险调用不触达上游"
-  },
-  {
-    label: "Secret",
-    value: "不进入模型参数"
-  },
-  {
-    label: "Audit",
-    value: "只保存脱敏记录"
-  }
-] as const;
-
 export function HeroPipeline() {
   return (
     <figure className="hero-pipeline" aria-labelledby="hero-pipeline-title">
@@ -70,18 +55,9 @@ export function HeroPipeline() {
         ))}
       </div>
 
-      <div className="pipeline-facts">
-        {pipelineFacts.map((fact) => (
-          <div className="pipeline-fact" key={fact.label}>
-            <strong>{fact.label}</strong>
-            <span>{fact.value}</span>
-          </div>
-        ))}
-      </div>
-
       <figcaption className="pipeline-static-note">
         <Icon name="lock" />
-        合成静态演示，不执行命令、不连接 Connector 或上游服务。
+        静态示意，不执行真实调用。
       </figcaption>
     </figure>
   );
