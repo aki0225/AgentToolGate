@@ -8,14 +8,9 @@ import {
 } from "../evaluation/realCodexProof";
 import { Icon } from "./Icon";
 
-const playbackRate = 4;
-const minimumPlaybackDelayMs = 90;
-const maximumPlaybackDelayMs = 900;
-const initialEventLimit = 3;
-
-function initialEventCount(eventCount: number) {
-  return Math.min(initialEventLimit, eventCount);
-}
+const playbackRate = 1;
+const minimumPlaybackDelayMs = 160;
+const maximumPlaybackDelayMs = 10_000;
 
 export function playbackDelayMilliseconds(previousTime: number, nextTime: number) {
   return Math.min(
@@ -48,8 +43,8 @@ export function horizontalTabIndex(
 
 export function actionEvidenceHeading(observed: boolean) {
   return observed
-    ? "Hook 观测到的工具调用"
-    : "按验收合同复原的动作摘要";
+    ? "真实 Hook 请求"
+    : "验收合同复原";
 }
 
 function formatClock(milliseconds: number) {
@@ -63,8 +58,11 @@ function formatClock(milliseconds: number) {
 
 function eventTone(event: RealCodexRecordingEvent) {
   const text = event.text.toLowerCase();
-  if (event.text.startsWith("$ ")) {
+  if (event.text.startsWith("$ ") || event.text.startsWith("工具调用：")) {
     return "command";
+  }
+  if (event.text.startsWith("计划摘要：") || event.text.startsWith("响应摘要：")) {
+    return "agent";
   }
   if (event.text.startsWith("MCP ")) {
     return "mcp";
@@ -80,6 +78,10 @@ function eventTone(event: RealCodexRecordingEvent) {
     return "success";
   }
   return "system";
+}
+
+function hasTimelineEvent(events: RealCodexRecordingEvent[], prefixes: string[]) {
+  return events.some((event) => prefixes.some((prefix) => event.text.startsWith(prefix)));
 }
 
 function useReducedMotion() {
@@ -102,19 +104,28 @@ export function RealCodexProof() {
   const selectedIndex = realCodexScenarios.findIndex((scenario) => scenario.id === selectedId);
   const selectedScenario = realCodexScenarios[selectedIndex];
   const events = selectedScenario.recordingData.events;
-  const [visibleCount, setVisibleCount] = useState(() => initialEventCount(events.length));
+  const [visibleCount, setVisibleCount] = useState(0);
   const [playing, setPlaying] = useState(false);
   const screenRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const reducedMotion = useReducedMotion();
   const visibleEvents = events.slice(0, visibleCount);
   const complete = visibleCount >= events.length;
-  const progress = Math.round((visibleCount / events.length) * 100);
+  const progress = events.length === 0 ? 0 : Math.round((visibleCount / events.length) * 100);
   const currentTime = visibleEvents.at(-1)?.timeSeconds ?? 0;
+  const decisionRevealed =
+    reducedMotion ||
+    hasTimelineEvent(visibleEvents, ["AgentToolGate：", "AgentToolGate 决策："]);
+  const reasonRevealed =
+    reducedMotion ||
+    hasTimelineEvent(visibleEvents, ["原因：", "场景风险说明（验收合同）："]);
+  const resultRevealed =
+    reducedMotion ||
+    hasTimelineEvent(visibleEvents, ["验证：", "独立后置条件："]);
 
   useEffect(() => {
     setPlaying(false);
-    setVisibleCount(reducedMotion ? events.length : initialEventCount(events.length));
+    setVisibleCount(reducedMotion ? events.length : 0);
   }, [events, reducedMotion]);
 
   useEffect(() => {
@@ -151,11 +162,7 @@ export function RealCodexProof() {
     }
     setPlaying(false);
     setSelectedId(id);
-    setVisibleCount(
-      reducedMotion
-        ? nextScenario.recordingData.events.length
-        : initialEventCount(nextScenario.recordingData.events.length)
-    );
+    setVisibleCount(reducedMotion ? nextScenario.recordingData.events.length : 0);
   }
 
   function handleTabKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
@@ -190,37 +197,32 @@ export function RealCodexProof() {
 
   function resetPlayback() {
     setPlaying(false);
-    setVisibleCount(reducedMotion ? events.length : initialEventCount(events.length));
+    setVisibleCount(reducedMotion ? events.length : 0);
   }
 
   const decisionAction =
-    selectedScenario.decision === "allow" ? "允许执行" : "执行前拒绝";
+    selectedScenario.decision === "allow" ? "允许执行" : "执行前拦截";
   const executionLabel =
     selectedScenario.actionEvidence.execution === "completed"
       ? "动作已完成"
       : "动作未执行";
   const auditLabel =
     selectedScenario.auditStatus === "correlated" ? "Audit 已关联" : "Audit 不适用";
-  const evidenceSourceLabel = selectedScenario.actionEvidence.observed
-    ? "唯一 Hook 请求匹配"
-    : "历史验收合同复原";
   const evidenceSourceDetail = selectedScenario.actionEvidence.observed
-    ? "验收器从唯一 Hook 请求及其对应 Audit 生成动作摘要，不是 Codex 原始终端事件。"
+    ? "动作与决策由唯一 Hook 请求和关联 Audit 核对；计划与响应是公开摘要，不是模型原文。"
     : "当前历史 v2 未保存动作摘要；这里按已通过验收的场景合同与运行平台复原，不是原始 Hook 或 Codex 事件。";
 
   return (
     <section className="real-codex-proof" id="real-codex-proof" aria-labelledby="real-codex-title">
       <header className="real-codex-header">
         <div>
-          <p className="real-codex-kicker">真实客户端证据 · {realCodexProof.publishedAt}</p>
-          <h3 id="real-codex-title">看见危险动作被执行前拦下</h3>
-          <p>
-            先看工具调用，再看拒绝理由和独立后置检查。每条动作摘要都标明证据来源。
-          </p>
+          <p className="real-codex-kicker">真实 Codex 验证回放 · {realCodexProof.publishedAt}</p>
+          <h3 id="real-codex-title">从行动意图，到执行前拦截</h3>
+          <p>真实调用经 Hook、Audit 与后置检查对齐后，从零秒开始回放。</p>
         </div>
         <span className="real-codex-status">
           <Icon name="check" />
-          {realCodexScenarios.length} 段已核验证据
+          {realCodexScenarios.length} 个真实场景
         </span>
       </header>
 
@@ -228,8 +230,6 @@ export function RealCodexProof() {
         <span>{realCodexProof.runtime.releaseTag}</span>
         <span>Codex {realCodexProof.runtime.clientVersion}</span>
         <span>{realCodexProof.runtime.platform}</span>
-        <span>{realCodexProof.runtime.model}</span>
-        <span>commit {realCodexProof.source.commitSha.slice(0, 7)}</span>
       </div>
 
       <div
@@ -283,100 +283,7 @@ export function RealCodexProof() {
           </div>
         </div>
 
-        <div className="real-codex-story-layout">
-          <ol className="real-codex-story" aria-label={`${selectedScenario.label}动作链`}>
-            <li className="real-codex-story-step real-codex-story-intent">
-              <span className="real-codex-story-index">01</span>
-              <div>
-                <small>验收场景指令</small>
-                <strong>{selectedScenario.actionEvidence.intent}</strong>
-              </div>
-            </li>
-
-            <li className="real-codex-story-step real-codex-story-action">
-              <span className="real-codex-story-index">02</span>
-              <div>
-                <small>
-                  {actionEvidenceHeading(selectedScenario.actionEvidence.observed)}
-                </small>
-                <code>{selectedScenario.actionEvidence.display}</code>
-                <p>
-                  工具 {selectedScenario.actionEvidence.tool} · 目标{" "}
-                  {selectedScenario.target}
-                </p>
-              </div>
-            </li>
-
-            <li
-              className={`real-codex-story-step real-codex-story-decision real-codex-story-decision-${selectedScenario.decision}`}
-            >
-              <span className="real-codex-story-index">03</span>
-              <div>
-                <small>AgentToolGate · PreToolUse</small>
-                <strong>{decisionAction}</strong>
-                <p>
-                  场景风险说明：
-                  {selectedScenario.actionEvidence.riskExplanation}
-                </p>
-                <div className="real-codex-story-signals" aria-label="Guard 判定字段">
-                  <code>{selectedScenario.riskLevel}</code>
-                  <code>{selectedScenario.guardSignal}</code>
-                  <code>{selectedScenario.matchedRule}</code>
-                </div>
-              </div>
-            </li>
-
-            <li className="real-codex-story-step real-codex-story-result">
-              <span className="real-codex-story-index">04</span>
-              <div>
-                <small>独立后置检查</small>
-                <strong>{executionLabel}</strong>
-                <p>{selectedScenario.postconditionSummary}</p>
-              </div>
-            </li>
-          </ol>
-
-          <aside
-            className="real-codex-proof-notes"
-            aria-label={`${selectedScenario.label}证据说明`}
-          >
-            <div>
-              <span>证据来源</span>
-              <strong>{evidenceSourceLabel}</strong>
-              <p>{evidenceSourceDetail}</p>
-            </div>
-            <div>
-              <span>Audit</span>
-              <strong>{auditLabel}</strong>
-              <p>{selectedScenario.auditSummary}</p>
-            </div>
-            <div className="real-codex-shared-checks" aria-label="五场景共享可信条件">
-              <span>Hook trusted</span>
-              <span>无 trust bypass</span>
-              <span>清理通过</span>
-            </div>
-            <div className="real-codex-links">
-              <a href={realCodexProof.source.evidenceUrl} rel="noreferrer" target="_blank">
-                查看公开脱敏证据
-                <Icon name="external" />
-              </a>
-              <a href={realCodexProof.source.commitUrl} rel="noreferrer" target="_blank">
-                查看录制基线提交
-                <Icon name="external" />
-              </a>
-            </div>
-          </aside>
-        </div>
-
-        <details className="real-codex-raw-proof">
-          <summary>
-            <span>查看同步录制与验收日志</span>
-            <small>
-              {selectedScenario.recording.eventCount} events ·{" "}
-              {formatClock(selectedScenario.recording.durationMs)}
-            </small>
-          </summary>
-
+        <div className="real-codex-player-layout">
           <div className="real-codex-terminal">
             <div className="real-codex-terminal-bar">
               <div aria-hidden="true">
@@ -384,29 +291,36 @@ export function RealCodexProof() {
                 <span />
                 <span />
               </div>
-              <strong>codex.exec / {selectedScenario.label}</strong>
-              <small>自适应加速回放</small>
+              <strong>验证回放 · {selectedScenario.label}</strong>
+              <small>原始时间轴 · 从 00:00 开始</small>
             </div>
 
             <div
               aria-live="polite"
               aria-relevant="additions text"
-              aria-label={`${selectedScenario.label}同步事件录制`}
+              aria-label={`${selectedScenario.label}验证叙事回放`}
               className="real-codex-screen"
               ref={screenRef}
               role="log"
             >
-              <ol>
-                {visibleEvents.map((event, index) => (
-                  <li
-                    className={`real-codex-line real-codex-line-${eventTone(event)}`}
-                    key={`${event.timeSeconds}-${index}`}
-                  >
-                    <time>{event.timeSeconds.toFixed(3)}</time>
-                    <code>{event.text}</code>
-                  </li>
-                ))}
-              </ol>
+              {visibleEvents.length > 0 ? (
+                <ol>
+                  {visibleEvents.map((event, index) => (
+                    <li
+                      className={`real-codex-line real-codex-line-${eventTone(event)}`}
+                      key={`${event.timeSeconds}-${index}`}
+                    >
+                      <time>{event.timeSeconds.toFixed(3)}</time>
+                      <code>{event.text}</code>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <div className="real-codex-ready">
+                  <time>00:00.000</time>
+                  <code>等待播放</code>
+                </div>
+              )}
               {!complete ? (
                 <span className="real-codex-cursor" aria-hidden="true">
                   _
@@ -422,14 +336,14 @@ export function RealCodexProof() {
             ) : (
               <div className="real-codex-controls">
                 <button type="button" onClick={togglePlayback}>
-                  {playing ? "暂停" : complete ? "重新播放" : "播放录制"}
+                  {playing ? "暂停" : complete ? "从头重播" : "播放"}
                 </button>
                 <button
                   className="real-codex-control-secondary"
                   type="button"
                   onClick={resetPlayback}
                 >
-                  重置
+                  回到开头
                 </button>
                 <div
                   aria-label={`播放进度 ${progress}%`}
@@ -445,16 +359,81 @@ export function RealCodexProof() {
               </div>
             )}
           </div>
+
+          <aside className="real-codex-verdict" aria-label={`${selectedScenario.label}结果`}>
+            <div
+              className={`real-codex-verdict-decision ${
+                decisionRevealed
+                  ? `real-codex-verdict-${selectedScenario.decision}`
+                  : "real-codex-verdict-waiting"
+              }`}
+            >
+              <span>AgentToolGate</span>
+              <strong>{decisionRevealed ? decisionAction : "等待调用"}</strong>
+              {reasonRevealed ? (
+                <p>{selectedScenario.actionEvidence.riskExplanation}</p>
+              ) : null}
+              <code>
+                {decisionRevealed
+                  ? `${selectedScenario.riskLevel} · ${selectedScenario.guardSignal}`
+                  : "待判定"}
+              </code>
+            </div>
+            <div
+              className={`real-codex-verdict-result${
+                resultRevealed ? "" : " real-codex-verdict-waiting"
+              }`}
+            >
+              <span>最终结果</span>
+              <strong>{resultRevealed ? executionLabel : "等待验证"}</strong>
+              {resultRevealed ? <p>{selectedScenario.postconditionSummary}</p> : null}
+            </div>
+          </aside>
+        </div>
+
+        <details className="real-codex-methodology">
+          <summary>
+            <span>证据来源与安全边界</span>
+            <small>
+              {selectedScenario.recording.eventCount} 条事件 ·{" "}
+              {formatClock(selectedScenario.recording.durationMs)}
+            </small>
+          </summary>
+          <div className="real-codex-methodology-grid">
+            <div>
+              <span>证据</span>
+              <strong>
+                {actionEvidenceHeading(selectedScenario.actionEvidence.observed)} ·{" "}
+                {auditLabel}
+              </strong>
+              <p>
+                {evidenceSourceDetail} {selectedScenario.auditSummary}
+              </p>
+              <code>
+                {selectedScenario.matchedRule} · {realCodexProof.runtime.model} · commit{" "}
+                {realCodexProof.source.commitSha.slice(0, 7)}
+              </code>
+            </div>
+            <div>
+              <span>边界</span>
+              <p>
+                这是 synthetic 数据的预录证据，不包含真实凭据，也不声称替代 OS
+                sandbox、EDR 或完整 DLP。Codex ask 当前仍按保守拒绝处理。
+              </p>
+            </div>
+            <div className="real-codex-methodology-links">
+              <a href={realCodexProof.source.evidenceUrl} rel="noreferrer" target="_blank">
+                公开脱敏证据
+                <Icon name="external" />
+              </a>
+              <a href={realCodexProof.source.commitUrl} rel="noreferrer" target="_blank">
+                录制基线提交
+                <Icon name="external" />
+              </a>
+            </div>
+          </div>
         </details>
       </div>
-
-      <footer className="real-codex-boundaries">
-        <span>预录，不是浏览器实时连接</span>
-        <span>仅使用 synthetic 数据</span>
-        <span>不包含真实凭据或 provider 身份</span>
-        <span>不是 OS sandbox、EDR 或完整 DLP</span>
-        <span>Codex ask 当前保守拒绝，不冒充交互审批</span>
-      </footer>
     </section>
   );
 }

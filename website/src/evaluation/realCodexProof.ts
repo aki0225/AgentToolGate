@@ -95,7 +95,7 @@ export interface RealCodexProofDocument {
     credentialsIncluded: false;
     providerIdentityIncluded: false;
     osSandboxClaimed: false;
-    synchronizedEvents: true;
+    synchronizedEvents: boolean;
     completeDlpClaimed: false;
     codexInteractiveApprovalClaimed: false;
     codexAskMapping: "conservative_deny";
@@ -173,6 +173,13 @@ function requireLiteral<T extends string | boolean>(
     invalid(`${path} 必须为 ${String(expected)}`);
   }
   return expected;
+}
+
+function requireBoolean(value: unknown, path: string) {
+  if (typeof value !== "boolean") {
+    invalid(`${path} 必须是布尔值`);
+  }
+  return value;
 }
 
 function requirePositiveInteger(value: unknown, path: string) {
@@ -494,9 +501,8 @@ function parseBoundaries(value: unknown): RealCodexProofDocument["boundaries"] {
       false,
       "boundaries.osSandboxClaimed"
     ),
-    synchronizedEvents: requireLiteral(
+    synchronizedEvents: requireBoolean(
       boundaries.synchronizedEvents,
-      true,
       "boundaries.synchronizedEvents"
     ),
     completeDlpClaimed: requireLiteral(

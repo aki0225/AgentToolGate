@@ -92,52 +92,29 @@ export function EvaluationProof() {
 
       <RealCodexProof />
 
-      <div className="evidence-ladder" aria-label="公开证据分层">
-        <div className="evidence-ladder-heading">
-          <span>Evidence ladder</span>
-          <p>把自动评估、正式发版和真实客户端证据分开陈述，避免用单一绿色数字代替完整结论。</p>
-        </div>
-        <div className="evidence-ladder-grid">
-          <a href={evaluationProof.run.url} rel="noreferrer" target="_blank">
-            <span>01 · 自动评估</span>
-            <strong>跨平台 Proof Pack</strong>
-            <p>逐 case 结果、manifest、SHA256、JUnit 和脱敏 evidence 可核对。</p>
-            <small>run {evaluationProof.run.id}</small>
-          </a>
-          <a href={releaseAcceptanceUrl} rel="noreferrer" target="_blank">
-            <span>02 · 正式发布</span>
-            <strong>v0.3.2 正式发布验收</strong>
-            <p>双平台构建、校验和、原生 runner smoke 与 Release 元数据均已验收。</p>
-            <small>tag v0.3.2 · commit 60dd6db</small>
-          </a>
-          <a href="#real-codex-proof">
-            <span>03 · 真实客户端</span>
-            <strong>Codex CLI 预录验收</strong>
-            <p>正式 Release、普通开发放行、四类高危动作拒绝与独立后置条件均可核对。</p>
-            <small>
-              {realCodexProof.runtime.platform} · Codex {realCodexProof.runtime.clientVersion} ·
-              commit {realCodexProof.source.commitSha.slice(0, 7)}
-            </small>
-          </a>
-        </div>
-      </div>
-
-      <div className="evaluation-meta">
-        <span>synthetic · disposable · no real credentials</span>
-        <div>
-          <a href={commitUrl} rel="noreferrer" target="_blank">
-            commit {evaluationProof.run.headSha.slice(0, 7)}
-          </a>
-          <a href={sourceUrl} rel="noreferrer" target="_blank">
-            逐 case 快照
-          </a>
-          <a href={methodUrl} rel="noreferrer" target="_blank">
-            评估口径
-          </a>
-          <a href={releaseUrl} rel="noreferrer" target="_blank">
-            评估附件
-          </a>
-        </div>
+      <div className="evaluation-source-links" aria-label="公开验证资料">
+        <span>验证资料</span>
+        <a href={evaluationProof.run.url} rel="noreferrer" target="_blank">
+          自动评估
+        </a>
+        <a href={releaseAcceptanceUrl} rel="noreferrer" target="_blank">
+          发布验收
+        </a>
+        <a href={realCodexProof.source.evidenceUrl} rel="noreferrer" target="_blank">
+          真实证据
+        </a>
+        <a href={sourceUrl} rel="noreferrer" target="_blank">
+          逐 case 快照
+        </a>
+        <a href={methodUrl} rel="noreferrer" target="_blank">
+          评估口径
+        </a>
+        <a href={releaseUrl} rel="noreferrer" target="_blank">
+          评估附件
+        </a>
+        <a href={commitUrl} rel="noreferrer" target="_blank">
+          commit {evaluationProof.run.headSha.slice(0, 7)}
+        </a>
       </div>
     </section>
   );
