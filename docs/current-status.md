@@ -54,6 +54,11 @@ CLI 验收见 [`v0.3.2 发布验收`](v0.3.2-release-acceptance.md)。
 - 项目内保护规则：[`project-protection-rules-live-dogfood.md`](project-protection-rules-live-dogfood.md)。
 - 在线展示：<https://aki0225.github.io/AgentToolGate/>。
 
+当前产品加固工作按
+[`v0.4 日常使用加固计划`](v0.4-daily-use-hardening-plan.md)
+执行。该计划优先处理本地运行可靠性、Hook 生命周期、出站安全、项目规则易用性和
+跨平台门禁，不扩展企业级功能。
+
 历史实施计划和 handoff 只用于保留实施过程与证据来源，不再作为当前开发恢复入口：
 
 - [`agent-safety-evaluation-proof-pack-handoff.md`](agent-safety-evaluation-proof-pack-handoff.md)。
