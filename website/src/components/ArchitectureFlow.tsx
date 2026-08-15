@@ -7,33 +7,28 @@ const workflowSteps: Array<{
 }> = [
   {
     icon: "gate",
-    title: "接收工具调用",
-    description:
-      "REST 与 MCP Inbound 进入 Tool Registry；Codex / Claude Hook 进入 Local Guard 专用入口。"
+    title: "接收调用",
+    description: "REST、MCP 与客户端 Hook 进入对应治理入口。"
   },
   {
     icon: "policy",
-    title: "Policy 决策",
-    description:
-      "确定性规则和硬护栏给出 allow、deny 或 require_approval，MCP 不会形成治理旁路。"
+    title: "策略判定",
+    description: "确定性规则给出 allow、deny 或 require_approval。"
   },
   {
     icon: "review",
-    title: "Approval",
-    description:
-      "高风险写操作冻结参数并等待独立 Reviewer；批准前，上游请求计数保持为 0。"
+    title: "人工审批",
+    description: "高风险写操作冻结参数，批准前不触达上游。"
   },
   {
     icon: "secret",
-    title: "Runtime 与 Secret",
-    description:
-      "批准后 Connector Runtime 才执行；ATG 管理的 Secret 通过 env-backed valueRef 在运行时解析。"
+    title: "安全执行",
+    description: "批准后才执行，并在运行时解析 Secret 引用。"
   },
   {
     icon: "audit",
-    title: "Audit 与 Local Guard",
-    description:
-      "主链路写入脱敏 Audit；本地高危动作使用一次性 ticket，不能记忆为长期静默放行。"
+    title: "审计与本地防护",
+    description: "记录脱敏 Audit；本地高危动作只使用一次性 ticket。"
   }
 ];
 

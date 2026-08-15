@@ -1,14 +1,17 @@
 # AgentToolGate GitHub Pages 产品展示站实施计划
 
-> 状态：已完成，正式站已发布并纳入 `v0.3.0` 证据展示
+> 状态：历史实施计划；初版已完成，现行展示已在后续版本中演进
 > 计划版本：v0.1
 > 编写日期：2026-08-04
 > 完成日期：2026-08-11
 >
 > 当前公开站点：<https://aki0225.github.io/AgentToolGate/>
 >
-> 本文保留设计与实施决策；当前评估数字由公开快照生成，稳定发布结论见
-> [`docs/v0.3.0-release-acceptance.md`](v0.3.0-release-acceptance.md)。
+> 本文保留初版设计与实施决策，不代表当前页面结构。初版的三个 synthetic 交互
+> 场景和前端状态机已下线，现行首页只保留真实 Codex 五场景预录证据。当前入口见
+> [`docs/current-status.md`](current-status.md)、[`website/README.md`](../website/README.md)
+> 和 [`docs/real-codex-pages-demo.md`](real-codex-pages-demo.md)；当前稳定发布结论见
+> [`docs/v0.3.2-release-acceptance.md`](v0.3.2-release-acceptance.md)。
 
 ## 1. 背景
 

@@ -4,44 +4,18 @@ import { ArchitectureFlow } from "./components/ArchitectureFlow";
 import { EvaluationProof } from "./components/EvaluationProof";
 import { HeroPipeline } from "./components/HeroPipeline";
 import { Icon, type IconName } from "./components/Icon";
-import { ScenarioTabs } from "./components/ScenarioTabs";
 import { SecurityBoundary } from "./components/SecurityBoundary";
 
 const githubRoot = "https://github.com/aki0225/AgentToolGate";
 const githubBlobRoot = `${githubRoot}/blob/main`;
 const latestDownloadRoot = `${githubRoot}/releases/latest/download`;
 const releaseAcceptanceUrl = `${githubBlobRoot}/docs/v0.3.2-release-acceptance.md`;
-const clientAcceptanceUrl = `${githubBlobRoot}/evaluation/client-acceptance/README.md`;
 
 const navItems = [
   { label: "工作方式", href: "#workflow" },
   { label: "实测", href: "#evaluation" },
-  { label: "交互演示", href: "#demo" },
   { label: "安全边界", href: "#boundaries" },
   { label: "下载", href: "#download" }
-];
-
-const proofLinks = [
-  {
-    label: "CI 与测试",
-    href: `${githubRoot}/actions/workflows/ci.yml`
-  },
-  {
-    label: "架构文档",
-    href: `${githubBlobRoot}/docs/architecture.md`
-  },
-  {
-    label: "安全评审",
-    href: `${githubBlobRoot}/docs/security-review-notes.md`
-  },
-  {
-    label: "v0.3.2 发布验收",
-    href: releaseAcceptanceUrl
-  },
-  {
-    label: "真实客户端验收",
-    href: clientAcceptanceUrl
-  }
 ];
 
 const downloads: Array<{
@@ -189,7 +163,7 @@ export function App() {
               </span>
             </h1>
             <p className="hero-lead">
-              面向 Codex、Claude Code 与 MCP 客户端的本地工具治理网关，统一处理决策、审批、运行时 Secret 与脱敏审计。
+              在 Agent 执行工具前，统一完成判定、审批、Secret 注入与脱敏审计。
             </p>
             <div className="hero-actions">
               <a className="button button-primary" href="#real-codex-proof">
@@ -211,35 +185,17 @@ export function App() {
         <section className="section section-shell" id="workflow">
           <SectionHeading
             title="它如何工作"
-            description="工具调用先被判定，再决定执行、审批或拒绝；本地高危动作走独立但同样保守的 Guard 入口。"
+            description="一次调用，经过判定、审批、执行与审计。"
           />
           <ArchitectureFlow />
-
-          <div className="proof-links" aria-label="工程证据">
-            <span>继续核对</span>
-            {proofLinks.map((item) => (
-              <ExternalLink href={item.href} key={item.label}>
-                {item.label}
-                <Icon name="external" />
-              </ExternalLink>
-            ))}
-          </div>
         </section>
 
         <EvaluationProof />
 
-        <section className="section section-shell section-demo" id="demo">
-          <SectionHeading
-            title="交互演示"
-            description="三个 synthetic 场景展示真实治理状态迁移，不连接后端、上游服务或真实凭据。"
-          />
-          <ScenarioTabs />
-        </section>
-
         <section className="section section-shell" id="boundaries">
           <SectionHeading
             title="安全边界"
-            description="AgentToolGate 是执行前 guardrail，不是操作系统沙箱，也不能替代生产身份、网络与最小权限控制。"
+            description="它是执行前 guardrail，不是操作系统沙箱。"
           />
           <SecurityBoundary />
         </section>
@@ -247,7 +203,7 @@ export function App() {
         <section className="section section-shell section-download" id="download">
           <SectionHeading
             title="下载并开始使用"
-            description="Release 提供 Windows 与 Linux amd64 产物和 SHA256；默认 dry-run，确认结果后再显式进入 live。"
+            description="Windows、Linux amd64 与 SHA256；默认 dry-run，确认后再进入 live。"
           />
 
           <div className="download-layout">

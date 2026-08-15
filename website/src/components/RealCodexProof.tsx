@@ -209,21 +209,16 @@ export function RealCodexProof() {
   const auditLabel =
     selectedScenario.auditStatus === "correlated" ? "Audit 已关联" : "Audit 不适用";
   const evidenceSourceDetail = selectedScenario.actionEvidence.observed
-    ? "动作与决策由唯一 Hook 请求和关联 Audit 核对；计划与响应是公开摘要，不是模型原文。"
+    ? "动作与决策由 Hook 请求和关联 Audit 核对；计划与响应是公开摘要，不是模型原文。"
     : "当前历史 v2 未保存动作摘要；这里按已通过验收的场景合同与运行平台复原，不是原始 Hook 或 Codex 事件。";
 
   return (
     <section className="real-codex-proof" id="real-codex-proof" aria-labelledby="real-codex-title">
       <header className="real-codex-header">
         <div>
-          <p className="real-codex-kicker">真实 Codex 验证回放 · {realCodexProof.publishedAt}</p>
-          <h3 id="real-codex-title">从行动意图，到执行前拦截</h3>
-          <p>真实调用经 Hook、Audit 与后置检查对齐后，从零秒开始回放。</p>
+          <p className="real-codex-kicker">REAL CODEX · {realCodexProof.publishedAt}</p>
+          <h3 id="real-codex-title">真实 Codex 回放</h3>
         </div>
-        <span className="real-codex-status">
-          <Icon name="check" />
-          {realCodexScenarios.length} 个真实场景
-        </span>
       </header>
 
       <div className="real-codex-runtime" aria-label="真实 Codex 验收运行环境">
@@ -277,10 +272,7 @@ export function RealCodexProof() {
         tabIndex={0}
       >
         <div className="real-codex-scenario-heading">
-          <div>
-            <span>场景 {String(selectedIndex + 1).padStart(2, "0")}</span>
-            <h4>{selectedScenario.title}</h4>
-          </div>
+          <h4>{selectedScenario.title}</h4>
         </div>
 
         <div className="real-codex-player-layout">
@@ -291,8 +283,8 @@ export function RealCodexProof() {
                 <span />
                 <span />
               </div>
-              <strong>验证回放 · {selectedScenario.label}</strong>
-              <small>原始时间轴 · 从 00:00 开始</small>
+              <strong>真实调用</strong>
+              <small>从 00:00 开始</small>
             </div>
 
             <div
@@ -393,11 +385,7 @@ export function RealCodexProof() {
 
         <details className="real-codex-methodology">
           <summary>
-            <span>证据来源与安全边界</span>
-            <small>
-              {selectedScenario.recording.eventCount} 条事件 ·{" "}
-              {formatClock(selectedScenario.recording.durationMs)}
-            </small>
+            <span>证据说明</span>
           </summary>
           <div className="real-codex-methodology-grid">
             <div>
@@ -417,8 +405,8 @@ export function RealCodexProof() {
             <div>
               <span>边界</span>
               <p>
-                这是 synthetic 数据的预录证据，不包含真实凭据，也不声称替代 OS
-                sandbox、EDR 或完整 DLP。Codex ask 当前仍按保守拒绝处理。
+                预录使用 synthetic 数据，不含真实凭据；不替代 OS sandbox、EDR 或完整
+                DLP。Codex ask 当前仍按保守拒绝处理。
               </p>
             </div>
             <div className="real-codex-methodology-links">

@@ -1,119 +1,69 @@
 import { Icon } from "./Icon";
-import { evaluationProof, getEvaluationSummary, type EvaluationSummary } from "../evaluation/proof";
+import { evaluationProof, getEvaluationSummary } from "../evaluation/proof";
 import { realCodexProof } from "../evaluation/realCodexProof";
 import { RealCodexProof } from "./RealCodexProof";
 
 const githubRoot = "https://github.com/aki0225/AgentToolGate";
-const sourceUrl = `${githubRoot}/blob/main/evaluation/published/agent-safety-proof.json`;
 const methodUrl = `${githubRoot}/blob/main/evaluation/README.md`;
 const releaseAcceptanceUrl = `${githubRoot}/blob/main/docs/v0.3.2-release-acceptance.md`;
-const releaseUrl = `${githubRoot}/releases/tag/v0.3.2`;
-type NumericSummaryKey = Exclude<keyof EvaluationSummary, "id" | "kind" | "platform">;
-
-function ProofMeasure({ label, summary }: { label: string; summary: EvaluationSummary }) {
-  return (
-    <div className="evaluation-measure">
-      <span>{label}</span>
-      <strong>{summary.passedCount}</strong>
-      <p>passed / {summary.caseCount} cases</p>
-      <small>
-        {summary.failedCount} failed · {summary.skippedCount} skipped
-      </small>
-    </div>
-  );
-}
-
-function paired(
-  windows: EvaluationSummary,
-  linux: EvaluationSummary,
-  field: NumericSummaryKey,
-  format: (value: number) => string = String
-) {
-  return `${format(windows[field])} / ${format(linux[field])}`;
-}
 
 function percentage(value: number) {
   return `${Math.round(value * 100)}%`;
 }
 
-function milliseconds(value: number) {
-  return `${value.toFixed(1)} ms`;
-}
-
 export function EvaluationProof() {
-  const quick = getEvaluationSummary("quick-linux");
   const windows = getEvaluationSummary("full-windows");
   const linux = getEvaluationSummary("full-linux");
-  const commitUrl = `${githubRoot}/commit/${evaluationProof.run.headSha}`;
 
   return (
     <section className="section section-shell evaluation-proof" id="evaluation">
       <div className="evaluation-heading">
         <div>
-          <p className="evaluation-kicker">CI Proof Pack · {evaluationProof.publishedAt}</p>
-          <h2>跨平台实测</h2>
-          <p>同一套声明式用例，在原生 Windows 与 Linux runner 上执行。</p>
+          <p className="evaluation-kicker">REAL CODEX + CI</p>
+          <h2>实测证据</h2>
+          <p>五个真实 Codex 场景，附 Windows 与 Linux 自动评估。</p>
         </div>
         <a href={evaluationProof.run.url} rel="noreferrer" target="_blank">
-          查看运行证据
+          查看 CI
           <Icon name="external" />
         </a>
       </div>
 
-      <div className="evaluation-ledger">
-        <ProofMeasure label="Quick · Linux" summary={quick} />
-        <ProofMeasure label="Full · Windows" summary={windows} />
-        <ProofMeasure label="Full · Linux" summary={linux} />
-      </div>
-
-      <div className="evaluation-invariants" aria-label="Windows 与 Linux 评估指标">
-        <div>
-          <span>决策质量 · Windows / Linux</span>
-          <p>
-            危险动作治理率 <strong>{paired(windows, linux, "dangerousGovernedRate", percentage)}</strong>
-            <i>·</i>
-            良性动作确认/中断率 <strong>{paired(windows, linux, "benignInterruptionRate", percentage)}</strong>
-            <i>·</i>
-            决策 p95 <strong>{paired(windows, linux, "decisionLatencyP95Ms", milliseconds)}</strong>
-            <small>项目代码执行首次要求确认属于预期治理，审批后相同指纹可静默复用。</small>
-          </p>
-        </div>
-        <div>
-          <span>治理不变量 · Windows / Linux</span>
-          <p>
-            审批前上游请求 <strong>{paired(windows, linux, "approvalPreUpstreamCalls")}</strong>
-            <i>·</i>
-            Secret 泄漏 <strong>{paired(windows, linux, "secretLeakCount")}</strong>
-            <i>·</i>
-            Ticket 重放成功 <strong>{paired(windows, linux, "ticketReplaySuccessCount")}</strong>
-          </p>
-        </div>
+      <div className="evaluation-summary" aria-label="跨平台自动评估摘要">
+        <span>
+          Windows <strong>{windows.passedCount}/{windows.caseCount}</strong>
+        </span>
+        <span>
+          Linux <strong>{linux.passedCount}/{linux.caseCount}</strong>
+        </span>
+        <span>
+          危险治理 W/L{" "}
+          <strong>
+            {percentage(windows.dangerousGovernedRate)} /{" "}
+            {percentage(linux.dangerousGovernedRate)}
+          </strong>
+        </span>
+        <span>
+          泄漏 <strong>{windows.secretLeakCount + linux.secretLeakCount}</strong>
+          {" · "}重放{" "}
+          <strong>
+            {windows.ticketReplaySuccessCount + linux.ticketReplaySuccessCount}
+          </strong>
+        </span>
       </div>
 
       <RealCodexProof />
 
       <div className="evaluation-source-links" aria-label="公开验证资料">
-        <span>验证资料</span>
-        <a href={evaluationProof.run.url} rel="noreferrer" target="_blank">
-          自动评估
-        </a>
+        <span>证据</span>
         <a href={releaseAcceptanceUrl} rel="noreferrer" target="_blank">
           发布验收
         </a>
         <a href={realCodexProof.source.evidenceUrl} rel="noreferrer" target="_blank">
           真实证据
         </a>
-        <a href={sourceUrl} rel="noreferrer" target="_blank">
-          逐 case 快照
-        </a>
         <a href={methodUrl} rel="noreferrer" target="_blank">
           评估口径
-        </a>
-        <a href={releaseUrl} rel="noreferrer" target="_blank">
-          评估附件
-        </a>
-        <a href={commitUrl} rel="noreferrer" target="_blank">
-          commit {evaluationProof.run.headSha.slice(0, 7)}
         </a>
       </div>
     </section>
