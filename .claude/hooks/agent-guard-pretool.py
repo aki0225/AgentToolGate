@@ -1426,8 +1426,14 @@ def is_explicitly_low_risk_offline_action(repo_root: str, payload: dict[str, Any
         return is_project_metadata_read_target(target) or not is_high_risk_offline_target(payload)
     if action != "exec":
         return False
-    # Go CLI 不可用时不维护第二套 shell 解析器，只放行无法携带路径或附加参数的精确命令。
-    return " ".join(content.strip().lower().split()) in {"git status", "pwd", "get-location"}
+    # Go CLI 不可用时不维护第二套 shell 解析器，只放行精确、无副作用的状态命令。
+    return " ".join(content.strip().lower().split()) in {
+        "git status",
+        "git status --short",
+        "git status -s",
+        "pwd",
+        "get-location",
+    }
 
 
 def is_fast_path_repo_read(repo_root: str, payload: dict[str, Any]) -> bool:
@@ -1449,6 +1455,23 @@ def is_fast_path_repo_read(repo_root: str, payload: dict[str, Any]) -> bool:
             or not is_high_risk_offline_target(payload)
         )
     )
+
+
+def is_live_low_friction_fast_path(repo_root: str, payload: dict[str, Any]) -> bool:
+    if is_high_risk_offline_target(payload):
+        return False
+    try:
+        preview = local_guard_preview(repo_root, payload)
+    except ProjectProtectionError:
+        return False
+    if (
+        preview.get("decision") != "allow"
+        or preview.get("riskLevel") != "low"
+        or preview.get("projectRule")
+        or preview.get("projectCodeExecution")
+    ):
+        return False
+    return is_explicitly_low_risk_offline_action(repo_root, payload)
 
 
 def attach_python_guard_floor(repo_root: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1610,6 +1633,15 @@ def main() -> int:
         if is_fast_path_repo_read(repo_root, payload):
             return 0
         record_local_hook_dry_run(repo_root, payload)
+        return 0
+
+    if is_live_low_friction_fast_path(repo_root, payload):
+        if record_local_pending_audit(repo_root, payload, "local low-risk fast path", False):
+            decision = {"decision": "allow", "reason": "local low-risk fast path"}
+        else:
+            decision = {"decision": "deny", "reason": "local fast path pending audit unavailable"}
+        output = build_output(adapter, decision, tool_input)
+        print(json.dumps(output, ensure_ascii=False), flush=True)
         return 0
 
     go_output = call_agenttoolgate_guard_hook_claude(input_data)

@@ -284,6 +284,55 @@ func TestEvaluateAdaptedPayloadRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestDecodeExplanationInputRejectsNonStrictAdapterPayloads(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		client string
+		body   string
+	}{
+		{
+			name:   "codex case alias duplicate",
+			client: "codex",
+			body:   `{"tool_name":"Read","TOOL_NAME":"Write","tool_input":{"path":"README.md"}}`,
+		},
+		{
+			name:   "codex trailing json",
+			client: "codex",
+			body:   `{"tool_name":"Read","tool_input":{"path":"README.md"}} {}`,
+		},
+		{
+			name:   "codex nested null",
+			client: "codex",
+			body:   `{"tool_name":"Read","tool_input":{"path":null}}`,
+		},
+		{
+			name:   "claude duplicate",
+			client: "claude",
+			body:   `{"tool_name":"Read","tool_name":"Write","tool_input":{"path":"README.md"}}`,
+		},
+		{
+			name:   "claude trailing json",
+			client: "claude",
+			body:   `{"tool_name":"Read","tool_input":{"path":"README.md"}} []`,
+		},
+		{
+			name:   "claude nested null",
+			client: "claude",
+			body:   `{"tool_name":"Read","tool_input":{"path":null}}`,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := DecodeExplanationInput(tc.client, []byte(tc.body)); err == nil {
+				t.Fatalf("expected strict %s payload rejection for %s", tc.client, tc.name)
+			}
+		})
+	}
+}
+
 func TestEvaluateAdaptedPayloadRejectsUnknownClientAndMode(t *testing.T) {
 	payload := readGuardFixture(t, "claude", "bash-git-status.json")
 	if _, err := EvaluateAdaptedPayload(AdapterInput{Client: "unknown", Payload: payload}); err == nil || !strings.Contains(err.Error(), "claude 或 codex") {

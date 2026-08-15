@@ -30,6 +30,14 @@ func TestLoadProjectProtectionRejectsUnsafeDocuments(t *testing.T) {
 			body: `{"version":1,"localActionFirewall":{"enabled":true,"unexpected":true}}`,
 		},
 		{
+			name: "wrong case root field",
+			body: `{"Version":1,"localActionFirewall":{"enabled":true}}`,
+		},
+		{
+			name: "wrong case nested field",
+			body: `{"version":1,"localActionFirewall":{"Enabled":true}}`,
+		},
+		{
 			name: "duplicate root field",
 			body: `{"version":1,"version":1,"localActionFirewall":{"enabled":true}}`,
 		},
@@ -38,8 +46,44 @@ func TestLoadProjectProtectionRejectsUnsafeDocuments(t *testing.T) {
 			body: `{"version":1,"localActionFirewall":{"enabled":true,"enabled":false}}`,
 		},
 		{
+			name: "case alias duplicate cannot disable protection",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"Enabled":false}}`,
+		},
+		{
 			name: "duplicate rule effect cannot weaken protection",
 			body: `{"version":1,"localActionFirewall":{"enabled":true,"protectedPaths":[{"pattern":"src/core/**","read":"deny","read":"require_approval"}]}}`,
+		},
+		{
+			name: "case alias rule effect cannot weaken protection",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"protectedPaths":[{"pattern":"src/core/**","write":"deny","Write":"require_approval"}]}}`,
+		},
+		{
+			name: "trailing json",
+			body: `{"version":1,"localActionFirewall":{"enabled":true}} {}`,
+		},
+		{
+			name: "explicit null",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"protectedPaths":null}}`,
+		},
+		{
+			name: "empty optional project root",
+			body: `{"version":1,"projectRoot":"","localActionFirewall":{"enabled":true}}`,
+		},
+		{
+			name: "empty optional workspace value",
+			body: `{"version":1,"workspace":{"orgId":""},"localActionFirewall":{"enabled":true}}`,
+		},
+		{
+			name: "empty optional default mode",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"defaultMode":""}}`,
+		},
+		{
+			name: "empty optional effect",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"protectedPaths":[{"pattern":"src/core/**","read":"","write":"deny"}]}}`,
+		},
+		{
+			name: "empty optional egress effect",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"egress":{"enabled":false,"unlistedWrite":""}}}`,
 		},
 		{
 			name: "parent traversal",
@@ -62,8 +106,28 @@ func TestLoadProjectProtectionRejectsUnsafeDocuments(t *testing.T) {
 			body: `{"version":1,"localActionFirewall":{"enabled":true,"protectedPaths":[{"pattern":"src/*/secret.go","read":"deny"}]}}`,
 		},
 		{
+			name: "pattern with surrounding whitespace",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"protectedPaths":[{"pattern":" src/core/**","read":"deny"}]}}`,
+		},
+		{
+			name: "control character in pattern",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"protectedPaths":[{"pattern":"src/\u001bcore/**","read":"deny"}]}}`,
+		},
+		{
+			name: "control character in reason",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"protectedPaths":[{"pattern":"src/core/**","read":"deny","reason":"line\u000abreak"}]}}`,
+		},
+		{
+			name: "reason above schema limit",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"protectedPaths":[{"pattern":"src/core/**","read":"deny","reason":"` + strings.Repeat("a", 161) + `"}]}}`,
+		},
+		{
 			name: "wildcard host",
 			body: `{"version":1,"localActionFirewall":{"enabled":true,"egress":{"enabled":true,"allowedHosts":["*"],"unlistedWrite":"deny"}}}`,
+		},
+		{
+			name: "host with surrounding whitespace",
+			body: `{"version":1,"localActionFirewall":{"enabled":true,"egress":{"enabled":true,"allowedHosts":[" api.github.com"],"unlistedWrite":"deny"}}}`,
 		},
 		{
 			name: "allow cannot weaken guard",

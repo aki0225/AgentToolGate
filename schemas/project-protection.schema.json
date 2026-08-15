@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agenttoolgate.dev/schemas/project-protection.schema.json",
+  "title": "AgentToolGate Project Protection",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "localActionFirewall"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "projectRoot": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+    },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        },
+        "orgId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+        }
+      }
+    },
+    "localActionFirewall": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "defaultMode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "dry-run",
+            "live"
+          ]
+        },
+        "protectedPaths": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pattern"
+            ],
+            "anyOf": [
+              {
+                "required": [
+                  "read"
+                ]
+              },
+              {
+                "required": [
+                  "write"
+                ]
+              },
+              {
+                "required": [
+                  "delete"
+                ]
+              },
+              {
+                "required": [
+                  "exec"
+                ]
+              }
+            ],
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!(?:.*[/\\\\])?\\.\\.?(?:[/\\\\]|$))(?:[^/\\\\*?\\[\\]\\x00-\\x1F\\x7F-\\x9F]+(?:[/\\\\][^/\\\\*?\\[\\]\\x00-\\x1F\\x7F-\\x9F]+)*)(?:[/\\\\]\\*\\*)?$",
+                "description": "Repository-relative exact path or subtree ending in /**. Runtime validation rejects absolute paths, traversal, arbitrary glob syntax, and regular expressions."
+              },
+              "read": {
+                "$ref": "#/$defs/effect"
+              },
+              "write": {
+                "$ref": "#/$defs/effect"
+              },
+              "delete": {
+                "$ref": "#/$defs/effect"
+              },
+              "exec": {
+                "$ref": "#/$defs/effect"
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 160,
+                "pattern": "^[^\\x00-\\x1F\\x7F-\\x9F]*$"
+              }
+            }
+          }
+        },
+        "egress": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "allowedHosts": {
+              "type": "array",
+              "maxItems": 128,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+              }
+            },
+            "unlistedWrite": {
+              "$ref": "#/$defs/effect"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "enabled"
+                ]
+              },
+              "then": {
+                "required": [
+                  "unlistedWrite"
+                ]
+              }
+            }
+          ]
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "effect": {
+      "type": "string",
+      "enum": [
+        "require_approval",
+        "deny"
+      ]
+    }
+  }
+}

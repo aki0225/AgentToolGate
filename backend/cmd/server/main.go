@@ -108,6 +108,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if code := runHookControlCLI(args, stdout, stderr); code >= 0 {
 		return code
 	}
+	if code := runProjectCLI(args, stdout, stderr); code >= 0 {
+		return code
+	}
 	if code := runGuardCLI(args, stdout, stderr); code >= 0 {
 		return code
 	}
@@ -689,6 +692,8 @@ func runGuardCLI(args []string, stdout, stderr io.Writer) int {
 		return runGuardAdapt(args[2:], stdout, stderr)
 	case "hook":
 		return runGuardHook(args[2:], stdout, stderr)
+	case "explain":
+		return runGuardExplain(args[2:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "不支持的 guard 子命令")
 		return 2
@@ -1677,10 +1682,12 @@ func printUsage(w io.Writer) {
 
   agenttoolgate.exe [serve] [--open] [--port 8090]
   agenttoolgate.exe [serve] --addr 127.0.0.1:8090
-	  agenttoolgate.exe init [all|codex|claude] [--dir <path>] [--refresh-hooks]
+  agenttoolgate.exe init [all|codex|claude] [--dir <path>] [--refresh-hooks]
   agenttoolgate.exe up [--dir <path>] [--open] [--port 8090]
+  agenttoolgate.exe project validate --dir <project> --format text|json
   agenttoolgate.exe doctor
   agenttoolgate.exe guard evaluate --input action.json
+  agenttoolgate.exe guard explain codex|claude|action --input payload.json --dir <project> --format text|json
   agenttoolgate.exe guard adapt claude --input payload.json
   agenttoolgate.exe guard adapt codex --input payload.json --mode dry-run
   agenttoolgate.exe guard hook claude --input payload.json

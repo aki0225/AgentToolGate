@@ -1024,29 +1024,78 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
 
             self.assertEqual(HOOK.find_repo_root(str(inner / "src")), str(inner))
 
-    def test_live_ordinary_repo_read_delegates_to_go_cli(self) -> None:
+    def test_live_ordinary_repo_read_uses_local_fast_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
             (repo / ".git").mkdir()
             (repo / "README.md").write_text("hello", encoding="utf-8")
-            captured: list[dict[str, Any]] = []
-
-            def go_cli(payload: dict[str, Any]) -> dict[str, Any]:
-                captured.append(payload)
-                return {}
-
-            raw = self.invoke_raw(
+            output = self.invoke_hook(
                 {
                     "tool_name": "Read",
                     "tool_input": {"file_path": "README.md"},
                     "cwd": str(repo),
                 },
-                go_cli=go_cli,
+                go_cli=lambda _payload: self.fail("普通仓库读取不应启动 Go CLI"),
                 post_json=lambda *_args, **_kwargs: self.fail("普通仓库读取不应调用后端"),
             )
-            self.assertEqual(raw, "")
+            self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "allow")
+            self.assertTrue((repo / ".tmp" / "local-action-firewall" / "pending-audit.jsonl").is_file())
+
+    def test_live_git_status_uses_local_fast_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            output = self.invoke_hook(
+                {
+                    "tool_name": "shell_command",
+                    "tool_input": {"command": "git status --short"},
+                    "cwd": str(repo),
+                },
+                go_cli=lambda _payload: self.fail("git status 不应启动 Go CLI"),
+                post_json=lambda *_args, **_kwargs: self.fail("git status 不应调用后端"),
+            )
+            self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "allow")
+            self.assertTrue((repo / ".tmp" / "local-action-firewall" / "pending-audit.jsonl").is_file())
+
+    def test_live_project_rule_cannot_use_local_fast_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            self.write_project_protection(
+                repo,
+                {
+                    "version": 1,
+                    "localActionFirewall": {
+                        "enabled": True,
+                        "protectedPaths": [{"pattern": "src/core/**", "read": "deny"}],
+                        "egress": {"enabled": False},
+                    },
+                },
+            )
+            expected = {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "项目规则禁止读取",
+                }
+            }
+            captured: list[dict[str, Any]] = []
+
+            def go_cli(payload: dict[str, Any]) -> dict[str, Any]:
+                captured.append(payload)
+                return expected
+
+            output = self.invoke_hook(
+                {
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": "src/core/algorithm.go"},
+                    "cwd": str(repo),
+                },
+                go_cli=go_cli,
+                post_json=lambda *_args, **_kwargs: self.fail("Go CLI 成功时不应调用后端"),
+            )
+            self.assertEqual(output, expected)
             self.assertEqual(len(captured), 1)
-            self.assertEqual(captured[0]["tool_input"]["file_path"], "README.md")
 
     def test_live_alias_sensitive_read_delegates_to_go_cli(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

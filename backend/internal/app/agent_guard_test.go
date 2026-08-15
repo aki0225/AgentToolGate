@@ -1609,6 +1609,7 @@ func TestAgentGuardHookAdaptersTranslateDecisions(t *testing.T) {
 	repoRoot := agentGuardRepoRoot(t)
 	askInputJSON := mustAgentGuardHookInput(t, repoRoot, "Bash", `{"command":"go test ./..."}`)
 	allowInputJSON := mustAgentGuardHookInput(t, repoRoot, "Bash", `{"command":"git status"}`)
+	ordinaryWriteInputJSON := mustAgentGuardHookInput(t, repoRoot, "Write", `{"path":"src/demo.txt","content":"ordinary update"}`)
 	hardDenyInputJSON := mustAgentGuardHookInput(t, repoRoot, "Write", `{"path":"C:\\Users\\demo\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\run.ps1","content":"Write-Host 'secret-token'"}`)
 
 	t.Run("codex denies deny_with_ticket and never asks", func(t *testing.T) {
@@ -1670,7 +1671,10 @@ func TestAgentGuardHookAdaptersTranslateDecisions(t *testing.T) {
 			server := newAgentGuardDecisionServer(t, tc.body)
 			defer server.Close()
 
-			inputJSON := allowInputJSON
+			inputJSON := ordinaryWriteInputJSON
+			if tc.name == "allow" {
+				inputJSON = allowInputJSON
+			}
 			if tc.name == "deny_with_ticket" {
 				inputJSON = askInputJSON
 			}
@@ -2477,7 +2481,7 @@ func TestAgentGuardRelativeSensitiveTargetsRequireApprovalAndDoNotRemember(t *te
 	}
 }
 
-func TestAgentGuardOfflineReadOnlyCommandWritesLocalPendingAudit(t *testing.T) {
+func TestAgentGuardLiveReadOnlyFastPathWritesLocalPendingAudit(t *testing.T) {
 	t.Parallel()
 
 	python, err := exec.LookPath("python")
@@ -2514,8 +2518,11 @@ func TestAgentGuardOfflineReadOnlyCommandWritesLocalPendingAudit(t *testing.T) {
 			continue
 		}
 		found = true
-		if offline, ok := record["offline"].(bool); !ok || !offline {
-			t.Fatalf("expected offline pending audit record, got %+v", record)
+		if offline, ok := record["offline"].(bool); !ok || offline {
+			t.Fatalf("expected online fast-path audit record, got %+v", record)
+		}
+		if reason, ok := record["reason"].(string); !ok || reason != "local low-risk fast path" {
+			t.Fatalf("expected local fast-path reason, got %+v", record)
 		}
 		if workspace, ok := record["workspace"].(string); !ok || strings.TrimSpace(workspace) == "" {
 			t.Fatalf("expected workspace in pending audit, got %+v", record)

@@ -1469,6 +1469,23 @@ def is_fast_path_repo_read(repo_root: str, payload: dict[str, Any]) -> bool:
     )
 
 
+def is_live_low_friction_fast_path(repo_root: str, payload: dict[str, Any]) -> bool:
+    if is_high_risk_offline_target(payload):
+        return False
+    try:
+        preview = local_guard_preview(repo_root, payload)
+    except ProjectProtectionError:
+        return False
+    if (
+        preview.get("decision") != "allow"
+        or preview.get("riskLevel") != "low"
+        or preview.get("projectRule")
+        or preview.get("projectCodeExecution")
+    ):
+        return False
+    return is_explicitly_low_risk_offline_action(repo_root, payload)
+
+
 def attach_python_guard_floor(repo_root: str, payload: dict[str, Any]) -> dict[str, Any]:
     request = dict(payload)
     if is_explicitly_low_risk_offline_action(repo_root, payload):
@@ -1612,6 +1629,17 @@ def main() -> int:
         if is_fast_path_repo_read(repo_root, payload):
             return 0
         record_local_hook_dry_run(repo_root, payload)
+        return 0
+
+    if is_live_low_friction_fast_path(repo_root, payload):
+        if record_local_pending_audit(repo_root, payload, "local low-risk fast path", False):
+            return 0
+        output = build_output(
+            adapter,
+            {"decision": "deny", "reason": "local fast path pending audit unavailable"},
+            tool_input,
+        )
+        print(json.dumps(output, ensure_ascii=False), flush=True)
         return 0
 
     go_output = call_agenttoolgate_guard_hook_codex(input_data)

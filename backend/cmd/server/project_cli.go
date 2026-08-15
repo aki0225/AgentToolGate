@@ -27,6 +27,7 @@ const (
 	projectHookModeOff    = "off"
 	projectHookModeDryRun = "dry-run"
 	projectHookModeLive   = "live"
+	maxProjectConfigSize  = 64 << 10
 	projectRuntimeExclude = "/.tmp/agenttoolgate/"
 	codexUnixHookCommand  = `python3 "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
 	codexWinHookCommand   = `python "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
@@ -44,6 +45,21 @@ type projectRunConfig struct {
 	} `json:"workspace"`
 	HookMode    string `json:"hookMode"`
 	OpenBrowser bool   `json:"openBrowser"`
+}
+
+type projectRunConfigDocument struct {
+	ProjectRoot *string                   `json:"projectRoot,omitempty"`
+	Host        *string                   `json:"host"`
+	Port        *int                      `json:"port"`
+	Workspace   *projectWorkspaceDocument `json:"workspace"`
+	HookMode    *string                   `json:"hookMode"`
+	OpenBrowser *bool                     `json:"openBrowser"`
+}
+
+type projectWorkspaceDocument struct {
+	Name  *string `json:"name"`
+	Slug  *string `json:"slug"`
+	OrgID *string `json:"orgId"`
 }
 
 type projectInitReport struct {
@@ -351,40 +367,168 @@ func writeFileAtomicallyOutsideProject(path string, data []byte, perm os.FileMod
 }
 
 func loadProjectRunConfig(root string) (projectRunConfig, bool, string, error) {
-	cfg := defaultProjectRunConfig(root)
 	path := projectConfigPath(root)
-	raw, err := os.ReadFile(path)
+	if err := validateProjectFileTarget(root, path); err != nil {
+		return projectRunConfig{}, false, path, errors.New("项目配置路径不可信")
+	}
+	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cfg, false, path, nil
+			return defaultProjectRunConfig(root), false, path, nil
 		}
+		return projectRunConfig{}, false, path, fmt.Errorf("读取项目配置失败：%w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return projectRunConfig{}, false, path, fmt.Errorf("项目配置必须是普通文件")
+	}
+	if info.Size() > maxProjectConfigSize {
+		return projectRunConfig{}, false, path, fmt.Errorf("项目配置文件过大")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
 		return projectRunConfig{}, false, path, fmt.Errorf("读取项目配置失败：%w", err)
 	}
 	if err := rejectDuplicateJSONFields(raw); err != nil {
 		return projectRunConfig{}, false, path, fmt.Errorf("项目配置 JSON 无效：%w", err)
 	}
-	if err := json.Unmarshal(raw, &cfg); err != nil {
+	if err := validateProjectConfigFieldNames(raw); err != nil {
+		return projectRunConfig{}, false, path, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var document projectRunConfigDocument
+	if err := decoder.Decode(&document); err != nil {
 		return projectRunConfig{}, false, path, fmt.Errorf("项目配置 JSON 无效：%w", err)
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return projectRunConfig{}, false, path, fmt.Errorf("项目配置 JSON 无效：%w", err)
+	if err := ensureProjectConfigEOF(decoder); err != nil {
+		return projectRunConfig{}, false, path, err
 	}
-	rawHookMode, ok := fields["hookMode"]
-	if !ok {
-		return projectRunConfig{}, false, path, fmt.Errorf("项目配置 hookMode 缺失")
-	}
-	var hookMode string
-	if err := json.Unmarshal(rawHookMode, &hookMode); err != nil {
-		return projectRunConfig{}, false, path, fmt.Errorf("项目配置 hookMode 无效")
-	}
-	normalizedMode, err := parseProjectHookMode(hookMode)
+	cfg, err := projectRunConfigFromDocument(document)
 	if err != nil {
 		return projectRunConfig{}, false, path, err
 	}
-	cfg.HookMode = normalizedMode
-	cfg.normalize(root)
+	if err := validateProjectRunConfig(cfg); err != nil {
+		return projectRunConfig{}, false, path, err
+	}
 	return cfg, true, path, nil
+}
+
+func ensureProjectConfigEOF(decoder *json.Decoder) error {
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("项目配置 JSON 只能包含一个文档")
+	}
+	return nil
+}
+
+func projectRunConfigFromDocument(document projectRunConfigDocument) (projectRunConfig, error) {
+	for name, present := range map[string]bool{
+		"host":        document.Host != nil,
+		"port":        document.Port != nil,
+		"workspace":   document.Workspace != nil,
+		"hookMode":    document.HookMode != nil,
+		"openBrowser": document.OpenBrowser != nil,
+	} {
+		if !present {
+			return projectRunConfig{}, fmt.Errorf("项目配置 %s 缺失或类型无效", name)
+		}
+	}
+	for name, present := range map[string]bool{
+		"workspace.name":  document.Workspace.Name != nil,
+		"workspace.slug":  document.Workspace.Slug != nil,
+		"workspace.orgId": document.Workspace.OrgID != nil,
+	} {
+		if !present {
+			return projectRunConfig{}, fmt.Errorf("项目配置 %s 缺失或类型无效", name)
+		}
+	}
+	cfg := projectRunConfig{
+		Host:        *document.Host,
+		Port:        *document.Port,
+		HookMode:    *document.HookMode,
+		OpenBrowser: *document.OpenBrowser,
+	}
+	if document.ProjectRoot != nil {
+		if *document.ProjectRoot == "" {
+			return projectRunConfig{}, errors.New("项目配置 projectRoot 必须是非空字符串")
+		}
+		cfg.ProjectRoot = *document.ProjectRoot
+	}
+	cfg.Workspace.Name = *document.Workspace.Name
+	cfg.Workspace.Slug = *document.Workspace.Slug
+	cfg.Workspace.OrgID = *document.Workspace.OrgID
+	return cfg, nil
+}
+
+func validateProjectRunConfig(cfg projectRunConfig) error {
+	if cfg.Host == "" || strings.TrimSpace(cfg.Host) != cfg.Host {
+		return errors.New("项目配置 host 必须是非空且不含首尾空白的字符串")
+	}
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		return errors.New("项目配置 port 必须是 1-65535 之间的整数")
+	}
+	for name, value := range map[string]string{
+		"workspace.name":  cfg.Workspace.Name,
+		"workspace.slug":  cfg.Workspace.Slug,
+		"workspace.orgId": cfg.Workspace.OrgID,
+	} {
+		if value == "" || strings.TrimSpace(value) != value {
+			return fmt.Errorf("项目配置 %s 必须是非空且不含首尾空白的字符串", name)
+		}
+	}
+	if cfg.ProjectRoot != "" && strings.TrimSpace(cfg.ProjectRoot) != cfg.ProjectRoot {
+		return errors.New("项目配置 projectRoot 不能包含首尾空白")
+	}
+	if cfg.HookMode != projectHookModeOff && cfg.HookMode != projectHookModeDryRun && cfg.HookMode != projectHookModeLive {
+		return errors.New("项目配置 hookMode 只支持 off、dry-run 或 live")
+	}
+	return nil
+}
+
+func validateProjectConfigFieldNames(raw []byte) error {
+	root, ok := projectConfigJSONObject(raw)
+	if !ok {
+		return nil
+	}
+	if err := rejectUnknownProjectConfigFields(root, map[string]struct{}{
+		"projectRoot": {},
+		"host":        {},
+		"port":        {},
+		"workspace":   {},
+		"hookMode":    {},
+		"openBrowser": {},
+	}, ""); err != nil {
+		return err
+	}
+	workspaceRaw, exists := root["workspace"]
+	if !exists {
+		return nil
+	}
+	workspace, ok := projectConfigJSONObject(workspaceRaw)
+	if !ok {
+		return nil
+	}
+	return rejectUnknownProjectConfigFields(workspace, map[string]struct{}{
+		"name":  {},
+		"slug":  {},
+		"orgId": {},
+	}, "workspace.")
+}
+
+func projectConfigJSONObject(raw []byte) (map[string]json.RawMessage, bool) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return nil, false
+	}
+	return object, true
+}
+
+func rejectUnknownProjectConfigFields(fields map[string]json.RawMessage, allowed map[string]struct{}, prefix string) error {
+	for name := range fields {
+		if _, ok := allowed[name]; !ok {
+			return fmt.Errorf("项目配置 JSON 包含未知字段 %q", prefix+name)
+		}
+	}
+	return nil
 }
 
 func rejectDuplicateJSONFields(raw []byte) error {
@@ -403,6 +547,9 @@ func walkJSONValue(decoder *json.Decoder) error {
 	token, err := decoder.Token()
 	if err != nil {
 		return errors.New("JSON 无效")
+	}
+	if token == nil {
+		return errors.New("JSON 字段不能为 null")
 	}
 	delim, ok := token.(json.Delim)
 	if !ok {
@@ -460,31 +607,6 @@ func defaultProjectRunConfig(root string) projectRunConfig {
 	cfg.Workspace.Slug = "default"
 	cfg.Workspace.OrgID = "local-org"
 	return cfg
-}
-
-func (c *projectRunConfig) normalize(root string) {
-	if c == nil {
-		return
-	}
-	if strings.TrimSpace(c.ProjectRoot) == "" {
-		c.ProjectRoot = root
-	}
-	if strings.TrimSpace(c.Host) == "" {
-		c.Host = "127.0.0.1"
-	}
-	if c.Port <= 0 || c.Port > 65535 {
-		c.Port = 8080
-	}
-	c.HookMode = strings.ToLower(strings.TrimSpace(c.HookMode))
-	if strings.TrimSpace(c.Workspace.Name) == "" {
-		c.Workspace.Name = "Default Workspace"
-	}
-	if strings.TrimSpace(c.Workspace.Slug) == "" {
-		c.Workspace.Slug = "default"
-	}
-	if strings.TrimSpace(c.Workspace.OrgID) == "" {
-		c.Workspace.OrgID = "local-org"
-	}
 }
 
 func parseProjectHookMode(raw string) (string, error) {
