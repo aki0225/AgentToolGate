@@ -56,7 +56,7 @@ describe("真实 Codex 多场景证据", () => {
     );
   });
 
-  it("每个场景的同步录制都与派生摘要一致", () => {
+  it("每个场景的验证回放都与派生摘要一致", () => {
     for (const scenario of realCodexScenarios) {
       expect(scenario.recordingData.header.version).toBe(2);
       expect(scenario.recordingData.events).toHaveLength(scenario.recording.eventCount);
@@ -78,6 +78,7 @@ describe("真实 Codex 多场景证据", () => {
     expect(realCodexProof.boundaries.credentialsIncluded).toBe(false);
     expect(realCodexProof.boundaries.providerIdentityIncluded).toBe(false);
     expect(realCodexProof.boundaries.osSandboxClaimed).toBe(false);
+    expect(typeof realCodexProof.boundaries.synchronizedEvents).toBe("boolean");
     expect(realCodexProof.boundaries.completeDlpClaimed).toBe(false);
     expect(realCodexProof.boundaries.codexInteractiveApprovalClaimed).toBe(false);
     expect(realCodexProof.boundaries.codexAskMapping).toBe("conservative_deny");
@@ -120,6 +121,12 @@ describe("真实 Codex 多场景证据", () => {
     interactiveAsk.boundaries.codexAskMapping = "interactive_ask" as "conservative_deny";
     expect(() => parseRealCodexProofDocument(interactiveAsk)).toThrow(
       /codexAskMapping 必须为 conservative_deny/
+    );
+
+    const narrativeReplay = cloneProof();
+    narrativeReplay.boundaries.synchronizedEvents = false;
+    expect(parseRealCodexProofDocument(narrativeReplay).boundaries.synchronizedEvents).toBe(
+      false
     );
 
     const forgedAction = cloneProof();

@@ -359,6 +359,13 @@ function assertBoolean(value, expected, label) {
   }
 }
 
+function assertBooleanValue(value, label) {
+  if (typeof value !== "boolean") {
+    fail(`${label} 必须是布尔值`);
+  }
+  return value;
+}
+
 function validateNoSensitivePatterns(name, bytes) {
   const text = bytes.toString("utf8");
   const forbidden = [
@@ -749,9 +756,8 @@ function validateV2Summary(files) {
   );
   assertBoolean(boundary.syntheticDataOnly, true, "summary.evidenceBoundary.syntheticDataOnly");
   assertBoolean(boundary.disposableRunner, true, "summary.evidenceBoundary.disposableRunner");
-  assertBoolean(
+  assertBooleanValue(
     boundary.synchronizedTerminalEventRecording,
-    true,
     "summary.evidenceBoundary.synchronizedTerminalEventRecording"
   );
   assertBoolean(
@@ -1261,9 +1267,8 @@ function validateSummary(files) {
   );
   assertBoolean(summary.evidenceBoundary.syntheticDataOnly, true, "syntheticDataOnly");
   assertBoolean(summary.evidenceBoundary.disposableRunner, true, "disposableRunner");
-  assertBoolean(
+  assertBooleanValue(
     summary.evidenceBoundary.synchronizedTerminalEventRecording,
-    true,
     "synchronizedTerminalEventRecording"
   );
   assertBoolean(

@@ -581,6 +581,17 @@ describe("真实 Codex 公开证据", () => {
     expect(derived.scenarios[1].actionEvidence.observed).toBe(true);
   });
 
+  it("接受由真实证据生成但不冒充原始事件同步的叙事回放", async () => {
+    const root = await createV2Evidence();
+    await mutateJSON(root, "summary.json", (summary) => {
+      summary.evidenceBoundary.synchronizedTerminalEventRecording = false;
+    });
+
+    const evidence = await loadAndValidateV2Evidence(root);
+
+    expect(evidence.summary.boundaries.synchronizedEvents).toBe(false);
+  });
+
   it("历史动作证据缺失时明确降级为合同复原，并拒绝伪造动作", async () => {
     const missing = await createV2Evidence();
     await mutateJSON(missing, "summary.json", (summary) => {
