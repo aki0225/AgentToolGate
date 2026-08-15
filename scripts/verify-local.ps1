@@ -1,4 +1,4 @@
-# AgentToolGate 本地验证脚本。
+﻿# AgentToolGate 本地验证脚本。
 # 默认保持轻量：不启动 Docker、不自动启动 PostgreSQL、不跑 E2E。
 [CmdletBinding()]
 param(
@@ -61,7 +61,7 @@ $PowerShellExe = (Get-Process -Id $PID).Path
 
 $backendProcess = $null
 $frontendProcess = $null
-$pgShouldStop = $false
+$pgStartedByScript = $false
 $verificationSucceeded = $false
 $managedHTTPMockPort = $E2EHTTPPort
 $frontendBaseUrl = "http://127.0.0.1:$FrontendPort"
@@ -204,8 +204,12 @@ function Test-PostgresRunning {
 
 function Start-LocalPostgresIfNeeded {
     if (Test-PostgresRunning) {
-        Write-Host "检测到本地 PostgreSQL 已在运行；按 -WithPostgres 验收要求，脚本结束时会停止该实例。"
-        $script:pgShouldStop = $true
+        if ($script:pgStartedByScript) {
+            Write-Host "本次验证启动的 PostgreSQL 已在运行。"
+        }
+        else {
+            Write-Host "检测到 PostgreSQL 已在运行；复用该实例，脚本结束时不会停止它。"
+        }
         return
     }
 
@@ -214,23 +218,23 @@ function Start-LocalPostgresIfNeeded {
     if ($LASTEXITCODE -ne 0) {
         throw "启动本地 PostgreSQL 失败。"
     }
-    $script:pgShouldStop = $true
+    $script:pgStartedByScript = $true
 }
 
 function Stop-LocalPostgresIfStarted {
-    if (-not $script:pgShouldStop) {
+    if (-not $script:pgStartedByScript) {
         return
     }
 
-    Write-Host "`n==> 停止本地 PostgreSQL" -ForegroundColor Cyan
+    Write-Host "`n==> 停止本次验证启动的 PostgreSQL" -ForegroundColor Cyan
     & $PgCtl stop -D $PgData
     if ($LASTEXITCODE -ne 0) {
         throw "停止本地 PostgreSQL 失败。"
     }
-    & $PgCtl status -D $PgData
-    if ($LASTEXITCODE -eq 0) {
+    if (Test-PostgresRunning) {
         throw "PostgreSQL 仍在运行，未达到 no server running。"
     }
+    $script:pgStartedByScript = $false
 }
 
 function Start-ManagedServices {
@@ -480,6 +484,10 @@ try {
 
     if ($WithE2E -and $WithMultiActorE2E) {
         throw "WithE2E 和 WithMultiActorE2E 不能同时使用，请分开运行。"
+    }
+
+    Invoke-Step -Name "PostgreSQL 生命周期回归测试" -Directory $RepoRoot -Command {
+        & $PowerShellExe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\tests\verify-local-postgres.tests.ps1"
     }
 
     Invoke-Step -Name "后端 go test ./..." -Directory (Join-Path $RepoRoot "backend") -Command {

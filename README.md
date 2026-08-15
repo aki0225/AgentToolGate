@@ -99,7 +99,26 @@ Linux 用不带 `.exe` 的 `./agenttoolgate`，参数一样。`init codex` 和 `
 
 如果项目已有 `.codex/hooks.json`，普通 `init codex` 会在写入前停止，避免它和 `.codex/config.toml` 的 Hook 被同层重复加载；请先人工保留一种来源。继续使用 JSON 时可用 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 单独安装或更新 adapter/Core，不会创建项目 TOML。ATG 会在目标 Git 仓库的本地 `info/exclude` 中按需追加 `/.tmp/agenttoolgate/`，不改项目 `.gitignore`，并避免 control、SQLite 和 recovery 污染 `git status`。刷新会把旧运行文件保留到该目录并打印路径；确认新 Hook 稳定后再手工清理。随后重新运行 `up` 发布本次 endpoint 和二进制路径，再在 `/hooks` 中复核信任状态。
 
-项目 Hook 需要 Git 与 Python 3。hook 默认 `dry-run`，不会一上来就真阻断。Full Access 模式本身不会禁用已加载的 Hook，但这不等于完整保护：只有 Hook 已启用并信任、ATG 处于 `live`、调用进入 Codex 支持的 `PreToolUse` 路径，且 Hook 成功返回有效 `deny` 或合法退出码 `2` 时，动作才会被实时阻断。Hook 失败、输出无效、被禁用或绕过、处于 `off` / `dry-run`，以及未覆盖的工具路径，都应视为没有 ATG 实时阻断。完整步骤见 [AI 客户端接入指南](docs/ai-client-integration.md#51-启用项目级本地动作-hook)。
+项目 Hook 需要 Git 与 Python 3.10+。Windows 优先使用 `python`，不可用时支持
+`py -3`；Linux / macOS 使用 `python3`。hook 默认 `dry-run`，不会一上来就真阻断。
+Full Access 模式本身不会禁用已加载的 Hook，但这不等于完整保护：只有 Hook 已启用并
+信任、ATG 处于 `live`、调用进入 Codex 支持的 `PreToolUse` 路径，且 Hook 成功返回
+有效 `deny` 或合法退出码 `2` 时，动作才会被实时阻断。Hook 被禁用或绕过、处于
+`off` / `dry-run`，以及未覆盖的工具路径，都应视为没有 ATG 实时阻断。`live`
+模式下无法解析的 Hook 输入会保守拒绝；完整步骤见
+[AI 客户端接入指南](docs/ai-client-integration.md#51-启用项目级本地动作-hook)。
+
+可以从任意目录精确控制目标项目：
+
+```powershell
+.\agenttoolgate.exe hook control status --dir <project>
+.\agenttoolgate.exe hook control live --dir <project> --reason "enable guarded session"
+.\agenttoolgate.exe hook control off --dir <project> --reason "pause ATG hooks"
+```
+
+该命令切换的是当前运行时 control。输出中的 `nextUpMode` 表示下一次 `up` 会从
+`.agenttoolgate/config.json` 读取的模式；两者不一致时 CLI 会明确警告。项目级服务
+停止后，属于该进程的 control 会自动回到 `off`。
 
 AgentToolGate 不碰系统策略、注册表或 shell profile。Claude Code 的配置仍由用户显式接入。
 

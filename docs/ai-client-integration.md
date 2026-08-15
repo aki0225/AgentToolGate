@@ -196,7 +196,7 @@ codex mcp add agenttoolgate -- npx -y mcp-remote http://127.0.0.1:8090/mcp/sse -
 
 下面的流程已按 Codex CLI `0.147.0` 的项目 Hook 格式核对。Codex 后续版本若调整 Hook 配置，以 `agenttoolgate.exe doctor --dir <project>`、Codex `/hooks` 和 [Codex Hooks 官方文档](https://learn.chatgpt.com/docs/hooks) 共同确认。
 
-1. 确认系统中有 Git 与 Python 3。Windows 的项目配置调用 `python`，Linux / macOS 调用 `python3`；Hook 从 `git rev-parse --show-toplevel` 定位脚本，因此从仓库子目录启动也能工作。
+1. 确认系统中有 Git 与 Python 3.10+。Windows 优先使用 `python`，不可用时由初始化结果使用 `py -3`；Linux / macOS 使用 `python3`。Hook 从 `git rev-parse --show-toplevel` 定位脚本，因此从仓库子目录启动也能工作。
 2. 在要保护的项目根目录运行 `agenttoolgate.exe init codex`。已有 `.codex/config.toml` 或 Hook 文件不会被覆盖；若显示“已跳过”，需要人工合并或核对自定义内容。若已有 `.codex/hooks.json`，普通初始化会在写入任何文件前停止；请先人工选择继续使用 JSON，或备份并移除它后迁移到 ATG 默认 TOML，不要让两种来源同层并存。继续使用 JSON 时，运行 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 只安装或刷新 adapter/Core。
 3. 打开 `.agenttoolgate/clients/codex.config.snippet.toml`，把 `<repo>` 替换为 Codex 实际使用的规范化绝对路径，再按键合并到用户级 `config.toml`。Windows Codex `0.147.0` 的实际形式类似 `[projects.'e:\workspace\demo']`；TOML 单引号会原样保留反斜杠。保留已有设置，只新增或更新对应键，不要重复定义 TOML 表。默认位置是 `~/.codex/config.toml`，使用 ccswitch 时合并到它实际管理的用户配置。
 4. 如果项目 `.codex/config.toml` 已存在，ATG 会保留原文件，并生成 `.agenttoolgate/clients/codex.project-hook.snippet.toml`。按键合并该片段后再次运行 `doctor --dir <project>`；不要为了省事覆盖现有项目配置。
@@ -207,11 +207,17 @@ codex mcp add agenttoolgate -- npx -y mcp-remote http://127.0.0.1:8090/mcp/sse -
 默认模式是 `dry-run`。先检查 `.tmp/agenttoolgate/hook-dry-run.jsonl` 的脱敏预览，再按需切到真实拦截：
 
 ```powershell
-agenttoolgate.exe hook control status
-agenttoolgate.exe hook control live --reason "enable guarded session"
+agenttoolgate.exe hook control status --dir <project>
+agenttoolgate.exe hook control live --dir <project> --reason "enable guarded session"
 ```
 
-Codex Full Access 与 Hook 是两套独立机制。Full Access 模式本身不会禁用已加载的 Hook，但这不是充分安全条件。只有项目层已加载、Hook 已启用并信任、ATG 处于 `live`、调用进入受支持的 `PreToolUse` 路径，且 Hook 成功返回有效 `deny` 或退出码 `2` 时，ATG 才会阻断动作。Hook 失败、输出无效、被禁用或绕过、处于 `off` / `dry-run`，以及未覆盖的工具路径，均不受 ATG 实时阻断。Codex 对普通 Hook 失败会报告事件并继续工具调用；退出码 `2` 是受支持的显式阻断方式。
+`hook control` 只切换当前运行时状态；输出中的 `nextUpMode` 表示下一次 `up` 会从
+项目配置读取的模式。服务正常停止后，属于该进程的 control 会自动改为 `off`；若前一个
+`up` 实例仍可达，则恢复到该实例的 control。服务异常退出时保留 `live` / `dry-run`
+和 endpoint，使 Hook 进入离线保守路径并让 `doctor` 明确显示 unreachable。并发
+更新不会被覆盖。
+
+Codex Full Access 与 Hook 是两套独立机制。Full Access 模式本身不会禁用已加载的 Hook，但这不是充分安全条件。只有项目层已加载、Hook 已启用并信任、ATG 处于 `live`、调用进入受支持的 `PreToolUse` 路径，且 Hook 成功返回有效 `deny` 或退出码 `2` 时，ATG 才会阻断动作。Hook 被禁用或绕过、处于 `off` / `dry-run`，以及未覆盖的工具路径，均不受 ATG 实时阻断。`live` 下无法解析的 Hook 输入会保守拒绝；`off` / `dry-run` 对异常输入保持 no-op。
 
 Codex 当前没有完整的 ask / confirm 体验。需要确认的本地动作会保守 `deny`，在 ATG UI 批准后由客户端精确重试。ATG 仍是 guardrail，不是 OS sandbox。
 
@@ -244,7 +250,8 @@ Codex 当前没有完整的 ask / confirm 体验。需要确认的本地动作�
 | Codex `/hooks` 看不到项目 Hook | 确认从目标项目启动 Codex、用户级配置已信任该项目、项目 `.codex/config.toml` 存在且 `[features] hooks = true`。 |
 | `/hooks` 显示 untrusted / changed | 核对 Hook 定义和当前 Hash；确认来源可信后由用户重新信任，不写死旧 `trusted_hash`。若 `doctor` 单独显示 adapter/Core `modified`，先核对差异；确认覆盖时运行 `init codex --refresh-hooks`，重新运行 `up` 后再审查 Hook trust。 |
 | `doctor` 提示 config.toml 与 hooks.json 同层并存 | Codex 会合并两个来源。人工保留一种，不要同时启用；`init codex` 对新检测到的 `hooks.json` 会在写入前停止。 |
-| Hook 显示 failed，但工具仍执行 | 检查 Git、Python 3 命令是否存在、`.codex/hooks/` 是否完整、`doctor --dir <project>` 是否显示 `current`。普通 Hook 失败或非法输出本身不是阻断结果；有效 `deny` 或退出码 `2` 才会阻断。 |
+| Hook 显示 failed，但工具仍执行 | 检查 Git、Python 3.10+ 命令是否存在、`.codex/hooks/` 是否完整、`doctor --dir <project>` 是否显示 `current`。Windows 可使用 `python` 或 `py -3`。`live` 下 ATG 能识别的异常输入会保守拒绝；宿主完全绕过 Hook 时仍不受保护。 |
+| `doctor` 显示 endpoint unreachable | 确认项目级 `up` 是否异常退出、端口是否被其他进程占用。正常停止会回到 `off`；异常退出会保留当前模式，使 Hook 继续按离线保守策略处理。 |
 | 端口被占用 | 用 `--port 8090` 或 `--addr 127.0.0.1:8090` 重新启动，并同步修改 MCP URL。 |
 
 ## 9. 安全边界

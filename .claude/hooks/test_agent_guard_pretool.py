@@ -1521,6 +1521,88 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
                 self.assertEqual(decision["permissionDecision"], "deny")
                 self.assertIn("hook control invalid", decision["permissionDecisionReason"])
 
+    def test_live_invalid_input_fails_closed_without_payload_leak(self) -> None:
+        marker = "synthetic-hook-secret"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            self.set_hook_control(repo, "live")
+            cases = (
+                ("空输入", ""),
+                ("非法 JSON", f'{{"payload":"{marker}"'),
+                ("非对象", json.dumps([marker], ensure_ascii=False)),
+                (
+                    "缺少工具名",
+                    json.dumps(
+                        {
+                            "cwd": str(repo),
+                            "tool_input": {"content": marker},
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+                (
+                    "非法工作目录",
+                    json.dumps(
+                        {
+                            "cwd": "bad\u0000cwd",
+                            "tool_name": "shell_command",
+                            "tool_input": {"command": f"echo {marker}"},
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                for name, stdin_text in cases:
+                    with self.subTest(case=name):
+                        raw = self.invoke_raw(
+                            stdin_text,
+                            post_json=lambda *_args, **_kwargs: self.fail("异常输入不应调用后端"),
+                            go_cli=lambda _payload: self.fail("异常输入不应调用 Go CLI"),
+                            enable_live=False,
+                        )
+                        output = json.loads(raw)["hookSpecificOutput"]
+                        self.assertEqual(output["permissionDecision"], "deny")
+                        self.assertEqual(
+                            output["permissionDecisionReason"],
+                            "AgentToolGate blocked invalid hook input",
+                        )
+                        self.assertNotIn("updatedInput", output)
+                        self.assertNotIn(marker, raw)
+            finally:
+                os.chdir(original_cwd)
+
+    def test_off_and_dry_run_invalid_input_remain_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                for mode in ("off", "dry-run"):
+                    self.set_hook_control(repo, mode)
+                    for stdin_text in (
+                        "",
+                        "{bad json",
+                        json.dumps(["not-an-object"]),
+                        json.dumps({"cwd": str(repo), "tool_input": {"content": "missing-tool"}}),
+                        json.dumps({"cwd": "bad\u0000cwd", "tool_name": "shell_command"}),
+                    ):
+                        with self.subTest(mode=mode, stdin=stdin_text):
+                            raw = self.invoke_raw(
+                                stdin_text,
+                                post_json=lambda *_args, **_kwargs: self.fail("非 live 异常输入不应调用后端"),
+                                go_cli=lambda _payload: self.fail("非 live 异常输入不应调用 Go CLI"),
+                                enable_live=False,
+                            )
+                            self.assertEqual(raw, "")
+                self.assertFalse((repo / ".tmp" / "agenttoolgate" / "hook-dry-run.jsonl").exists())
+            finally:
+                os.chdir(original_cwd)
+
     def test_dry_run_records_preview_without_blocking_or_calling_backend(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
@@ -1860,7 +1942,7 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
 
     def invoke_raw(
         self,
-        input_data: dict[str, Any],
+        input_data: dict[str, Any] | str,
         post_json: Any | None = None,
         go_cli: Any | None = None,
         enable_live: bool = True,
@@ -1872,12 +1954,17 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
         old_disable = os.environ.pop("TRELLIS_DISABLE_HOOKS", None)
         old_hooks = os.environ.pop("TRELLIS_HOOKS", None)
         try:
-            repo_root = HOOK.find_repo_root(input_data.get("cwd", os.getcwd()))
+            if isinstance(input_data, dict):
+                stdin_text = json.dumps(input_data, ensure_ascii=False)
+                repo_root = HOOK.find_repo_root(input_data.get("cwd", os.getcwd()))
+            else:
+                stdin_text = input_data
+                repo_root = HOOK.find_repo_root(os.getcwd())
             if enable_live and repo_root is not None:
                 self.set_hook_control(Path(repo_root), "live")
             HOOK.call_agenttoolgate_guard_hook_claude = go_cli or (lambda _payload: None)
             HOOK.post_json = post_json or (lambda *args, **kwargs: (0, {}, "offline"))
-            sys.stdin = io.StringIO(json.dumps(input_data, ensure_ascii=False))
+            sys.stdin = io.StringIO(stdin_text)
             captured = io.StringIO()
             sys.stdout = captured
             self.assertEqual(HOOK.main(), 0)

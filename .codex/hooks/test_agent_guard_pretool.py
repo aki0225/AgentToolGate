@@ -897,9 +897,92 @@ class CodexHookBridgeTest(unittest.TestCase):
             ticket_dir = repo / ".tmp" / "agenttoolgate" / "hook-tickets"
             self.assertFalse(any(ticket_dir.glob("*.json")))
 
-    def test_invalid_json_does_not_crash(self) -> None:
-        raw = self.invoke_raw("{bad json", go_cli=lambda _payload: self.fail("非法 JSON 不应调用 Go CLI"))
-        self.assertEqual(raw, "")
+    def test_live_invalid_input_fails_closed_without_payload_leak(self) -> None:
+        marker = "synthetic-hook-secret"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            self.set_hook_control(repo, "live")
+            cases = (
+                ("空输入", ""),
+                ("非法 JSON", f'{{"payload":"{marker}"'),
+                ("非对象", json.dumps([marker], ensure_ascii=False)),
+                (
+                    "缺少工具名",
+                    json.dumps(
+                        {
+                            "cwd": str(repo),
+                            "tool_input": {"content": marker},
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+                (
+                    "非法工作目录",
+                    json.dumps(
+                        {
+                            "cwd": "bad\u0000cwd",
+                            "tool_name": "shell_command",
+                            "tool_input": {"command": f"echo {marker}"},
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                for name, stdin_text in cases:
+                    with self.subTest(case=name):
+                        raw = self.invoke_raw(
+                            stdin_text,
+                            go_cli=lambda _payload: self.fail("异常输入不应调用 Go CLI"),
+                            post_json=lambda *_args, **_kwargs: self.fail("异常输入不应调用后端"),
+                            enable_live_control=False,
+                        )
+                        output = json.loads(raw)["hookSpecificOutput"]
+                        self.assertEqual(output["permissionDecision"], "deny")
+                        self.assertEqual(
+                            output["permissionDecisionReason"],
+                            "AgentToolGate blocked invalid hook input",
+                        )
+                        self.assertNotIn("updatedInput", output)
+                        self.assertNotIn(marker, raw)
+            finally:
+                os.chdir(original_cwd)
+
+    def test_off_and_dry_run_invalid_input_remain_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(repo)
+                for mode in ("off", "dry-run"):
+                    self.set_hook_control(repo, mode)
+                    for stdin_text in (
+                        "",
+                        "{bad json",
+                        json.dumps(["not-an-object"]),
+                        json.dumps({"cwd": str(repo), "tool_input": {"content": "missing-tool"}}),
+                        json.dumps({"cwd": "bad\u0000cwd", "tool_name": "shell_command"}),
+                    ):
+                        with self.subTest(mode=mode, stdin=stdin_text):
+                            raw = self.invoke_raw(
+                                stdin_text,
+                                go_cli=lambda _payload: self.fail("非 live 异常输入不应调用 Go CLI"),
+                                post_json=lambda *_args, **_kwargs: self.fail("非 live 异常输入不应调用后端"),
+                                enable_live_control=False,
+                            )
+                            self.assertEqual(raw, "")
+                self.assertFalse((repo / ".tmp" / "agenttoolgate" / "hook-dry-run.jsonl").exists())
+            finally:
+                os.chdir(original_cwd)
+
+    def test_embedded_codex_hook_matches_repo_hook(self) -> None:
+        repo_root = Path(__file__).parents[2]
+        embedded = repo_root / "backend" / "internal" / "hookassets" / "assets" / "codex" / "agent-guard-pretool.py"
+        self.assertEqual(Path(HOOK.__file__).read_bytes(), embedded.read_bytes())
 
     def test_go_cli_output_contract_is_enforced(self) -> None:
         original_run = HOOK.subprocess.run

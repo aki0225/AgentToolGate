@@ -30,6 +30,7 @@ const (
 	projectRuntimeExclude = "/.tmp/agenttoolgate/"
 	codexUnixHookCommand  = `python3 "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
 	codexWinHookCommand   = `python "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
+	codexWinPyHookCommand = `py -3 "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
 )
 
 type projectRunConfig struct {
@@ -77,6 +78,10 @@ func runInitCommand(opts commandOptions, stdout, stderr io.Writer) int {
 	if initTarget == projectInitModeAll || initTarget == projectInitModeCodex {
 		if err := validateCodexProjectGitRoot(root); err != nil {
 			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		if _, err := findCodexPython(); err != nil {
+			fmt.Fprintln(stderr, "Codex Hook 需要 Python 3.10+：", err)
 			return 2
 		}
 	}
@@ -136,6 +141,7 @@ func runUpCommand(opts commandOptions, stdout, stderr io.Writer) int {
 	return startServer(cfg, openBrowser, stdout, stderr,
 		activation.publish,
 		activation.rollback,
+		activation.deactivate,
 	)
 }
 
@@ -741,6 +747,10 @@ func writeProjectHookControlAtPath(root, path, mode string) error {
 }
 
 func marshalProjectHookControlPayload(mode, endpoint, executable string) ([]byte, error) {
+	return marshalProjectHookControlPayloadWithReason(mode, endpoint, executable, "项目级 up")
+}
+
+func marshalProjectHookControlPayloadWithReason(mode, endpoint, executable, reason string) ([]byte, error) {
 	normalizedMode, err := parseProjectHookMode(mode)
 	if err != nil {
 		return nil, err
@@ -756,7 +766,7 @@ func marshalProjectHookControlPayload(mode, endpoint, executable string) ([]byte
 	doc := hookControlDocument{
 		Mode:       normalizedMode,
 		UpdatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
-		Reason:     "项目级 up",
+		Reason:     strings.TrimSpace(reason),
 		Endpoint:   normalizedEndpoint,
 		Executable: normalizedExecutable,
 	}
@@ -863,6 +873,54 @@ func (activation *projectHookControlActivation) rollback() error {
 		return nil
 	}
 	if err := os.Remove(activation.path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	activation.published = false
+	return nil
+}
+
+func (activation *projectHookControlActivation) deactivate() error {
+	if !activation.published {
+		return nil
+	}
+	if err := validateProjectFileTarget(activation.root, activation.path); err != nil {
+		return err
+	}
+	current, err := os.ReadFile(activation.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			activation.published = false
+			return nil
+		}
+		return err
+	}
+	if !bytes.Equal(current, activation.publishedPayload) {
+		activation.published = false
+		return nil
+	}
+	if activation.hadPrevious {
+		previous, decodeErr := decodeHookControlDocument(activation.previous)
+		if decodeErr == nil &&
+			(previous.Mode == projectHookModeLive || previous.Mode == projectHookModeDryRun) &&
+			previous.Endpoint != "" &&
+			hookEndpointReachable(previous.Endpoint) {
+			if err := writeProjectHookControlPayload(activation.root, activation.path, activation.previous); err != nil {
+				return err
+			}
+			activation.published = false
+			return nil
+		}
+	}
+	payload, err := marshalProjectHookControlPayloadWithReason(
+		projectHookModeOff,
+		"",
+		"",
+		"项目级 up 已停止",
+	)
+	if err != nil {
+		return err
+	}
+	if err := writeProjectHookControlPayload(activation.root, activation.path, payload); err != nil {
 		return err
 	}
 	activation.published = false
@@ -1035,7 +1093,7 @@ func renderCodexProjectHookConfig() string {
 	b.WriteString("[[hooks.PreToolUse.hooks]]\n")
 	b.WriteString("type = \"command\"\n")
 	b.WriteString("command = '" + codexUnixHookCommand + "'\n")
-	b.WriteString("commandWindows = '" + codexWinHookCommand + "'\n")
+	b.WriteString("commandWindows = '" + currentCodexWindowsHookCommand() + "'\n")
 	b.WriteString("timeout = 30\n")
 	b.WriteString("statusMessage = \"AgentToolGate 正在检查工具调用\"\n")
 	return b.String()
@@ -1080,7 +1138,7 @@ func renderClaudeSettingsSnippet(cfg projectRunConfig) string {
 	return mustJSONLine(doc)
 }
 
-const localActionHookMatcher = "^(Bash|Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|command|powershell|pwsh|apply_patch|http[.]request|network[.]request|mcp__.*)$"
+const localActionHookMatcher = "^(Bash|Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|shell_command|sh|command|powershell|pwsh|apply_patch|http[.]request|network[.]request|mcp__.*)$"
 
 func mustJSONLine(v any) string {
 	var buf bytes.Buffer
@@ -1897,7 +1955,7 @@ func codexProjectHookConfigured(text string) bool {
 	finishHandler := func() {
 		if matcherMatches && handler["type"] == "command" &&
 			handler["command"] == codexUnixHookCommand &&
-			(handler["commandWindows"] == codexWinHookCommand || handler["command_windows"] == codexWinHookCommand) {
+			codexWindowsHookCommandSupported(firstNonEmptyString(handler["commandWindows"], handler["command_windows"])) {
 			configured = true
 		}
 		handler = map[string]string{}
@@ -1986,6 +2044,25 @@ func codexProjectHookConfigured(text string) bool {
 	return featureHooksEnabled && configured
 }
 
+func codexWindowsHookCommandSupported(command string) bool {
+	return command == codexWinHookCommand || command == codexWinPyHookCommand
+}
+
+func currentCodexWindowsHookCommand() string {
+	if runtime.GOOS != "windows" {
+		return codexWinHookCommand
+	}
+	invocation, err := findCodexPython()
+	return selectCodexWindowsHookCommand(invocation, err)
+}
+
+func selectCodexWindowsHookCommand(invocation codexPythonInvocation, err error) string {
+	if err == nil && invocation.command == "py" {
+		return codexWinPyHookCommand
+	}
+	return codexWinHookCommand
+}
+
 func stripTOMLComment(line string) string {
 	var quote rune
 	escaped := false
@@ -2030,22 +2107,61 @@ func parseTOMLString(value string) (string, bool) {
 	return parsed, err == nil
 }
 
+type codexPythonInvocation struct {
+	command string
+	path    string
+	args    []string
+	display string
+}
+
+func codexPythonCandidates(goos string) []codexPythonInvocation {
+	if goos == "windows" {
+		return []codexPythonInvocation{
+			{command: "python", display: "python"},
+			{command: "py", args: []string{"-3"}, display: "py -3"},
+		}
+	}
+	return []codexPythonInvocation{{command: "python3", display: "python3"}}
+}
+
+func findCodexPython() (codexPythonInvocation, error) {
+	var unusable []string
+	var missing []string
+	for _, candidate := range codexPythonCandidates(runtime.GOOS) {
+		path, err := exec.LookPath(candidate.command)
+		if err != nil {
+			missing = append(missing, candidate.display)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		args := append(append([]string(nil), candidate.args...),
+			"-c",
+			"import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)",
+		)
+		err = exec.CommandContext(ctx, path, args...).Run()
+		cancel()
+		if err != nil {
+			unusable = append(unusable, candidate.display)
+			continue
+		}
+		candidate.path = path
+		return candidate, nil
+	}
+	if len(unusable) > 0 {
+		return codexPythonInvocation{}, fmt.Errorf("已找到但不可用：%s；要求 Python 3.10+", strings.Join(unusable, ", "))
+	}
+	return codexPythonInvocation{}, fmt.Errorf("未找到 %s", strings.Join(missing, " 或 "))
+}
+
 func codexPythonStatus() string {
-	command := "python3"
-	if runtime.GOOS == "windows" {
-		command = "python"
-	}
-	path, err := exec.LookPath(command)
+	invocation, err := findCodexPython()
 	if err != nil {
-		return "missing (" + command + ")"
+		if strings.Contains(err.Error(), "已找到但不可用") {
+			return "unusable (" + err.Error() + ")"
+		}
+		return "missing (" + err.Error() + ")"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	probe := exec.CommandContext(ctx, path, "-c", "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)")
-	if err := probe.Run(); err != nil {
-		return "unusable (" + command + ", requires Python 3.10+)"
-	}
-	return "available (" + command + ", Python 3.10+)"
+	return "available (" + invocation.display + ", Python 3.10+)"
 }
 
 func commandAvailabilityStatus(command string) string {
@@ -2071,7 +2187,10 @@ func projectHookEndpointStatus(root string) string {
 	if doc.Endpoint == "" {
 		return "missing"
 	}
-	return doc.Endpoint
+	if hookEndpointReachable(doc.Endpoint) {
+		return doc.Endpoint + " (reachable)"
+	}
+	return doc.Endpoint + " (unreachable)"
 }
 
 func embeddedFileStatus(path string, expected []byte) string {

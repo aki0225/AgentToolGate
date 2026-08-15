@@ -89,6 +89,13 @@ def find_repo_root(start_path: str) -> str | None:
         current = current.parent
 
 
+def find_repo_root_safely(start_path: str) -> str | None:
+    try:
+        return find_repo_root(start_path)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def detect_adapter() -> str:
     parts = {part.lower() for part in Path(__file__).parts}
     if ".codex" in parts:
@@ -1538,23 +1545,53 @@ def build_output(adapter: str, decision: dict[str, Any], original_input: dict[st
     }
 
 
+def handle_invalid_hook_input(repo_root: str | None) -> None:
+    if repo_root is None:
+        return
+    try:
+        hook_mode, _, _ = read_hook_control(repo_root)
+    except HookControlError:
+        reason = "hook control invalid"
+    else:
+        if hook_mode != "live":
+            return
+        reason = "AgentToolGate blocked invalid hook input"
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+    print(json.dumps(output, ensure_ascii=False), flush=True)
+
+
 def main() -> int:
     if os.environ.get("TRELLIS_HOOKS") == "0" or os.environ.get("TRELLIS_DISABLE_HOOKS") == "1":
         return 0
 
     try:
         input_data = json.load(sys.stdin)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
+        handle_invalid_hook_input(find_repo_root_safely(os.getcwd()))
         return 0
     if not isinstance(input_data, dict):
+        handle_invalid_hook_input(find_repo_root_safely(os.getcwd()))
         return 0
 
-    repo_root = find_repo_root(input_data.get("cwd", os.getcwd()))
+    try:
+        repo_root = find_repo_root(input_data.get("cwd", os.getcwd()))
+    except (OSError, RuntimeError, ValueError):
+        handle_invalid_hook_input(find_repo_root_safely(os.getcwd()))
+        return 0
     if repo_root is None:
         return 0
 
     tool_name = get_tool_name(input_data)
-    if not tool_name or not is_guarded_tool(tool_name):
+    if not tool_name:
+        handle_invalid_hook_input(repo_root)
+        return 0
+    if not is_guarded_tool(tool_name):
         return 0
 
     tool_input = get_tool_input(input_data)
