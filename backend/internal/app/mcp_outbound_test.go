@@ -487,7 +487,9 @@ func TestMCPOutboundRejectDoesNotCallRemoteAndRedactsAudit(t *testing.T) {
 	t.Parallel()
 
 	mockServer := newMockOutboundMCPServer(t)
-	srv, st, workspace := newMCPAppTestServer(t, config.Config{})
+	srv, st, workspace := newMCPAppTestServer(t, config.Config{
+		MCPAllowedHosts: []string{mustURLHost(t, mockServer.URL)},
+	})
 
 	connector, err := st.CreateConnector(context.Background(), model.CreateConnectorInput{
 		WorkspaceID: workspace.ID,
@@ -565,7 +567,9 @@ func TestMCPOutboundRedactsRemoteOutput(t *testing.T) {
 
 	mockServer := newMockOutboundMCPServer(t)
 	mockServer.outputSecret = "remote-token-secret-12345"
-	srv, st, workspace := newMCPAppTestServer(t, config.Config{})
+	srv, st, workspace := newMCPAppTestServer(t, config.Config{
+		MCPAllowedHosts: []string{mustURLHost(t, mockServer.URL)},
+	})
 
 	connector, err := st.CreateConnector(context.Background(), model.CreateConnectorInput{
 		WorkspaceID: workspace.ID,
@@ -615,7 +619,9 @@ func TestMCPOutboundSyncUpdatesExistingToolAndPreservesDisabledState(t *testing.
 	t.Parallel()
 
 	mockServer := newMockOutboundMCPServer(t)
-	srv, st, workspace := newMCPAppTestServer(t, config.Config{})
+	srv, st, workspace := newMCPAppTestServer(t, config.Config{
+		MCPAllowedHosts: []string{mustURLHost(t, mockServer.URL)},
+	})
 
 	connector, err := st.CreateConnector(context.Background(), model.CreateConnectorInput{
 		WorkspaceID: workspace.ID,
@@ -699,6 +705,88 @@ func TestMCPOutboundSyncUpdatesExistingToolAndPreservesDisabledState(t *testing.
 	}
 }
 
+func TestMCPOutboundSyncValidatesEntireToolBatchBeforeWriting(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name       string
+		secondTool map[string]any
+		errorText  string
+	}{
+		{
+			name: "invalid name",
+			secondTool: map[string]any{
+				"name":        "invalid tool name",
+				"description": "Invalid names must fail the whole sync.",
+				"inputSchema": map[string]any{"type": "object"},
+			},
+			errorText: "tool name",
+		},
+		{
+			name: "duplicate normalized key",
+			secondTool: map[string]any{
+				"name":        "GET_FORECAST",
+				"description": "Duplicate normalized keys must fail the whole sync.",
+				"inputSchema": map[string]any{"type": "object"},
+			},
+			errorText: "duplicated",
+		},
+		{
+			name: "non-object input schema",
+			secondTool: map[string]any{
+				"name":        "create_note",
+				"description": "Non-object input schemas must fail the whole sync.",
+				"inputSchema": "not-an-object",
+			},
+			errorText: "input schema",
+		},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			mockServer := newMockOutboundMCPServer(t)
+			mockServer.replaceTools([]map[string]any{
+				{
+					"name":        "get_forecast",
+					"description": "This valid tool must not be persisted before the full batch is validated.",
+					"inputSchema": map[string]any{"type": "object"},
+				},
+				testCase.secondTool,
+			})
+			srv, st, workspace := newMCPAppTestServer(t, config.Config{
+				MCPAllowedHosts: []string{mustURLHost(t, mockServer.URL)},
+			})
+			connector, err := st.CreateConnector(context.Background(), model.CreateConnectorInput{
+				WorkspaceID: workspace.ID,
+				Type:        "mcp",
+				Name:        "atomic_sync",
+				DisplayName: "Atomic Sync MCP",
+				ConfigJSON: mustBootstrapConnectorJSON(map[string]any{
+					"transport": "sse",
+					"url":       mockServer.URL + "/mcp/sse",
+				}),
+				Enabled: true,
+			})
+			if err != nil {
+				t.Fatalf("create connector: %v", err)
+			}
+
+			resp := postJSON(t, srv, "/api/connectors/"+connector.ID+"/sync", `{}`)
+			if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), testCase.errorText) {
+				t.Fatalf("invalid remote tool batch must fail, got %d body=%s", resp.Code, resp.Body.String())
+			}
+			tools, err := st.ListTools(context.Background(), workspace.ID)
+			if err != nil {
+				t.Fatalf("list tools: %v", err)
+			}
+			for _, tool := range tools {
+				if tool.Namespace == "mcp_atomic_sync" {
+					t.Fatalf("failed sync must not persist partial remote tools: %+v", tools)
+				}
+			}
+		})
+	}
+}
+
 func TestMCPOutboundConnectorValidationRejectsUnsafeConfig(t *testing.T) {
 	t.Parallel()
 
@@ -761,7 +849,9 @@ func TestMCPOutboundWorkspaceScopedConnectorLookup(t *testing.T) {
 	t.Parallel()
 
 	mockServer := newMockOutboundMCPServer(t)
-	srv, st, workspace := newMCPAppTestServer(t, config.Config{})
+	srv, st, workspace := newMCPAppTestServer(t, config.Config{
+		MCPAllowedHosts: []string{mustURLHost(t, mockServer.URL)},
+	})
 	otherWorkspace, err := st.CreateWorkspace(context.Background(), model.CreateWorkspaceInput{
 		Name:                  "Other Workspace",
 		Slug:                  "other-" + uuid.NewString(),
@@ -826,7 +916,9 @@ func TestMCPOutboundEmitsConnectorSpanAttributes(t *testing.T) {
 
 	exporter := installInMemoryTracer(t)
 	mockServer := newMockOutboundMCPServer(t)
-	srv, st, workspace := newMCPAppTestServer(t, config.Config{})
+	srv, st, workspace := newMCPAppTestServer(t, config.Config{
+		MCPAllowedHosts: []string{mustURLHost(t, mockServer.URL)},
+	})
 
 	connector, err := st.CreateConnector(context.Background(), model.CreateConnectorInput{
 		WorkspaceID: workspace.ID,

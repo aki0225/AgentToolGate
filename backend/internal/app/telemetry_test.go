@@ -85,8 +85,8 @@ func TestHTTPRequestEmitsConnectorSpanAttributes(t *testing.T) {
 	if got := stringAttribute(span, "http.method"); got != http.MethodGet {
 		t.Fatalf("expected http.method=GET, got %q", got)
 	}
-	if got := stringAttribute(span, "http.url"); !strings.Contains(got, "view=summary") || strings.Contains(got, "secret-value") {
-		t.Fatalf("expected redacted http.url attribute, got %q", got)
+	if got := stringAttribute(span, "http.url"); got != mockHTTP.URL {
+		t.Fatalf("expected http.url to contain only scheme and authority %q, got %q", mockHTTP.URL, got)
 	}
 	if got := intAttribute(span, "http.status_code"); got != http.StatusOK {
 		t.Fatalf("expected http.status_code=200, got %d", got)

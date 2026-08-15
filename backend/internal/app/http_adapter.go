@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"agenttoolgate/backend/internal/netguard"
 	"agenttoolgate/backend/internal/store"
 	"agenttoolgate/backend/internal/telemetry"
 
@@ -28,11 +29,6 @@ const (
 )
 
 var defaultHTTPAllowedMethods = []string{"GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"}
-
-var (
-	errHTTPRedirectTargetNotAllowed = errors.New("http redirect target is not allowed")
-	errHTTPRedirectLimitExceeded    = errors.New("http redirect limit exceeded")
-)
 
 type httpRequestArgs struct {
 	Method           string
@@ -127,17 +123,20 @@ func (a *App) executeHTTPRequest(ctx context.Context, workspaceID string, decode
 		req.Header.Set(key, value)
 	}
 
-	timeoutClient := newGuardedHTTPClient(timeout, policy.AllowedHosts)
+	timeoutClient := newGuardedHTTPClient(timeout, policy.AllowedHosts, a.httpResolver)
 	resp, err := timeoutClient.Do(req)
 	if err != nil {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		if errors.Is(err, errHTTPRedirectTargetNotAllowed) {
+		if errors.Is(err, netguard.ErrRedirectTargetNotAllowed) {
 			return nil, nil, badRequest("http redirect target is not allowed")
 		}
-		if errors.Is(err, errHTTPRedirectLimitExceeded) {
+		if errors.Is(err, netguard.ErrRedirectLimitExceeded) {
 			return nil, nil, badRequest("http redirect limit exceeded")
+		}
+		if errors.Is(err, netguard.ErrTargetNotAllowed) {
+			return nil, nil, badRequest("http request target is not allowed")
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, nil, errors.New("http request timed out")
@@ -159,7 +158,7 @@ func (a *App) executeHTTPRequest(ctx context.Context, workspaceID string, decode
 
 	rawResultPayload := map[string]any{
 		"method":        args.Method,
-		"url":           redactHTTPURLForTelemetry(args.URL),
+		"url":           redactHTTPURLForOutput(args.URL),
 		"statusCode":    resp.StatusCode,
 		"headers":       httpResponseHeaderValues(resp.Header),
 		"body":          bodyValue,
@@ -405,32 +404,12 @@ func (a *App) resolveHTTPRequestHeaders(ctx context.Context, workspaceID string,
 	return resolved, resolvedSecretValues, nil
 }
 
-func newGuardedHTTPClient(timeout time.Duration, rawAllowedHosts []string) *http.Client {
-	transport := cloneHTTPTransportWithoutProxy()
-	return &http.Client{
-		Timeout:   timeout,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return errHTTPRedirectLimitExceeded
-			}
-			if _, err := parseAndValidateHTTPURL(req.URL.String(), rawAllowedHosts); err != nil {
-				// 不返回原始校验错误，避免把上游 Location 中的内部地址透给前端或审计错误详情。
-				return errHTTPRedirectTargetNotAllowed
-			}
-			return nil
-		},
-	}
-}
-
-func cloneHTTPTransportWithoutProxy() *http.Transport {
-	if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok {
-		cloned := defaultTransport.Clone()
-		// HTTP Adapter 不支持代理；显式禁用环境代理，避免 allowlist 之外的转发路径。
-		cloned.Proxy = nil
-		return cloned
-	}
-	return &http.Transport{Proxy: nil}
+func newGuardedHTTPClient(timeout time.Duration, rawAllowedHosts []string, resolver netguard.Resolver) *http.Client {
+	return netguard.NewClient(netguard.ClientOptions{
+		Timeout:            timeout,
+		AllowedAuthorities: rawAllowedHosts,
+		Resolver:           resolver,
+	})
 }
 
 func parseAndValidateHTTPURL(rawURL string, rawAllowedHosts []string) (*url.URL, error) {
@@ -681,6 +660,13 @@ func httpResponseHeaderValues(headers http.Header) map[string]any {
 }
 
 func redactHTTPURLForTelemetry(value *url.URL) string {
+	if value == nil {
+		return ""
+	}
+	return strings.ToLower(value.Scheme) + "://" + strings.ToLower(value.Host)
+}
+
+func redactHTTPURLForOutput(value *url.URL) string {
 	if value == nil {
 		return ""
 	}

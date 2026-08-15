@@ -19,6 +19,7 @@ import (
 	"agenttoolgate/backend/internal/auth"
 	"agenttoolgate/backend/internal/config"
 	"agenttoolgate/backend/internal/model"
+	"agenttoolgate/backend/internal/netguard"
 	"agenttoolgate/backend/internal/policy"
 	"agenttoolgate/backend/internal/static"
 	"agenttoolgate/backend/internal/store"
@@ -38,6 +39,7 @@ type App struct {
 	policies                *policy.Engine
 	approvalHub             *approvalSSEHub
 	agentGuardResolveTarget func(string) agentGuardTargetResolution
+	httpResolver            netguard.Resolver
 	rateLimiters            sync.Map
 	frontendFS              http.FileSystem
 }

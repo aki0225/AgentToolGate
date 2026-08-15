@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -54,7 +55,7 @@ func TestOutboundClientRejectsCrossOriginSSERedirect(t *testing.T) {
 	}))
 	t.Cleanup(source.Close)
 
-	client := NewOutboundClient(source.URL+"/mcp", map[string]string{
+	client := newMCPTestOutboundClient(t, source.URL+"/mcp", map[string]string{
 		"Authorization": "Bearer synthetic-mcp-secret",
 		"X-Api-Key":     "synthetic-mcp-key",
 	}, time.Second)
@@ -87,7 +88,7 @@ func TestOutboundClientRejectsCrossOriginAfterSameOriginRedirect(t *testing.T) {
 	}))
 	t.Cleanup(source.Close)
 
-	client := NewOutboundClient(source.URL+"/start", map[string]string{
+	client := newMCPTestOutboundClient(t, source.URL+"/start", map[string]string{
 		"Authorization": "Bearer synthetic-mcp-secret",
 	}, time.Second)
 	if _, err := client.SyncTools(context.Background()); err == nil || !strings.Contains(err.Error(), "original origin") {
@@ -131,7 +132,7 @@ func TestOutboundClientRejectsCrossOriginPostRedirect(t *testing.T) {
 		}
 	})
 
-	client := NewOutboundClient(source.URL+"/mcp", map[string]string{
+	client := newMCPTestOutboundClient(t, source.URL+"/mcp", map[string]string{
 		"Authorization": "Bearer synthetic-mcp-secret",
 		"X-Api-Key":     "synthetic-mcp-key",
 	}, 2*time.Second)
@@ -188,7 +189,7 @@ func TestOutboundClientAllowsSameOriginRedirects(t *testing.T) {
 		}
 	})
 
-	client := NewOutboundClient(source.URL+"/start", map[string]string{
+	client := newMCPTestOutboundClient(t, source.URL+"/start", map[string]string{
 		"Authorization": authorization,
 		"X-Api-Key":     apiKey,
 	}, 2*time.Second)
@@ -211,7 +212,7 @@ func TestMCPHTTPClientStopsAfterTenRedirects(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	resp, err := newMCPHTTPClient(time.Second).Get(server.URL + "/hop/0")
+	resp, err := newMCPTestHTTPClient(t, server.URL, time.Second).Get(server.URL + "/hop/0")
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
@@ -237,6 +238,235 @@ func TestValidateMCPEndpointUsesEffectiveDefaultPort(t *testing.T) {
 		mustMCPTestURL(t, "http://example.test/rpc"),
 	); err != nil {
 		t.Fatalf("default HTTP port must stay same-origin: %v", err)
+	}
+}
+
+func TestReadSSEEventEnforcesLineLimit(t *testing.T) {
+	t.Parallel()
+
+	maxLine := "data: " + strings.Repeat("a", outboundMaxSSELineBytes-len("data: "))
+	event, data, err := readSSEEvent(bufio.NewReader(strings.NewReader(maxLine + "\n\n")))
+	if err != nil {
+		t.Fatalf("read maximum-size SSE line: %v", err)
+	}
+	if event != "" || data != strings.TrimSpace(strings.TrimPrefix(maxLine, "data:")) {
+		t.Fatalf("unexpected maximum-size SSE event: event=%q data length=%d", event, len(data))
+	}
+
+	oversizedLine := "data: " + strings.Repeat("a", outboundMaxSSELineBytes-len("data: ")+1)
+	if _, _, err := readSSEEvent(bufio.NewReader(strings.NewReader(oversizedLine + "\n\n"))); err == nil ||
+		!strings.Contains(err.Error(), "SSE line exceeds") {
+		t.Fatalf("expected SSE line limit error, got %v", err)
+	}
+}
+
+func TestReadSSEEventEnforcesEventLimit(t *testing.T) {
+	t.Parallel()
+
+	var maximumEvent strings.Builder
+	remaining := outboundMaxSSEEventBytes - len("data: ok\n\n")
+	for remaining > 0 {
+		lineBytes := min(outboundMaxSSELineBytes+1, remaining)
+		maximumEvent.WriteByte(':')
+		maximumEvent.WriteString(strings.Repeat("a", lineBytes-2))
+		maximumEvent.WriteByte('\n')
+		remaining -= lineBytes
+	}
+	maximumEvent.WriteString("data: ok\n\n")
+	if _, data, err := readSSEEvent(bufio.NewReader(strings.NewReader(maximumEvent.String()))); err != nil {
+		t.Fatalf("read maximum-size SSE event: %v", err)
+	} else if data != "ok" {
+		t.Fatalf("unexpected maximum-size SSE event data %q", data)
+	}
+
+	var event strings.Builder
+	line := ":" + strings.Repeat("a", 99) + "\n"
+	for event.Len() <= outboundMaxSSEEventBytes {
+		event.WriteString(line)
+	}
+	event.WriteByte('\n')
+
+	if _, _, err := readSSEEvent(bufio.NewReader(strings.NewReader(event.String()))); err == nil ||
+		!strings.Contains(err.Error(), "SSE event exceeds") {
+		t.Fatalf("expected SSE event limit error, got %v", err)
+	}
+}
+
+func TestDecodeJSONRPCResponseEnforcesResultLimit(t *testing.T) {
+	t.Parallel()
+
+	maxResult := `"` + strings.Repeat("a", outboundMaxJSONRPCResultBytes-2) + `"`
+	if _, err := decodeOutboundJSONRPCResponse(`{"jsonrpc":"2.0","id":1,"result":`+maxResult+`}`, true); err != nil {
+		t.Fatalf("decode maximum-size JSON-RPC result: %v", err)
+	}
+
+	oversizedResult := `"` + strings.Repeat("a", outboundMaxJSONRPCResultBytes-1) + `"`
+	if _, err := decodeOutboundJSONRPCResponse(`{"jsonrpc":"2.0","id":1,"result":`+oversizedResult+`}`, true); err == nil ||
+		!strings.Contains(err.Error(), "JSON-RPC result exceeds") {
+		t.Fatalf("expected JSON-RPC result limit error, got %v", err)
+	}
+}
+
+func TestBuildOutboundToolCallRequestEnforcesExactPOSTBodyLimit(t *testing.T) {
+	t.Parallel()
+
+	_, basePayload, err := buildOutboundToolCallRequest("bounded", json.RawMessage(`{"value":""}`))
+	if err != nil {
+		t.Fatalf("build base tools/call request: %v", err)
+	}
+	valueBytes := outboundMaxPOSTBodyBytes - len(basePayload)
+	if valueBytes <= 0 {
+		t.Fatalf("unexpected tools/call wrapper size %d", len(basePayload))
+	}
+	exactArguments := json.RawMessage(`{"value":"` + strings.Repeat("a", valueBytes) + `"}`)
+	_, exactPayload, err := buildOutboundToolCallRequest("bounded", exactArguments)
+	if err != nil {
+		t.Fatalf("build exact-limit tools/call request: %v", err)
+	}
+	if len(exactPayload) != outboundMaxPOSTBodyBytes {
+		t.Fatalf("exact tools/call payload size = %d, want %d", len(exactPayload), outboundMaxPOSTBodyBytes)
+	}
+
+	oversizedArguments := json.RawMessage(`{"value":"` + strings.Repeat("a", valueBytes+1) + `"}`)
+	if _, _, err := buildOutboundToolCallRequest("bounded", oversizedArguments); err == nil ||
+		!strings.Contains(err.Error(), "POST JSON body exceeds") {
+		t.Fatalf("expected exact + 1 POST body rejection, got %v", err)
+	}
+}
+
+func TestDecodeOutboundToolsEnforcesToolCountLimit(t *testing.T) {
+	t.Parallel()
+
+	tools := make([]map[string]any, outboundMaxTools)
+	for index := range tools {
+		tools[index] = map[string]any{
+			"name":        fmt.Sprintf("tool-%d", index),
+			"inputSchema": map[string]any{"type": "object"},
+		}
+	}
+	decoded, err := decodeOutboundTools(map[string]any{"tools": tools})
+	if err != nil {
+		t.Fatalf("decode maximum tool count: %v", err)
+	}
+	if len(decoded) != outboundMaxTools {
+		t.Fatalf("decoded %d tools, want %d", len(decoded), outboundMaxTools)
+	}
+
+	tools = append(tools, map[string]any{
+		"name":        "oversized",
+		"inputSchema": map[string]any{"type": "object"},
+	})
+	if _, err := decodeOutboundTools(map[string]any{"tools": tools}); err == nil ||
+		!strings.Contains(err.Error(), "more than 256 tools") {
+		t.Fatalf("expected tools/list count limit error, got %v", err)
+	}
+}
+
+func TestDecodeOutboundToolsEnforcesInputSchemaLimit(t *testing.T) {
+	t.Parallel()
+
+	maxSchema := sizedMCPTestSchema(t, outboundMaxInputSchemaBytes)
+	tools, err := decodeOutboundTools(map[string]any{
+		"tools": []any{map[string]any{
+			"name":        "maximum-schema",
+			"inputSchema": json.RawMessage(maxSchema),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("decode maximum-size inputSchema: %v", err)
+	}
+	if len(tools) != 1 || len(tools[0].InputSchema) != outboundMaxInputSchemaBytes {
+		t.Fatalf("unexpected maximum-size inputSchema result: %+v", tools)
+	}
+
+	oversizedSchema := sizedMCPTestSchema(t, outboundMaxInputSchemaBytes+1)
+	if _, err := decodeOutboundTools(map[string]any{
+		"tools": []any{map[string]any{
+			"name":        "oversized-schema",
+			"inputSchema": json.RawMessage(oversizedSchema),
+		}},
+	}); err == nil || !strings.Contains(err.Error(), "inputSchema exceeds") {
+		t.Fatalf("expected inputSchema limit error, got %v", err)
+	}
+}
+
+func TestOutboundClientClosesSSEConnectionOnOversizedLine(t *testing.T) {
+	t.Parallel()
+
+	connectionClosed := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, "data: %s\n\n", strings.Repeat("a", outboundMaxSSELineBytes))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+		close(connectionClosed)
+	}))
+	t.Cleanup(server.Close)
+
+	client := newMCPTestOutboundClient(t, server.URL, nil, 2*time.Second)
+	if _, err := client.SyncTools(context.Background()); err == nil || !strings.Contains(err.Error(), "SSE line exceeds") {
+		t.Fatalf("expected SSE line limit error, got %v", err)
+	}
+	select {
+	case <-connectionClosed:
+	case <-time.After(time.Second):
+		t.Fatal("oversized SSE line did not close the connection")
+	}
+}
+
+func TestOutboundClientRejectsOversizedPostBodyBeforeOpeningSession(t *testing.T) {
+	t.Parallel()
+
+	var requests int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		http.Error(w, "oversized request must not open a session", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	client := newMCPTestOutboundClient(t, server.URL, nil, 2*time.Second)
+	arguments := json.RawMessage(`{"value":"` + strings.Repeat("a", outboundMaxPOSTBodyBytes) + `"}`)
+	if _, err := client.CallTool(context.Background(), "oversized", arguments); err == nil ||
+		!strings.Contains(err.Error(), "POST JSON body exceeds") {
+		t.Fatalf("expected POST body limit error, got %v", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Fatalf("oversized POST body must fail before opening an SSE session, got %d requests", got)
+	}
+}
+
+func TestOutboundClientRejectsOversizedPostResponseAndClosesSSEConnection(t *testing.T) {
+	t.Parallel()
+
+	connectionClosed := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, "event: endpoint\ndata: /rpc\n\n")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+			close(connectionClosed)
+		case http.MethodPost:
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, strings.Repeat("a", outboundMaxPOSTResponseBytes+1))
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := newMCPTestOutboundClient(t, server.URL, nil, 2*time.Second)
+	if _, err := client.SyncTools(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "POST response body exceeds") {
+		t.Fatalf("expected POST response body limit error, got %v", err)
+	}
+	select {
+	case <-connectionClosed:
+	case <-time.After(time.Second):
+		t.Fatal("oversized POST response did not close the SSE connection")
 	}
 }
 
@@ -300,4 +530,31 @@ func mustMCPTestURL(t *testing.T, raw string) *url.URL {
 		t.Fatalf("parse URL: %v", err)
 	}
 	return parsed
+}
+
+func sizedMCPTestSchema(t *testing.T, size int) []byte {
+	t.Helper()
+
+	const prefix = `{"type":"object","description":"`
+	const suffix = `"}`
+	if size < len(prefix)+len(suffix) {
+		t.Fatalf("schema size %d is too small", size)
+	}
+	return []byte(prefix + strings.Repeat("a", size-len(prefix)-len(suffix)) + suffix)
+}
+
+func newMCPTestOutboundClient(t *testing.T, baseURL string, headers map[string]string, timeout time.Duration) *OutboundClient {
+	t.Helper()
+
+	return NewOutboundClient(baseURL, headers, timeout, OutboundClientOptions{
+		AllowedAuthorities: []string{mustMCPTestURL(t, baseURL).Host},
+	})
+}
+
+func newMCPTestHTTPClient(t *testing.T, baseURL string, timeout time.Duration) *http.Client {
+	t.Helper()
+
+	return newMCPHTTPClient(timeout, OutboundClientOptions{
+		AllowedAuthorities: []string{mustMCPTestURL(t, baseURL).Host},
+	})
 }

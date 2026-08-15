@@ -52,6 +52,7 @@ SSE fallback:    /mcp/sse
 - 校验 connector config。
 - 解析 `headerSecretRefs` 指向的 workspace Secret，再从 Secret 的 env-backed `valueRef` 读取后端运行时值。
 - 调用外部 MCP Server 的 `initialize` 和 `tools/list`。
+- 在首次写 store 前完整校验并转换整批 remote tools；非法名称、重复本地 key 或非对象 input schema 会让整批失败，不留下部分工具。
 - 注册或更新本地 Tool Registry 条目。
 
 远端工具会变成：
@@ -108,7 +109,9 @@ MCP Connector config 示例：
 - `headerSecretRefs` 指向 workspace Secret 名称。
 - 当前 workspace Secret 只保存 env-backed `valueRef`，不保存 secret value。
 - 新建或更新的 MCP Connector 自动写入 workspace Secret 模式。没有 `secretRefMode` 的旧 Connector 也按 workspace Secret 解析，不再直接读取同名进程环境变量。
-- 使用 `headerSecretRefs` 时，后端必须配置非空 `MCP_ALLOWED_HOSTS`，Connector URL 必须命中该部署级上限。Connector 只能继续缩小范围，不能扩大部署配置。
+- 所有 MCP outbound 都必须配置非空 `MCP_ALLOWED_HOSTS`，Connector URL 必须命中该部署级上限；无 Secret 的 Connector 也不能绕过。Connector 只能继续缩小范围，不能扩大部署配置。
+- 带 `headerSecretRefs` 的远程目标必须使用 HTTPS。HTTP 只允许显式列入 `MCP_ALLOWED_HOSTS` 的 `localhost`、`127.0.0.1` 或 `::1`，用于本地开发。
+- metadata 与 link-local IP 即使写入 `MCP_ALLOWED_HOSTS` 也始终拒绝。
 - MCP HTTP 重定向只允许协议、主机和有效端口均不变的同源跳转。跨 origin 跳转即使目标也在 allowlist 中仍会在发送 Secret header 或请求体前被拒绝。
 - 后端只在 sync/call 执行时解析 env value。
 - Secret 缺失、禁用或后端 runtime env 未配置时 fail closed，不触达外部 MCP Server。
