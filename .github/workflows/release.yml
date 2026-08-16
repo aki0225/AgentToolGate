@@ -461,7 +461,7 @@ jobs:
               $encodedName = [Uri]::EscapeDataString($asset.Name)
               $uploaded = Invoke-RestMethod `
                 -Method Post `
-                -Uri "$uploadUri?name=$encodedName" `
+                -Uri "${uploadUri}?name=$encodedName" `
                 -Headers $headers `
                 -ContentType "application/octet-stream" `
                 -InFile $asset.FullName
