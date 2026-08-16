@@ -45,6 +45,10 @@ SSE fallback:    /mcp/sse
 
 如果工具需要审批，MCP response 返回 `approval_required` JSON-RPC error，附带 call id、approval id、reason 等安全 metadata。审批前不会执行上游 connector。
 
+Inbound 请求必须是单个 JSON 对象，拒绝尾随 JSON。`/mcp` 与 `/mcp/sse` 的 POST
+请求和生成的 JSON-RPC 响应都限制为 1 MiB；超限响应会替换为稳定的内部错误，不把
+部分结果继续写给客户端。
+
 ## MCP Outbound：`mcp_<connector>.<tool>`
 
 外部 MCP Server 配置为 `type=mcp` Connector。当前 outbound 实现支持旧版 HTTP + SSE transport。同步流程包括：
@@ -52,6 +56,7 @@ SSE fallback:    /mcp/sse
 - 校验 connector config。
 - 解析 `headerSecretRefs` 指向的 workspace Secret，再从 Secret 的 env-backed `valueRef` 读取后端运行时值。
 - 调用外部 MCP Server 的 `initialize` 和 `tools/list`。
+- 在首次写 store 前完整校验并转换整批 remote tools；非法名称、重复本地 key 或非对象 input schema 会让整批失败，不留下部分工具。
 - 注册或更新本地 Tool Registry 条目。
 
 远端工具会变成：
@@ -108,8 +113,15 @@ MCP Connector config 示例：
 - `headerSecretRefs` 指向 workspace Secret 名称。
 - 当前 workspace Secret 只保存 env-backed `valueRef`，不保存 secret value。
 - 新建或更新的 MCP Connector 自动写入 workspace Secret 模式。没有 `secretRefMode` 的旧 Connector 也按 workspace Secret 解析，不再直接读取同名进程环境变量。
-- 使用 `headerSecretRefs` 时，后端必须配置非空 `MCP_ALLOWED_HOSTS`，Connector URL 必须命中该部署级上限。Connector 只能继续缩小范围，不能扩大部署配置。
+- 所有 MCP outbound 都必须配置非空 `MCP_ALLOWED_HOSTS`，Connector URL 必须命中该部署级上限；无 Secret 的 Connector 也不能绕过。Connector 只能继续缩小范围，不能扩大部署配置。
+- 带 `headerSecretRefs` 的远程目标必须使用 HTTPS。HTTP 只允许显式列入 `MCP_ALLOWED_HOSTS` 的 `localhost`、`127.0.0.1` 或 `::1`，用于本地开发。
+- metadata 与 link-local IP 即使写入 `MCP_ALLOWED_HOSTS` 也始终拒绝。
 - MCP HTTP 重定向只允许协议、主机和有效端口均不变的同源跳转。跨 origin 跳转即使目标也在 allowlist 中仍会在发送 Secret header 或请求体前被拒绝。
+- 每次请求和重定向都会重新解析并校验 DNS，实际拨号固定到本次校验通过的 IP；
+  环境代理不参与目标选择。
+- SSE 单行限制 64 KiB，单事件、POST 请求、POST 响应和 JSON-RPC result 均限制
+  1 MiB；单次最多同步 256 个工具，单个 input schema 限制 64 KiB。
+- JSON-RPC 响应必须是 `2.0`、ID 必须匹配当前请求，且 result/error 必须二选一。
 - 后端只在 sync/call 执行时解析 env value。
 - Secret 缺失、禁用或后端 runtime env 未配置时 fail closed，不触达外部 MCP Server。
 - 解析后的 secret value 不进入 API response、audit、log、telemetry 或 frontend state。
@@ -140,6 +152,8 @@ MCP call 可能在触达上游前被 deny 或 failed：
 
 - MCP Inbound 支持最小 Streamable HTTP endpoint 和 SSE fallback，不是完整 resumability、OAuth 或 Dynamic Client Registration。
 - MCP Outbound 当前支持 HTTP + SSE，不支持 stdio、OAuth、resources、prompts、sampling 或完整 Streamable HTTP outbound。
-- 大 payload governance 仍是 MVP 级。
+- payload 使用固定技术上限，不支持按 connector、workspace 或工具配置分级额度。
+- 显式 allowlist authority 可解析到普通 RFC1918、IPv6 ULA 或 CGNAT 私网地址；
+  当前没有独立的公网/私网目标分区策略。
 - 外部 MCP Server 不被默认信任。同步出来的 tool metadata 视为不可信，并保守映射治理级别。
 - MCP governance 仍是 guardrail，不替代上游服务授权。

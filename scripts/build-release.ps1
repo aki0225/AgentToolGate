@@ -9,6 +9,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+& (Join-Path $PSScriptRoot "local-cache-env.ps1") -RepositoryRoot $RepoRoot -Quiet
+
 $FrontendDir = Join-Path $RepoRoot "frontend"
 $BackendDir = Join-Path $RepoRoot "backend"
 $EvaluatorDir = Join-Path (Join-Path $RepoRoot "tools") "atg-eval"
@@ -243,18 +245,20 @@ function Invoke-EvaluatorRunSmoke {
         Get-Content -LiteralPath $SuitePath |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     ).Count
-    $output = Join-Path $WorkingRoot "quick-output"
-    $sandbox = Join-Path $WorkingRoot "quick-sandbox"
-    $stdoutPath = Join-Path $WorkingRoot "quick.stdout.json"
-    $stderrPath = Join-Path $WorkingRoot "quick.stderr.log"
-    New-Item -ItemType Directory -Force -Path $WorkingRoot | Out-Null
+    $runToken = "{0}-p{1}" -f [DateTimeOffset]::UtcNow.ToString("yyyyMMdd-HHmmssfff"), $PID
+    $runRoot = Join-Path $WorkingRoot $runToken
+    $output = Join-Path $runRoot "quick-output"
+    $sandbox = Join-Path $runRoot "quick-sandbox"
+    $stdoutPath = Join-Path $runRoot "quick.stdout.json"
+    $stderrPath = Join-Path $runRoot "quick.stderr.log"
+    New-Item -ItemType Directory -Force -Path $runRoot | Out-Null
     $oldRequirePython = [Environment]::GetEnvironmentVariable("ATG_EVAL_REQUIRE_PYTHON", "Process")
     try {
         [Environment]::SetEnvironmentVariable("ATG_EVAL_REQUIRE_PYTHON", "1", "Process")
         & $EvaluatorPath run `
             --input $SuitePath `
             --atg $ProductPath `
-            --run-id "release-smoke-$TargetPlatform" `
+            --run-id "release-smoke-$TargetPlatform-$runToken" `
             --output $output `
             --sandbox-base $sandbox `
             --guard-timeout 30s `
@@ -342,7 +346,7 @@ Write-Host "==> 发布元数据: $releaseVersion / $releaseCommit / $releaseBuil
 Write-Host "==> 构建前端" -ForegroundColor Cyan
 Push-Location $FrontendDir
 try {
-    npm run build
+    npm --cache $env:NPM_CONFIG_CACHE run build
     if ($LASTEXITCODE -ne 0) {
         throw "前端构建失败，退出码 $LASTEXITCODE"
     }

@@ -11,21 +11,18 @@ import (
 	"agenttoolgate/backend/internal/model"
 )
 
-func TestMCPSecretBearingConnectorRequiresDeploymentHostCeiling(t *testing.T) {
+func TestMCPConnectorRequiresDeploymentHostCeiling(t *testing.T) {
 	mockServer := newMockOutboundMCPServer(t)
 	srv, st, workspace := newMCPAppTestServer(t, config.Config{})
 
 	connector, err := st.CreateConnector(context.Background(), model.CreateConnectorInput{
 		WorkspaceID: workspace.ID,
 		Type:        "mcp",
-		Name:        "credentialed",
-		DisplayName: "Credentialed MCP",
+		Name:        "uncredentialed",
+		DisplayName: "Uncredentialed MCP",
 		ConfigJSON: mustBootstrapConnectorJSON(map[string]any{
 			"transport": "sse",
 			"url":       mockServer.URL + "/mcp/sse",
-			"headerSecretRefs": map[string]string{
-				"Authorization": "missing_secret",
-			},
 		}),
 		Enabled: true,
 	})
@@ -35,10 +32,105 @@ func TestMCPSecretBearingConnectorRequiresDeploymentHostCeiling(t *testing.T) {
 
 	resp := postJSON(t, srv, "/api/connectors/"+connector.ID+"/sync", `{}`)
 	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "MCP_ALLOWED_HOSTS") {
-		t.Fatalf("credentialed MCP without deployment ceiling must fail closed, got %d body=%s", resp.Code, resp.Body.String())
+		t.Fatalf("MCP without deployment ceiling must fail closed, got %d body=%s", resp.Code, resp.Body.String())
 	}
 	if len(mockServer.methodsSnapshot()) != 0 {
 		t.Fatalf("rejected connector must not reach MCP server")
+	}
+}
+
+func TestMCPSecretBearingConnectorRequiresHTTPSExceptExplicitLoopback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("remote http is rejected", func(t *testing.T) {
+		app := &App{cfg: config.Config{
+			MCPAllowedHosts: []string{"mcp.example.com:80"},
+		}}
+		err := app.validateMCPConnectorRuntimeTarget(mcpConnectorConfig{
+			URL: "http://mcp.example.com:80/sse",
+			HeaderSecretRefs: map[string]string{
+				"Authorization": "workspace_secret",
+			},
+		})
+		if err == nil || !strings.Contains(err.Error(), "https") {
+			t.Fatalf("secret-bearing remote MCP must require HTTPS, got %v", err)
+		}
+	})
+
+	t.Run("remote https is accepted", func(t *testing.T) {
+		app := &App{cfg: config.Config{
+			MCPAllowedHosts: []string{"mcp.example.com:443"},
+		}}
+		err := app.validateMCPConnectorRuntimeTarget(mcpConnectorConfig{
+			URL: "https://mcp.example.com:443/sse",
+			HeaderSecretRefs: map[string]string{
+				"Authorization": "workspace_secret",
+			},
+		})
+		if err != nil {
+			t.Fatalf("allowlisted HTTPS MCP should be accepted: %v", err)
+		}
+	})
+
+	for _, testCase := range []struct {
+		name        string
+		url         string
+		allowedHost string
+	}{
+		{name: "localhost", url: "http://localhost:18081/sse", allowedHost: "localhost:18081"},
+		{name: "ipv4 loopback", url: "http://127.0.0.1:18081/sse", allowedHost: "127.0.0.1:18081"},
+		{name: "ipv6 loopback", url: "http://[::1]:18081/sse", allowedHost: "[::1]:18081"},
+	} {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			app := &App{cfg: config.Config{
+				MCPAllowedHosts: []string{testCase.allowedHost},
+			}}
+			err := app.validateMCPConnectorRuntimeTarget(mcpConnectorConfig{
+				URL: testCase.url,
+				HeaderSecretRefs: map[string]string{
+					"Authorization": "workspace_secret",
+				},
+			})
+			if err != nil {
+				t.Fatalf("explicitly allowlisted loopback MCP should permit HTTP: %v", err)
+			}
+		})
+	}
+
+	t.Run("other ipv4 loopback is rejected", func(t *testing.T) {
+		app := &App{cfg: config.Config{
+			MCPAllowedHosts: []string{"127.0.0.2:18081"},
+		}}
+		err := app.validateMCPConnectorRuntimeTarget(mcpConnectorConfig{
+			URL: "http://127.0.0.2:18081/sse",
+			HeaderSecretRefs: map[string]string{
+				"Authorization": "workspace_secret",
+			},
+		})
+		if err == nil || !strings.Contains(err.Error(), "https") {
+			t.Fatalf("HTTP secret exception must be limited to 127.0.0.1, got %v", err)
+		}
+	})
+}
+
+func TestMCPConnectorRejectsMetadataAndLinkLocalEvenWhenAllowlisted(t *testing.T) {
+	t.Parallel()
+
+	for _, rawURL := range []string{
+		"http://169.254.169.254/latest/meta-data",
+		"http://169.254.1.10/mcp/sse",
+	} {
+		rawURL := rawURL
+		t.Run(rawURL, func(t *testing.T) {
+			app := &App{cfg: config.Config{
+				MCPAllowedHosts: []string{mustURLHost(t, rawURL)},
+			}}
+			if err := app.validateMCPConnectorRuntimeTarget(mcpConnectorConfig{URL: rawURL}); err == nil ||
+				!strings.Contains(err.Error(), "metadata and link-local") {
+				t.Fatalf("metadata/link-local MCP target must fail closed, got %v", err)
+			}
+		})
 	}
 }
 
@@ -110,7 +202,7 @@ func TestWorkspaceSecretCannotResolveProtectedRuntimeVariable(t *testing.T) {
 	}
 }
 
-func TestResolvedSecretRedactionPreservesCommonSubstrings(t *testing.T) {
+func TestResolvedSecretRedactionDoesNotLeakShortValues(t *testing.T) {
 	input := map[string]any{
 		"status":       "passed",
 		"allow":        "token stays intact",
@@ -126,16 +218,17 @@ func TestResolvedSecretRedactionPreservesCommonSubstrings(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected redacted map")
 	}
-	for _, key := range []string{"status", "allow", "contest", "testStatus", "nested_value"} {
-		if _, exists := redacted[key]; !exists {
-			t.Fatalf("common key %q was corrupted: %+v", key, redacted)
+	raw, err := json.Marshal(redacted)
+	if err != nil {
+		t.Fatalf("marshal redacted value: %v", err)
+	}
+	for _, secret := range []string{"a", "ok", "test"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("short resolved Secret %q leaked from output: %s", secret, raw)
 		}
 	}
-	if redacted["status"] != "passed" || redacted["allow"] != "token stays intact" || redacted["contest"] != "book looks normal" {
-		t.Fatalf("common substrings were corrupted: %+v", redacted)
-	}
-	if !strings.Contains(redacted["nested_value"].(string), "[REDACTED]") {
-		t.Fatalf("standalone secret tokens must still be redacted: %+v", redacted)
+	if !strings.Contains(string(raw), "[REDACTED]") {
+		t.Fatalf("expected redaction marker, got %s", raw)
 	}
 }
 

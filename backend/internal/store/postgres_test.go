@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,7 +14,61 @@ import (
 	"agenttoolgate/backend/internal/model"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
+
+type postgresSchemaLockQueryStub struct {
+	results []bool
+	queries []string
+}
+
+func (s *postgresSchemaLockQueryStub) QueryRow(_ context.Context, query string, _ ...any) pgx.Row {
+	s.queries = append(s.queries, strings.TrimSpace(query))
+	if len(s.results) == 0 {
+		return postgresSchemaLockRow{err: errors.New("unexpected schema lock query")}
+	}
+	acquired := s.results[0]
+	s.results = s.results[1:]
+	return postgresSchemaLockRow{acquired: acquired}
+}
+
+type postgresSchemaLockRow struct {
+	acquired bool
+	err      error
+}
+
+func (r postgresSchemaLockRow) Scan(destinations ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(destinations) != 1 {
+		return fmt.Errorf("unexpected scan destination count %d", len(destinations))
+	}
+	acquired, ok := destinations[0].(*bool)
+	if !ok {
+		return errors.New("schema lock scan destination must be bool")
+	}
+	*acquired = r.acquired
+	return nil
+}
+
+func TestAcquirePostgresSchemaAdvisoryLockUsesNonBlockingRetry(t *testing.T) {
+	stub := &postgresSchemaLockQueryStub{results: []bool{false, true}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := acquirePostgresSchemaAdvisoryLock(ctx, stub); err != nil {
+		t.Fatalf("acquire schema lock: %v", err)
+	}
+	if len(stub.queries) != 2 {
+		t.Fatalf("expected two non-blocking lock attempts, got %d", len(stub.queries))
+	}
+	for _, query := range stub.queries {
+		if query != `SELECT pg_try_advisory_lock($1)` {
+			t.Fatalf("schema lock must use non-blocking advisory lock, got %q", query)
+		}
+	}
+}
 
 func TestPostgresStoreConcurrentSchemaInitialization(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -56,6 +111,120 @@ func TestPostgresStoreConcurrentSchemaInitialization(t *testing.T) {
 			t.Errorf("new postgres store: %v", err)
 		}
 	}
+}
+
+func TestPostgresApprovalCallIDBackfillOnlyFillsEmptyValues(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	st, err := NewPostgresStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("new postgres store: %v", err)
+	}
+	t.Cleanup(st.Close)
+
+	suffix := uuid.NewString()
+	workspace, err := st.CreateWorkspace(ctx, model.CreateWorkspaceInput{
+		Name:                  "Approval Backfill " + suffix,
+		Slug:                  "approval-backfill-" + suffix,
+		ZitadelOrganizationID: "org-approval-backfill-" + suffix,
+	})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	tool, err := st.CreateTool(ctx, model.CreateToolInput{
+		WorkspaceID:      workspace.ID,
+		Namespace:        "mock",
+		Name:             "approval_backfill",
+		DisplayName:      "Approval Backfill",
+		OperationType:    "write",
+		RiskLevel:        "medium",
+		RequiresApproval: true,
+		InputSchemaJSON:  json.RawMessage(`{"type":"object"}`),
+		OutputSchemaJSON: json.RawMessage(`{"type":"object"}`),
+		Enabled:          true,
+	})
+	if err != nil {
+		t.Fatalf("create tool: %v", err)
+	}
+
+	createApprovalWithCalls := func() (model.ApprovalRequest, model.ToolCall, model.ToolCall) {
+		t.Helper()
+		approval, createErr := st.CreateApprovalRequest(ctx, model.CreateApprovalRequestInput{
+			WorkspaceID:     workspace.ID,
+			ToolKey:         tool.Key(),
+			ToolDisplayName: tool.DisplayName,
+			RequestedBy:     "requester",
+			TTL:             time.Hour,
+		})
+		if createErr != nil {
+			t.Fatalf("create approval: %v", createErr)
+		}
+		createCall := func() model.ToolCall {
+			t.Helper()
+			call, callErr := st.CreateToolCall(ctx, model.CreateToolCallInput{
+				WorkspaceID:        workspace.ID,
+				RequestID:          "req-approval-backfill-" + uuid.NewString(),
+				ToolID:             tool.ID,
+				ToolKey:            tool.Key(),
+				Status:             "approval_required",
+				RiskLevel:          "medium",
+				PolicyDecision:     "require_approval",
+				ApprovalID:         approval.ID,
+				InputRedactedJSON:  json.RawMessage(`{}`),
+				InputExecutionJSON: json.RawMessage(`{}`),
+				OutputRedactedJSON: json.RawMessage(`{}`),
+			})
+			if callErr != nil {
+				t.Fatalf("create tool call: %v", callErr)
+			}
+			return call
+		}
+		return approval, createCall(), createCall()
+	}
+
+	preservedApproval, _, preservedCall := createApprovalWithCalls()
+	backfilledApproval, firstBackfillCall, secondBackfillCall := createApprovalWithCalls()
+	if _, err := st.pool.Exec(ctx, `
+		UPDATE approval_requests
+		SET call_id = CASE
+			WHEN id = $2 THEN $3
+			WHEN id = $4 THEN ''
+			ELSE call_id
+		END
+		WHERE workspace_id = $1 AND id IN ($2, $4)
+	`, workspace.ID, preservedApproval.ID, preservedCall.ID, backfilledApproval.ID); err != nil {
+		t.Fatalf("prepare approval call_id values: %v", err)
+	}
+
+	if err := st.ensureSchema(ctx); err != nil {
+		t.Fatalf("rerun postgres schema initialization: %v", err)
+	}
+
+	assertCallID := func(approvalID, want string) {
+		t.Helper()
+		var got string
+		if err := st.pool.QueryRow(ctx, `
+			SELECT call_id
+			FROM approval_requests
+			WHERE workspace_id = $1 AND id = $2
+		`, workspace.ID, approvalID).Scan(&got); err != nil {
+			t.Fatalf("read approval call_id: %v", err)
+		}
+		if got != want {
+			t.Fatalf("approval %s call_id = %q, want %q", approvalID, got, want)
+		}
+	}
+	assertCallID(preservedApproval.ID, preservedCall.ID)
+	expectedBackfillCall := firstBackfillCall
+	if secondBackfillCall.CreatedAt.Before(firstBackfillCall.CreatedAt) ||
+		(secondBackfillCall.CreatedAt.Equal(firstBackfillCall.CreatedAt) && secondBackfillCall.ID < firstBackfillCall.ID) {
+		expectedBackfillCall = secondBackfillCall
+	}
+	assertCallID(backfilledApproval.ID, expectedBackfillCall.ID)
 }
 
 func TestPostgresStoreCreateToolCallKeepsEmptyApprovalID(t *testing.T) {

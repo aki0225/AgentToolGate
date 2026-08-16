@@ -1,4 +1,4 @@
-# AgentToolGate 本地验证脚本。
+﻿# AgentToolGate 本地验证脚本。
 # 默认保持轻量：不启动 Docker、不自动启动 PostgreSQL、不跑 E2E。
 [CmdletBinding()]
 param(
@@ -13,6 +13,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+& (Join-Path $PSScriptRoot "local-cache-env.ps1") -RepositoryRoot $RepoRoot -Quiet
+
 function Resolve-GoExe {
     if ($env:AGT_GO_EXE) {
         if (-not (Test-Path -LiteralPath $env:AGT_GO_EXE)) {
@@ -61,7 +63,7 @@ $PowerShellExe = (Get-Process -Id $PID).Path
 
 $backendProcess = $null
 $frontendProcess = $null
-$pgShouldStop = $false
+$pgStartedByScript = $false
 $verificationSucceeded = $false
 $managedHTTPMockPort = $E2EHTTPPort
 $frontendBaseUrl = "http://127.0.0.1:$FrontendPort"
@@ -204,8 +206,12 @@ function Test-PostgresRunning {
 
 function Start-LocalPostgresIfNeeded {
     if (Test-PostgresRunning) {
-        Write-Host "检测到本地 PostgreSQL 已在运行；按 -WithPostgres 验收要求，脚本结束时会停止该实例。"
-        $script:pgShouldStop = $true
+        if ($script:pgStartedByScript) {
+            Write-Host "本次验证启动的 PostgreSQL 已在运行。"
+        }
+        else {
+            Write-Host "检测到 PostgreSQL 已在运行；复用该实例，脚本结束时不会停止它。"
+        }
         return
     }
 
@@ -214,23 +220,23 @@ function Start-LocalPostgresIfNeeded {
     if ($LASTEXITCODE -ne 0) {
         throw "启动本地 PostgreSQL 失败。"
     }
-    $script:pgShouldStop = $true
+    $script:pgStartedByScript = $true
 }
 
 function Stop-LocalPostgresIfStarted {
-    if (-not $script:pgShouldStop) {
+    if (-not $script:pgStartedByScript) {
         return
     }
 
-    Write-Host "`n==> 停止本地 PostgreSQL" -ForegroundColor Cyan
+    Write-Host "`n==> 停止本次验证启动的 PostgreSQL" -ForegroundColor Cyan
     & $PgCtl stop -D $PgData
     if ($LASTEXITCODE -ne 0) {
         throw "停止本地 PostgreSQL 失败。"
     }
-    & $PgCtl status -D $PgData
-    if ($LASTEXITCODE -eq 0) {
+    if (Test-PostgresRunning) {
         throw "PostgreSQL 仍在运行，未达到 no server running。"
     }
+    $script:pgStartedByScript = $false
 }
 
 function Start-ManagedServices {
@@ -273,7 +279,7 @@ function Start-ManagedServices {
 
     Write-Host "`n==> 启动真实 frontend" -ForegroundColor Cyan
     $script:frontendProcess = Start-ProcessWithEnv -FilePath "npm" `
-        -Arguments @("run", "dev", "--", "--host", "127.0.0.1", "--port", [string]$FrontendPort) `
+        -Arguments @("--cache", $env:NPM_CONFIG_CACHE, "run", "dev", "--", "--host", "127.0.0.1", "--port", [string]$FrontendPort) `
         -WorkingDirectory (Join-Path $RepoRoot "frontend") `
         -Environment $frontendEnv `
         -LogPath $FrontendLog
@@ -367,7 +373,7 @@ function Invoke-MultiActorApprovalE2E {
 
     Write-Host "`n==> 启动真实 frontend" -ForegroundColor Cyan
     $script:frontendProcess = Start-ProcessWithEnv -FilePath "npm" `
-        -Arguments @("run", "dev", "--", "--host", "127.0.0.1", "--port", [string]$FrontendPort) `
+        -Arguments @("--cache", $env:NPM_CONFIG_CACHE, "run", "dev", "--", "--host", "127.0.0.1", "--port", [string]$FrontendPort) `
         -WorkingDirectory (Join-Path $RepoRoot "frontend") `
         -Environment @{
             VITE_API_BASE_URL = "http://127.0.0.1:8080"
@@ -394,7 +400,7 @@ function Invoke-MultiActorApprovalE2E {
             if (-not $env:E2E_BROWSER_CHANNEL -and (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe")) {
                 $env:E2E_BROWSER_CHANNEL = "chrome"
             }
-            npm run e2e -- e2e/multi-actor-approval.spec.ts
+            npm --cache $env:NPM_CONFIG_CACHE run e2e -- e2e/multi-actor-approval.spec.ts
         }
         finally {
             $env:E2E_API_BASE_URL = $previousApi
@@ -437,7 +443,7 @@ function Invoke-MultiActorApprovalE2E {
             if (-not $env:E2E_BROWSER_CHANNEL -and (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe")) {
                 $env:E2E_BROWSER_CHANNEL = "chrome"
             }
-            npm run e2e -- e2e/multi-actor-approval.spec.ts
+            npm --cache $env:NPM_CONFIG_CACHE run e2e -- e2e/multi-actor-approval.spec.ts
         }
         finally {
             $env:E2E_API_BASE_URL = $previousApi
@@ -482,6 +488,10 @@ try {
         throw "WithE2E 和 WithMultiActorE2E 不能同时使用，请分开运行。"
     }
 
+    Invoke-Step -Name "PostgreSQL 生命周期回归测试" -Directory $RepoRoot -Command {
+        & $PowerShellExe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\tests\verify-local-postgres.tests.ps1"
+    }
+
     Invoke-Step -Name "后端 go test ./..." -Directory (Join-Path $RepoRoot "backend") -Command {
         & $GoExe test ./...
     }
@@ -501,11 +511,11 @@ try {
     }
 
     Invoke-Step -Name "前端 npm run check" -Directory (Join-Path $RepoRoot "frontend") -Command {
-        npm run check
+        npm --cache $env:NPM_CONFIG_CACHE run check
     }
 
     Invoke-Step -Name "前端 npm run build" -Directory (Join-Path $RepoRoot "frontend") -Command {
-        npm run build
+        npm --cache $env:NPM_CONFIG_CACHE run build
     }
 
     if ($WithE2E) {
@@ -535,7 +545,7 @@ try {
                 if (-not $env:E2E_BROWSER_CHANNEL -and (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe")) {
                     $env:E2E_BROWSER_CHANNEL = "chrome"
                 }
-                npm run e2e -- e2e/local-real-demo.spec.ts
+                npm --cache $env:NPM_CONFIG_CACHE run e2e -- e2e/local-real-demo.spec.ts
             }
             finally {
                 $env:E2E_API_BASE_URL = $previousApi
@@ -560,7 +570,8 @@ try {
     }
 
     Invoke-Step -Name "Git diff whitespace check" -Directory $RepoRoot -Command {
-        git diff --check
+        $safeRepoRoot = $RepoRoot -replace '\\', '/'
+        git -c "safe.directory=$safeRepoRoot" -C $RepoRoot diff --check
     }
 
     $script:verificationSucceeded = $true

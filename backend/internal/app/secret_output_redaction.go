@@ -53,7 +53,7 @@ func (r *resolvedSecretValueReplacer) Replace(value string) string {
 	for offset := 0; offset < len(value); {
 		matched := ""
 		for _, secret := range r.values {
-			if strings.HasPrefix(value[offset:], secret) && secretTokenBoundariesMatch(value, offset, secret) {
+			if strings.HasPrefix(value[offset:], secret) {
 				matched = secret
 				break
 			}
@@ -67,28 +67,6 @@ func (r *resolvedSecretValueReplacer) Replace(value string) string {
 		offset++
 	}
 	return redacted.String()
-}
-
-func secretTokenBoundariesMatch(value string, offset int, secret string) bool {
-	if secret == "" {
-		return false
-	}
-	end := offset + len(secret)
-	if isSecretTokenByte(secret[0]) && offset > 0 && isSecretTokenByte(value[offset-1]) {
-		return false
-	}
-	if isSecretTokenByte(secret[len(secret)-1]) && end < len(value) && isSecretTokenByte(value[end]) {
-		return false
-	}
-	return true
-}
-
-func isSecretTokenByte(value byte) bool {
-	return value >= 'a' && value <= 'z' ||
-		value >= 'A' && value <= 'Z' ||
-		value >= '0' && value <= '9' ||
-		value == '_' ||
-		value >= 0x80
 }
 
 func replaceResolvedSecretValues(value any, replacer *resolvedSecretValueReplacer) any {

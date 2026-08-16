@@ -11,6 +11,8 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/.playwright-browsers/
+frontend/vite.config.js
+frontend/vite.config.d.ts
 website/node_modules/
 website/dist/
 website/.playwright-browsers/

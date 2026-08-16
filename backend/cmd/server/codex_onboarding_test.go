@@ -53,7 +53,7 @@ func TestInitCodexInstallsRuntimeProjectHook(t *testing.T) {
 		"[[hooks.PreToolUse.hooks]]",
 		`type = "command"`,
 		"command = '" + codexUnixHookCommand + "'",
-		"commandWindows = '" + codexWinHookCommand + "'",
+		"commandWindows = '" + currentCodexWindowsHookCommand() + "'",
 		"timeout = 30",
 	} {
 		if !strings.Contains(config, want) {
@@ -321,10 +321,14 @@ func TestInitCodexRefreshHooksReplacesOnlyRuntimeFiles(t *testing.T) {
 	if code := run([]string{"init", "codex", "--refresh-hooks", "--dir", project}, &stdout, &stderr); code != 0 {
 		t.Fatalf("refresh hooks returned %d stderr=%s", code, stderr.String())
 	}
+	resolvedProject, err := resolveProjectRoot(project)
+	if err != nil {
+		t.Fatalf("resolve project root: %v", err)
+	}
 	bundle := hookassets.Codex()
 	for path, want := range map[string][]byte{
-		projectCodexHookAdapterPath(project): bundle.Adapter,
-		projectCodexHookCorePath(project):    bundle.Core,
+		projectCodexHookAdapterPath(resolvedProject): bundle.Adapter,
+		projectCodexHookCorePath(resolvedProject):    bundle.Core,
 	} {
 		got, err := os.ReadFile(path)
 		if err != nil {
@@ -1067,6 +1071,34 @@ func TestCodexPythonStatusRejectsExecutableThatIsNotPython3(t *testing.T) {
 	t.Setenv("PATH", dir)
 	if status := codexPythonStatus(); !strings.HasPrefix(status, "unusable") {
 		t.Fatalf("non-Python executable must not be reported available: %s", status)
+	}
+}
+
+func TestCodexPythonCandidatesIncludeWindowsLauncherFallback(t *testing.T) {
+	candidates := codexPythonCandidates("windows")
+	if len(candidates) != 2 {
+		t.Fatalf("unexpected Windows Python candidates: %+v", candidates)
+	}
+	if candidates[0].command != "python" || candidates[0].display != "python" {
+		t.Fatalf("python must remain the first Windows candidate: %+v", candidates[0])
+	}
+	if candidates[1].command != "py" || len(candidates[1].args) != 1 ||
+		candidates[1].args[0] != "-3" || candidates[1].display != "py -3" {
+		t.Fatalf("py -3 fallback is missing: %+v", candidates[1])
+	}
+	for _, command := range []string{codexWinHookCommand, codexWinPyHookCommand} {
+		if !codexWindowsHookCommandSupported(command) {
+			t.Fatalf("generated config must accept Windows command %q", command)
+		}
+	}
+	if got := selectCodexWindowsHookCommand(codexPythonInvocation{command: "py"}, nil); got != codexWinPyHookCommand {
+		t.Fatalf("py launcher must render the py -3 hook command, got %q", got)
+	}
+	if got := selectCodexWindowsHookCommand(codexPythonInvocation{command: "python"}, nil); got != codexWinHookCommand {
+		t.Fatalf("python launcher must render the python hook command, got %q", got)
+	}
+	if got := selectCodexWindowsHookCommand(codexPythonInvocation{}, fmt.Errorf("missing")); got != codexWinHookCommand {
+		t.Fatalf("unavailable Python probe must keep the portable fallback, got %q", got)
 	}
 }
 

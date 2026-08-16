@@ -89,6 +89,13 @@ def find_repo_root(start_path: str) -> str | None:
         current = current.parent
 
 
+def find_repo_root_safely(start_path: str) -> str | None:
+    try:
+        return find_repo_root(start_path)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def detect_adapter() -> str:
     parts = {part.lower() for part in Path(__file__).parts}
     if ".claude" in parts:
@@ -1462,6 +1469,23 @@ def is_fast_path_repo_read(repo_root: str, payload: dict[str, Any]) -> bool:
     )
 
 
+def is_live_low_friction_fast_path(repo_root: str, payload: dict[str, Any]) -> bool:
+    if is_high_risk_offline_target(payload):
+        return False
+    try:
+        preview = local_guard_preview(repo_root, payload)
+    except ProjectProtectionError:
+        return False
+    if (
+        preview.get("decision") != "allow"
+        or preview.get("riskLevel") != "low"
+        or preview.get("projectRule")
+        or preview.get("projectCodeExecution")
+    ):
+        return False
+    return is_explicitly_low_risk_offline_action(repo_root, payload)
+
+
 def attach_python_guard_floor(repo_root: str, payload: dict[str, Any]) -> dict[str, Any]:
     request = dict(payload)
     if is_explicitly_low_risk_offline_action(repo_root, payload):
@@ -1540,23 +1564,53 @@ def build_output(adapter: str, decision: dict[str, Any], original_input: dict[st
     return {"hookSpecificOutput": specific}
 
 
+def handle_invalid_hook_input(repo_root: str | None) -> None:
+    if repo_root is None:
+        return
+    try:
+        hook_mode, _, _ = read_hook_control(repo_root)
+    except HookControlError:
+        reason = "hook control invalid"
+    else:
+        if hook_mode != "live":
+            return
+        reason = "AgentToolGate blocked invalid hook input"
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+    print(json.dumps(output, ensure_ascii=False), flush=True)
+
+
 def main() -> int:
     if os.environ.get("TRELLIS_HOOKS") == "0" or os.environ.get("TRELLIS_DISABLE_HOOKS") == "1":
         return 0
 
     try:
         input_data = json.load(sys.stdin)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
+        handle_invalid_hook_input(find_repo_root_safely(os.getcwd()))
         return 0
     if not isinstance(input_data, dict):
+        handle_invalid_hook_input(find_repo_root_safely(os.getcwd()))
         return 0
 
-    repo_root = find_repo_root(input_data.get("cwd", os.getcwd()))
+    try:
+        repo_root = find_repo_root(input_data.get("cwd", os.getcwd()))
+    except (OSError, RuntimeError, ValueError):
+        handle_invalid_hook_input(find_repo_root_safely(os.getcwd()))
+        return 0
     if repo_root is None:
         return 0
 
     tool_name = get_tool_name(input_data)
-    if not tool_name or not is_guarded_tool(tool_name):
+    if not tool_name:
+        handle_invalid_hook_input(repo_root)
+        return 0
+    if not is_guarded_tool(tool_name):
         return 0
 
     tool_input = get_tool_input(input_data)
@@ -1575,6 +1629,17 @@ def main() -> int:
         if is_fast_path_repo_read(repo_root, payload):
             return 0
         record_local_hook_dry_run(repo_root, payload)
+        return 0
+
+    if is_live_low_friction_fast_path(repo_root, payload):
+        if record_local_pending_audit(repo_root, payload, "local low-risk fast path", False):
+            return 0
+        output = build_output(
+            adapter,
+            {"decision": "deny", "reason": "local fast path pending audit unavailable"},
+            tool_input,
+        )
+        print(json.dumps(output, ensure_ascii=False), flush=True)
         return 0
 
     go_output = call_agenttoolgate_guard_hook_codex(input_data)

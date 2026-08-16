@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -23,6 +25,15 @@ type ProjectProtection struct {
 	Enabled        bool
 	ProtectedPaths []ProtectedPathRule
 	Egress         EgressRule
+	ProjectRoot    string
+	Workspace      ProjectWorkspace
+	DefaultMode    string
+}
+
+type ProjectWorkspace struct {
+	Name  string
+	Slug  string
+	OrgID string
 }
 
 type ProtectedPathRule struct {
@@ -46,33 +57,39 @@ type projectTargetOperation struct {
 }
 
 type projectProtectionDocument struct {
-	Version             int                        `json:"version"`
-	ProjectRoot         string                     `json:"projectRoot,omitempty"`
-	Workspace           json.RawMessage            `json:"workspace,omitempty"`
-	LocalActionFirewall projectLocalActionFirewall `json:"localActionFirewall"`
+	Version             int                         `json:"version"`
+	ProjectRoot         *string                     `json:"projectRoot,omitempty"`
+	Workspace           *projectWorkspaceJSON       `json:"workspace,omitempty"`
+	LocalActionFirewall *projectLocalActionFirewall `json:"localActionFirewall"`
+}
+
+type projectWorkspaceJSON struct {
+	Name  *string `json:"name,omitempty"`
+	Slug  *string `json:"slug,omitempty"`
+	OrgID *string `json:"orgId,omitempty"`
 }
 
 type projectLocalActionFirewall struct {
-	Enabled        bool                    `json:"enabled"`
-	DefaultMode    string                  `json:"defaultMode,omitempty"`
+	Enabled        *bool                   `json:"enabled"`
+	DefaultMode    *string                 `json:"defaultMode,omitempty"`
 	ProtectedPaths []protectedPathRuleJSON `json:"protectedPaths,omitempty"`
-	Egress         egressRuleJSON          `json:"egress,omitempty"`
+	Egress         *egressRuleJSON         `json:"egress,omitempty"`
 	Notes          []string                `json:"notes,omitempty"`
 }
 
 type protectedPathRuleJSON struct {
-	Pattern string `json:"pattern"`
-	Read    string `json:"read,omitempty"`
-	Write   string `json:"write,omitempty"`
-	Delete  string `json:"delete,omitempty"`
-	Exec    string `json:"exec,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	Pattern string  `json:"pattern"`
+	Read    *string `json:"read,omitempty"`
+	Write   *string `json:"write,omitempty"`
+	Delete  *string `json:"delete,omitempty"`
+	Exec    *string `json:"exec,omitempty"`
+	Reason  string  `json:"reason,omitempty"`
 }
 
 type egressRuleJSON struct {
-	Enabled       bool     `json:"enabled"`
+	Enabled       *bool    `json:"enabled"`
 	AllowedHosts  []string `json:"allowedHosts,omitempty"`
-	UnlistedWrite string   `json:"unlistedWrite,omitempty"`
+	UnlistedWrite *string  `json:"unlistedWrite,omitempty"`
 }
 
 func ProjectProtectionPath(repoRoot string) string {
@@ -104,6 +121,9 @@ func LoadProjectProtection(repoRoot string) (ProjectProtection, error) {
 	if err := rejectDuplicateProjectProtectionFields(raw); err != nil {
 		return ProjectProtection{}, err
 	}
+	if err := validateProjectProtectionFieldNames(raw); err != nil {
+		return ProjectProtection{}, err
+	}
 
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -117,13 +137,35 @@ func LoadProjectProtection(repoRoot string) (ProjectProtection, error) {
 	if document.Version != projectProtectionVersion {
 		return ProjectProtection{}, fmt.Errorf("项目保护策略 version 必须为 %d", projectProtectionVersion)
 	}
+	if document.LocalActionFirewall == nil {
+		return ProjectProtection{}, errors.New("项目保护策略 localActionFirewall 缺失")
+	}
+	if document.LocalActionFirewall.Enabled == nil {
+		return ProjectProtection{}, errors.New("项目保护策略 localActionFirewall.enabled 缺失")
+	}
+	if err := validateProjectProtectionMetadata(&document); err != nil {
+		return ProjectProtection{}, err
+	}
 
 	protection := ProjectProtection{
-		Enabled: document.LocalActionFirewall.Enabled,
-		Egress: EgressRule{
-			Enabled:       document.LocalActionFirewall.Egress.Enabled,
-			UnlistedWrite: normalizeProjectEffect(document.LocalActionFirewall.Egress.UnlistedWrite),
-		},
+		Enabled: *document.LocalActionFirewall.Enabled,
+	}
+	if document.ProjectRoot != nil {
+		protection.ProjectRoot = *document.ProjectRoot
+	}
+	if document.LocalActionFirewall.DefaultMode != nil {
+		protection.DefaultMode = *document.LocalActionFirewall.DefaultMode
+	}
+	if document.Workspace != nil {
+		if document.Workspace.Name != nil {
+			protection.Workspace.Name = *document.Workspace.Name
+		}
+		if document.Workspace.Slug != nil {
+			protection.Workspace.Slug = *document.Workspace.Slug
+		}
+		if document.Workspace.OrgID != nil {
+			protection.Workspace.OrgID = *document.Workspace.OrgID
+		}
 	}
 	if len(document.LocalActionFirewall.ProtectedPaths) > 128 {
 		return ProjectProtection{}, errors.New("项目保护路径规则不能超过 128 条")
@@ -135,23 +177,105 @@ func LoadProjectProtection(repoRoot string) (ProjectProtection, error) {
 		}
 		protection.ProtectedPaths = append(protection.ProtectedPaths, rule)
 	}
-	if len(document.LocalActionFirewall.Egress.AllowedHosts) > 128 {
-		return ProjectProtection{}, errors.New("项目外发允许主机不能超过 128 条")
+	if err := validateProjectProtectionRuleConflicts(protection.ProtectedPaths); err != nil {
+		return ProjectProtection{}, err
 	}
-	for _, rawHost := range document.LocalActionFirewall.Egress.AllowedHosts {
-		host, err := normalizeAllowedHost(rawHost)
-		if err != nil {
-			return ProjectProtection{}, err
+	if document.LocalActionFirewall.Egress != nil {
+		if document.LocalActionFirewall.Egress.Enabled == nil {
+			return ProjectProtection{}, errors.New("项目保护策略 egress.enabled 缺失")
 		}
-		protection.Egress.AllowedHosts = append(protection.Egress.AllowedHosts, host)
-	}
-	if protection.Egress.Enabled && protection.Egress.UnlistedWrite == "" {
-		protection.Egress.UnlistedWrite = "require_approval"
-	}
-	if protection.Egress.UnlistedWrite != "" && !validProjectEffect(protection.Egress.UnlistedWrite) {
-		return ProjectProtection{}, errors.New("egress.unlistedWrite 只支持 require_approval 或 deny")
+		protection.Egress.Enabled = *document.LocalActionFirewall.Egress.Enabled
+		if document.LocalActionFirewall.Egress.UnlistedWrite != nil {
+			protection.Egress.UnlistedWrite = *document.LocalActionFirewall.Egress.UnlistedWrite
+		}
+		if len(document.LocalActionFirewall.Egress.AllowedHosts) > 128 {
+			return ProjectProtection{}, errors.New("项目外发允许主机不能超过 128 条")
+		}
+		for _, rawHost := range document.LocalActionFirewall.Egress.AllowedHosts {
+			host, err := normalizeAllowedHost(rawHost)
+			if err != nil {
+				return ProjectProtection{}, err
+			}
+			protection.Egress.AllowedHosts = append(protection.Egress.AllowedHosts, host)
+		}
+		if protection.Egress.Enabled && document.LocalActionFirewall.Egress.UnlistedWrite == nil {
+			return ProjectProtection{}, errors.New("启用 egress 时必须配置 unlistedWrite")
+		}
+		if document.LocalActionFirewall.Egress.UnlistedWrite != nil &&
+			!validProjectEffect(protection.Egress.UnlistedWrite) {
+			return ProjectProtection{}, errors.New("egress.unlistedWrite 只支持 require_approval 或 deny")
+		}
 	}
 	return protection, nil
+}
+
+func validateProjectProtectionMetadata(document *projectProtectionDocument) error {
+	if document == nil || document.LocalActionFirewall == nil {
+		return nil
+	}
+	if err := validateProjectProtectionOptionalString("projectRoot", document.ProjectRoot); err != nil {
+		return err
+	}
+	if document.Workspace != nil {
+		for name, value := range map[string]*string{
+			"workspace.name":  document.Workspace.Name,
+			"workspace.slug":  document.Workspace.Slug,
+			"workspace.orgId": document.Workspace.OrgID,
+		} {
+			if err := validateProjectProtectionOptionalString(name, value); err != nil {
+				return err
+			}
+		}
+	}
+	if mode := document.LocalActionFirewall.DefaultMode; mode != nil {
+		if *mode != "off" && *mode != "dry-run" && *mode != "live" {
+			return errors.New("项目保护策略 defaultMode 只支持 off、dry-run 或 live")
+		}
+	}
+	for _, note := range document.LocalActionFirewall.Notes {
+		if utf8.RuneCountInString(note) > 512 {
+			return errors.New("项目保护策略 notes 单项不能超过 512 个字符")
+		}
+	}
+	return nil
+}
+
+func validateProjectProtectionOptionalString(name string, value *string) error {
+	if value == nil {
+		return nil
+	}
+	if *value == "" {
+		return fmt.Errorf("项目保护策略 %s 必须是非空字符串", name)
+	}
+	if strings.TrimSpace(*value) != *value {
+		return fmt.Errorf("项目保护策略 %s 不能包含首尾空白", name)
+	}
+	return nil
+}
+
+func validateProjectProtectionRuleConflicts(rules []ProtectedPathRule) error {
+	effects := make(map[string]map[string]string)
+	for _, rule := range rules {
+		key := rule.Pattern
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if effects[key] == nil {
+			effects[key] = make(map[string]string)
+		}
+		for operation, effect := range map[string]string{
+			"read": rule.Read, "write": rule.Write, "delete": rule.Delete, "exec": rule.Exec,
+		} {
+			if effect == "" {
+				continue
+			}
+			if previous, exists := effects[key][operation]; exists && previous != effect {
+				return fmt.Errorf("项目保护策略冲突：pattern %q 的 %s 同时配置了 %s 和 %s", rule.Pattern, operation, previous, effect)
+			}
+			effects[key][operation] = effect
+		}
+	}
+	return nil
 }
 
 func EvaluateWithProjectProtection(input ActionInput, protection ProjectProtection) Decision {
@@ -164,58 +288,8 @@ func EvaluateWithProjectProtection(input ActionInput, protection ProjectProtecti
 }
 
 func EvaluateProjectProtection(input ActionInput, protection ProjectProtection) (Decision, bool) {
-	if !protection.Enabled {
-		return Decision{}, false
-	}
-
-	var result Decision
-	matched := false
-	for _, targetOperation := range projectProtectionTargetOperations(input) {
-		relative, ok := protectedRepoRelativePath(input, targetOperation.Target)
-		if !ok {
-			continue
-		}
-		for _, rule := range protection.ProtectedPaths {
-			if !projectPathPatternMatches(rule.Pattern, relative) {
-				continue
-			}
-			effect := protectedPathEffect(rule, targetOperation.Operation)
-			if effect == "" {
-				continue
-			}
-			candidate := projectProtectionDecision(
-				effect,
-				firstNonEmpty(rule.Reason, "命中项目受保护路径"),
-				"project_protected_path",
-			)
-			if !matched {
-				result = candidate
-				matched = true
-			} else {
-				result = stricterGuardDecision(result, candidate)
-			}
-		}
-	}
-
-	if protection.Egress.Enabled {
-		for _, networkURL := range projectNetworkWriteURLs(input) {
-			host := projectNetworkHost(networkURL)
-			if host == "" || !projectHostAllowed(host, protection.Egress.AllowedHosts) {
-				candidate := projectProtectionDecision(
-					protection.Egress.UnlistedWrite,
-					"项目外发规则要求确认",
-					"project_egress",
-				)
-				if !matched {
-					result = candidate
-					matched = true
-				} else {
-					result = stricterGuardDecision(result, candidate)
-				}
-			}
-		}
-	}
-	return result, matched
+	result, matches := evaluateProjectProtectionMatches(input, protection)
+	return result, len(matches) > 0
 }
 
 func ensureProjectProtectionEOF(decoder *json.Decoder) error {
@@ -226,21 +300,28 @@ func ensureProjectProtectionEOF(decoder *json.Decoder) error {
 }
 
 func rejectDuplicateProjectProtectionFields(raw []byte) error {
+	return validateStrictJSONDocument(raw, "项目保护策略 JSON")
+}
+
+func validateStrictJSONDocument(raw []byte, label string) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	if err := walkProjectProtectionJSONValue(decoder); err != nil {
+	if err := walkStrictJSONValue(decoder, label); err != nil {
 		return err
 	}
 	if _, err := decoder.Token(); err != io.EOF {
-		return errors.New("项目保护策略 JSON 只能包含一个文档")
+		return fmt.Errorf("%s 只能包含一个文档", label)
 	}
 	return nil
 }
 
-func walkProjectProtectionJSONValue(decoder *json.Decoder) error {
+func walkStrictJSONValue(decoder *json.Decoder, label string) error {
 	token, err := decoder.Token()
 	if err != nil {
-		return errors.New("项目保护策略 JSON 无效")
+		return fmt.Errorf("%s 无效", label)
+	}
+	if token == nil {
+		return fmt.Errorf("%s 字段不能为 null", label)
 	}
 	delim, ok := token.(json.Delim)
 	if !ok {
@@ -252,67 +333,180 @@ func walkProjectProtectionJSONValue(decoder *json.Decoder) error {
 		for decoder.More() {
 			keyToken, err := decoder.Token()
 			if err != nil {
-				return errors.New("项目保护策略 JSON 无效")
+				return fmt.Errorf("%s 无效", label)
 			}
 			key, ok := keyToken.(string)
 			if !ok {
-				return errors.New("项目保护策略 JSON 无效")
+				return fmt.Errorf("%s 无效", label)
 			}
-			if _, exists := seen[key]; exists {
-				return errors.New("项目保护策略 JSON 存在重复字段")
+			normalizedKey := strings.ToLower(key)
+			if _, exists := seen[normalizedKey]; exists {
+				return fmt.Errorf("%s 存在重复字段", label)
 			}
-			seen[key] = struct{}{}
-			if err := walkProjectProtectionJSONValue(decoder); err != nil {
+			seen[normalizedKey] = struct{}{}
+			if err := walkStrictJSONValue(decoder, label); err != nil {
 				return err
 			}
 		}
 		end, err := decoder.Token()
 		if err != nil || end != json.Delim('}') {
-			return errors.New("项目保护策略 JSON 无效")
+			return fmt.Errorf("%s 无效", label)
 		}
 	case '[':
 		for decoder.More() {
-			if err := walkProjectProtectionJSONValue(decoder); err != nil {
+			if err := walkStrictJSONValue(decoder, label); err != nil {
 				return err
 			}
 		}
 		end, err := decoder.Token()
 		if err != nil || end != json.Delim(']') {
-			return errors.New("项目保护策略 JSON 无效")
+			return fmt.Errorf("%s 无效", label)
 		}
 	default:
-		return errors.New("项目保护策略 JSON 无效")
+		return fmt.Errorf("%s 无效", label)
+	}
+	return nil
+}
+
+func validateProjectProtectionFieldNames(raw []byte) error {
+	root, ok := projectProtectionJSONObject(raw)
+	if !ok {
+		return nil
+	}
+	if err := rejectUnknownProjectProtectionFields(root, map[string]struct{}{
+		"version":             {},
+		"projectRoot":         {},
+		"workspace":           {},
+		"localActionFirewall": {},
+	}, ""); err != nil {
+		return err
+	}
+	if workspaceRaw, exists := root["workspace"]; exists {
+		if workspace, ok := projectProtectionJSONObject(workspaceRaw); ok {
+			if err := rejectUnknownProjectProtectionFields(workspace, map[string]struct{}{
+				"name":  {},
+				"slug":  {},
+				"orgId": {},
+			}, "workspace."); err != nil {
+				return err
+			}
+		}
+	}
+	firewallRaw, exists := root["localActionFirewall"]
+	if !exists {
+		return nil
+	}
+	firewall, ok := projectProtectionJSONObject(firewallRaw)
+	if !ok {
+		return nil
+	}
+	if err := rejectUnknownProjectProtectionFields(firewall, map[string]struct{}{
+		"enabled":        {},
+		"defaultMode":    {},
+		"protectedPaths": {},
+		"egress":         {},
+		"notes":          {},
+	}, "localActionFirewall."); err != nil {
+		return err
+	}
+	if rulesRaw, exists := firewall["protectedPaths"]; exists {
+		if rules, ok := projectProtectionJSONArray(rulesRaw); ok {
+			for index, ruleRaw := range rules {
+				rule, ok := projectProtectionJSONObject(ruleRaw)
+				if !ok {
+					continue
+				}
+				if err := rejectUnknownProjectProtectionFields(rule, map[string]struct{}{
+					"pattern": {},
+					"read":    {},
+					"write":   {},
+					"delete":  {},
+					"exec":    {},
+					"reason":  {},
+				}, fmt.Sprintf("localActionFirewall.protectedPaths[%d].", index)); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if egressRaw, exists := firewall["egress"]; exists {
+		if egress, ok := projectProtectionJSONObject(egressRaw); ok {
+			if err := rejectUnknownProjectProtectionFields(egress, map[string]struct{}{
+				"enabled":       {},
+				"allowedHosts":  {},
+				"unlistedWrite": {},
+			}, "localActionFirewall.egress."); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func projectProtectionJSONObject(raw []byte) (map[string]json.RawMessage, bool) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil || object == nil {
+		return nil, false
+	}
+	return object, true
+}
+
+func projectProtectionJSONArray(raw []byte) ([]json.RawMessage, bool) {
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil || items == nil {
+		return nil, false
+	}
+	return items, true
+}
+
+func rejectUnknownProjectProtectionFields(fields map[string]json.RawMessage, allowed map[string]struct{}, prefix string) error {
+	for name := range fields {
+		if _, ok := allowed[name]; !ok {
+			return fmt.Errorf("项目保护策略 JSON 包含未知字段 %q", prefix+name)
+		}
 	}
 	return nil
 }
 
 func normalizeProtectedPathRule(raw protectedPathRuleJSON) (ProtectedPathRule, error) {
-	rawPattern := strings.TrimSpace(raw.Pattern)
-	if rawPattern == "" || len(rawPattern) > 256 || !validProjectPattern(rawPattern) {
+	rawPattern := raw.Pattern
+	if rawPattern == "" || strings.TrimSpace(rawPattern) != rawPattern ||
+		utf8.RuneCountInString(rawPattern) > 256 || !validProjectPattern(rawPattern) {
 		return ProtectedPathRule{}, errors.New("protectedPaths.pattern 必须是仓库内相对路径 pattern")
+	}
+	reason, err := validateProjectReason(raw.Reason)
+	if err != nil {
+		return ProtectedPathRule{}, err
 	}
 	pattern := normalizeProjectPattern(rawPattern)
 	rule := ProtectedPathRule{
 		Pattern: pattern,
-		Read:    normalizeProjectEffect(raw.Read),
-		Write:   normalizeProjectEffect(raw.Write),
-		Delete:  normalizeProjectEffect(raw.Delete),
-		Exec:    normalizeProjectEffect(raw.Exec),
-		Reason:  trimProjectReason(raw.Reason),
+		Reason:  reason,
 	}
-	for _, effect := range []string{rule.Read, rule.Write, rule.Delete, rule.Exec} {
-		if effect != "" && !validProjectEffect(effect) {
-			return ProtectedPathRule{}, errors.New("受保护路径动作只支持 require_approval 或 deny")
+	for name, value := range map[string]*string{
+		"read": raw.Read, "write": raw.Write, "delete": raw.Delete, "exec": raw.Exec,
+	} {
+		if value == nil {
+			continue
+		}
+		if !validProjectEffect(*value) {
+			return ProtectedPathRule{}, fmt.Errorf("受保护路径动作 %s 只支持 require_approval 或 deny", name)
+		}
+		switch name {
+		case "read":
+			rule.Read = *value
+		case "write":
+			rule.Write = *value
+		case "delete":
+			rule.Delete = *value
+		case "exec":
+			rule.Exec = *value
 		}
 	}
 	if rule.Read == "" && rule.Write == "" && rule.Delete == "" && rule.Exec == "" {
 		return ProtectedPathRule{}, errors.New("受保护路径规则至少配置一个动作")
 	}
 	return rule, nil
-}
-
-func normalizeProjectEffect(value string) string {
-	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func validProjectEffect(value string) bool {
@@ -327,6 +521,11 @@ func validProjectPattern(pattern string) bool {
 	raw := strings.TrimSpace(pattern)
 	if raw == "" || path.IsAbs(raw) || filepath.IsAbs(raw) || filepath.VolumeName(raw) != "" || hasWindowsVolumePrefix(raw) {
 		return false
+	}
+	for _, r := range raw {
+		if unicode.IsControl(r) {
+			return false
+		}
 	}
 	if strings.HasPrefix(raw, `\\`) || strings.HasPrefix(strings.ReplaceAll(raw, "\\", "/"), "//") {
 		return false
@@ -350,7 +549,10 @@ func hasWindowsVolumePrefix(value string) bool {
 }
 
 func normalizeAllowedHost(value string) (string, error) {
-	host := strings.ToLower(strings.TrimSpace(value))
+	if value == "" || strings.TrimSpace(value) != value {
+		return "", errors.New("egress.allowedHosts 必须是具体 host 或 *.domain")
+	}
+	host := strings.ToLower(value)
 	if host == "" || host == "*" || strings.ContainsAny(host, "/?#@") {
 		return "", errors.New("egress.allowedHosts 必须是具体 host 或 *.domain")
 	}
@@ -366,19 +568,16 @@ func normalizeAllowedHost(value string) (string, error) {
 	return host, nil
 }
 
-func trimProjectReason(value string) string {
-	var builder strings.Builder
-	for _, r := range strings.TrimSpace(value) {
-		if r < 0x20 {
-			builder.WriteRune(' ')
-		} else {
-			builder.WriteRune(r)
-		}
-		if builder.Len() >= 160 {
-			break
+func validateProjectReason(value string) (string, error) {
+	if utf8.RuneCountInString(value) > 160 {
+		return "", errors.New("protectedPaths.reason 不能超过 160 个字符")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return "", errors.New("protectedPaths.reason 不能包含控制字符")
 		}
 	}
-	return strings.TrimSpace(builder.String())
+	return value, nil
 }
 
 func CanonicalPatchTargets(input ActionInput) []string {

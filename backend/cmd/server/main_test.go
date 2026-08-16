@@ -283,6 +283,122 @@ func TestRunHookControlStatusDefaultsToOff(t *testing.T) {
 	}
 }
 
+func TestRunHookControlSupportsExplicitProjectDir(t *testing.T) {
+	first := t.TempDir()
+	second := t.TempDir()
+	for _, repo := range []string{first, second} {
+		if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+			t.Fatalf("create .git for %s: %v", repo, err)
+		}
+	}
+	if err := writeProjectHookControl(first, projectHookModeLive); err != nil {
+		t.Fatalf("write first control: %v", err)
+	}
+	if err := writeProjectHookControl(second, projectHookModeDryRun); err != nil {
+		t.Fatalf("write second control: %v", err)
+	}
+
+	t.Chdir(t.TempDir())
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"hook", "control", "status", "--dir", first}, &stdout, &stderr); code != 0 {
+		t.Fatalf("explicit status returned %d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "mode: live") || !strings.Contains(stdout.String(), hookControlPath(first)) {
+		t.Fatalf("status did not use explicit project:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"hook", "control", "off", "--dir=" + second, "--reason", "pause second"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("explicit off returned %d stderr=%s", code, stderr.String())
+	}
+	firstDoc, err := readHookControlDocument(first)
+	if err != nil {
+		t.Fatalf("read first control: %v", err)
+	}
+	secondDoc, err := readHookControlDocument(second)
+	if err != nil {
+		t.Fatalf("read second control: %v", err)
+	}
+	if firstDoc.Mode != projectHookModeLive || secondDoc.Mode != projectHookModeOff {
+		t.Fatalf("explicit dir modified the wrong project: first=%+v second=%+v", firstDoc, secondDoc)
+	}
+}
+
+func TestRunHookControlExplicitDirUsesNearestNestedProject(t *testing.T) {
+	outer := t.TempDir()
+	inner := filepath.Join(outer, "nested")
+	if err := os.Mkdir(filepath.Join(outer, ".git"), 0o700); err != nil {
+		t.Fatalf("create outer marker: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(inner, ".git"), 0o700); err != nil {
+		t.Fatalf("create inner marker: %v", err)
+	}
+	if err := writeProjectHookControl(outer, projectHookModeLive); err != nil {
+		t.Fatalf("write outer control: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"hook", "control", "off", "--dir", inner}, &stdout, &stderr); code != 0 {
+		t.Fatalf("explicit inner off returned %d stderr=%s", code, stderr.String())
+	}
+	outerDoc, err := readHookControlDocument(outer)
+	if err != nil {
+		t.Fatalf("read outer control: %v", err)
+	}
+	innerDoc, err := readHookControlDocument(inner)
+	if err != nil {
+		t.Fatalf("read inner control: %v", err)
+	}
+	if outerDoc.Mode != projectHookModeLive || innerDoc.Mode != projectHookModeOff {
+		t.Fatalf("explicit nested dir selected wrong project: outer=%+v inner=%+v", outerDoc, innerDoc)
+	}
+}
+
+func TestRunHookControlExplicitDirRejectsMissingDirectory(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create repo marker: %v", err)
+	}
+	missing := filepath.Join(repo, "missing")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"hook", "control", "off", "--dir", missing}, &stdout, &stderr); code != 2 {
+		t.Fatalf("missing explicit dir must fail, code=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(hookControlPath(repo)); !os.IsNotExist(err) {
+		t.Fatalf("missing explicit dir must not modify parent control, err=%v", err)
+	}
+}
+
+func TestRunHookControlReportsNextUpModeMismatch(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create .git: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(projectConfigPath(repo)), 0o700); err != nil {
+		t.Fatalf("create config directory: %v", err)
+	}
+	cfg := defaultProjectRunConfig(repo)
+	if err := os.WriteFile(projectConfigPath(repo), []byte(renderProjectConfigFile(cfg)), 0o600); err != nil {
+		t.Fatalf("write project config: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if code := run([]string{"hook", "control", "live", "--dir", repo}, &stdout, &stderr); code != 0 {
+		t.Fatalf("live returned %d stderr=%s", code, stderr.String())
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "nextUpMode: dry-run") ||
+		!strings.Contains(output, "warning: 当前模式仅作用于运行时") {
+		t.Fatalf("runtime/config mismatch must be explicit:\n%s", output)
+	}
+}
+
 func TestRunHookControlStatusRejectsInvalidExistingControl(t *testing.T) {
 	tests := []struct {
 		name string
@@ -670,6 +786,37 @@ func TestRunGuardHookHonorsRepoControlAndCallsBackendInLiveMode(t *testing.T) {
 	code = run([]string{"guard", "hook", "codex", "--input", inputPath}, &stdout, &stderr)
 	if code != 0 || stdout.Len() != 0 || requests != 0 {
 		t.Fatalf("ordinary repo read must use the local fast path, code=%d requests=%d stdout=%s stderr=%s", code, requests, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunGuardHookUsesControlEndpointWhenEnvironmentIsUnset(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		writeHookDecisionResponse(t, w, map[string]any{"decision": "deny", "reason": "control endpoint reached"})
+	}))
+	t.Cleanup(server.Close)
+	if err := writeHookControlDocument(repo, hookControlDocument{
+		Mode:     projectHookModeLive,
+		Endpoint: server.URL,
+	}); err != nil {
+		t.Fatalf("write live control with endpoint: %v", err)
+	}
+	t.Setenv("AGENTTOOLGATE_URL", "")
+	t.Setenv("TRELLIS_HOOKS", "1")
+	t.Setenv("TRELLIS_DISABLE_HOOKS", "0")
+	inputPath := writeHookPayloadForRepo(t, repo, "shell", map[string]any{"command": "go test ./..."})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"guard", "hook", "claude", "--input", inputPath}, &stdout, &stderr)
+	if code != 0 || requests != 1 || !strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+		t.Fatalf("control endpoint must receive hook request, code=%d requests=%d stdout=%s stderr=%s", code, requests, stdout.String(), stderr.String())
 	}
 }
 
@@ -1737,7 +1884,7 @@ func TestEnforceHookDecisionFloorRejectsUnbackedAllow(t *testing.T) {
 }
 
 func TestProjectHookMatcherIncludesDirectNetworkTools(t *testing.T) {
-	for _, tool := range []string{"http.request", "network.request"} {
+	for _, tool := range []string{"http.request", "network.request", "shell_command", "sh"} {
 		matched, err := regexp.MatchString(localActionHookMatcher, tool)
 		if err != nil {
 			t.Fatalf("compile hook matcher: %v", err)
@@ -2087,7 +2234,7 @@ func TestPrepareProjectUpDoesNotWriteHookControlBeforeStart(t *testing.T) {
 	if cfg.Port != "18082" || cfg.DefaultWorkspaceOrgID != "demo-org" || cfg.DefaultWorkspaceSlug != "demo" {
 		t.Fatalf("project config not applied: %+v", cfg)
 	}
-	expectedRoot, err := filepath.Abs(project)
+	expectedRoot, err := resolveProjectRoot(project)
 	if err != nil {
 		t.Fatalf("resolve expected project root: %v", err)
 	}
@@ -2097,7 +2244,7 @@ func TestPrepareProjectUpDoesNotWriteHookControlBeforeStart(t *testing.T) {
 	if !openBrowser {
 		t.Fatalf("openBrowser should follow project config")
 	}
-	if !strings.Contains(summary, "Hook mode: dry-run") || !strings.Contains(summary, projectConfigPath(project)) {
+	if !strings.Contains(summary, "Hook mode: dry-run") || !strings.Contains(summary, projectConfigPath(expectedRoot)) {
 		t.Fatalf("up summary missing config or dry-run mode:\n%s", summary)
 	}
 	if !strings.Contains(summary, "Codex / Claude Code 默认使用 /mcp") || !strings.Contains(summary, ".agenttoolgate/clients/") {
@@ -2106,7 +2253,7 @@ func TestPrepareProjectUpDoesNotWriteHookControlBeforeStart(t *testing.T) {
 	if _, err := os.Stat(hookControlPath); !os.IsNotExist(err) {
 		t.Fatalf("hook control should not exist before server start, got err=%v", err)
 	}
-	if err := writeProjectHookControlAtPath(project, hookControlPath, hookControlMode); err != nil {
+	if err := writeProjectHookControlAtPath(cfg.ProjectRoot, hookControlPath, hookControlMode); err != nil {
 		t.Fatalf("write hook control after simulated start: %v", err)
 	}
 	raw, err := os.ReadFile(hookControlPath)
@@ -2170,14 +2317,14 @@ func TestRunUpFailureRestoresPreviousHookControl(t *testing.T) {
 	}
 	// 使用系统分配的临时端口，确保本测试稳定进入启动后钩子失败与清理分支。
 	cfg.Port = "0"
-	if err := writeProjectHookControlAtPath(repo, hookControlPath, projectHookModeOff); err != nil {
+	if err := writeProjectHookControlAtPath(cfg.ProjectRoot, hookControlPath, projectHookModeOff); err != nil {
 		t.Fatalf("write previous hook control: %v", err)
 	}
 	previous, err := os.ReadFile(hookControlPath)
 	if err != nil {
 		t.Fatalf("read previous hook control: %v", err)
 	}
-	activation := projectHookControlActivation{root: repo, path: hookControlPath, mode: hookControlMode}
+	activation := projectHookControlActivation{root: cfg.ProjectRoot, path: hookControlPath, mode: hookControlMode}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -2249,6 +2396,138 @@ func TestHookControlActivationRollbackPreservesConcurrentUpdate(t *testing.T) {
 	}
 	if !bytes.Equal(after, concurrent) {
 		t.Fatalf("rollback must preserve a newer control update\nwant=%s\ngot=%s", concurrent, after)
+	}
+}
+
+func TestHookControlActivationDeactivateWritesOff(t *testing.T) {
+	root := t.TempDir()
+	path := projectHookControlPath(root)
+	activation := projectHookControlActivation{root: root, path: path, mode: projectHookModeLive}
+	if err := activation.publish(); err != nil {
+		t.Fatalf("publish hook control: %v", err)
+	}
+	if err := activation.deactivate(); err != nil {
+		t.Fatalf("deactivate hook control: %v", err)
+	}
+	doc, err := readHookControlDocument(root)
+	if err != nil {
+		t.Fatalf("read deactivated control: %v", err)
+	}
+	if doc.Mode != projectHookModeOff || doc.Endpoint != "" || doc.Executable != "" ||
+		doc.Reason != "项目级 up 已停止" {
+		t.Fatalf("unexpected deactivated control: %+v", doc)
+	}
+}
+
+func TestHookControlActivationDeactivatePreservesConcurrentUpdate(t *testing.T) {
+	root := t.TempDir()
+	path := projectHookControlPath(root)
+	activation := projectHookControlActivation{root: root, path: path, mode: projectHookModeLive}
+	if err := activation.publish(); err != nil {
+		t.Fatalf("publish hook control: %v", err)
+	}
+	concurrent := []byte("{\n  \"mode\": \"live\",\n  \"reason\": \"new process\"\n}\n")
+	if err := writeProjectHookControlPayload(root, path, concurrent); err != nil {
+		t.Fatalf("write concurrent control: %v", err)
+	}
+	if err := activation.deactivate(); err != nil {
+		t.Fatalf("deactivate hook control: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read concurrent control: %v", err)
+	}
+	if !bytes.Equal(after, concurrent) {
+		t.Fatalf("deactivate must preserve a newer control update\nwant=%s\ngot=%s", concurrent, after)
+	}
+}
+
+func TestHookControlActivationDeactivateRestoresRunningPreviousInstance(t *testing.T) {
+	root := t.TempDir()
+	path := projectHookControlPath(root)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve executable: %v", err)
+	}
+	firstServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer firstServer.Close()
+	secondServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer secondServer.Close()
+
+	first := projectHookControlActivation{
+		root:       root,
+		path:       path,
+		mode:       projectHookModeLive,
+		endpoint:   firstServer.URL,
+		executable: executable,
+	}
+	if err := first.publish(); err != nil {
+		t.Fatalf("publish first instance: %v", err)
+	}
+	firstPayload := append([]byte(nil), first.publishedPayload...)
+
+	second := projectHookControlActivation{
+		root:       root,
+		path:       path,
+		mode:       projectHookModeLive,
+		endpoint:   secondServer.URL,
+		executable: executable,
+	}
+	if err := second.publish(); err != nil {
+		t.Fatalf("publish second instance: %v", err)
+	}
+	if err := second.deactivate(); err != nil {
+		t.Fatalf("deactivate second instance: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read restored first control: %v", err)
+	}
+	if !bytes.Equal(after, firstPayload) {
+		t.Fatalf("second instance must restore the still-running first instance\nwant=%s\ngot=%s", firstPayload, after)
+	}
+}
+
+func TestHookEndpointReachability(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	if !hookEndpointReachable(server.URL) {
+		t.Fatal("running loopback endpoint should be reachable")
+	}
+	server.Close()
+	if hookEndpointReachable(server.URL) {
+		t.Fatal("stopped loopback endpoint should be unreachable")
+	}
+}
+
+func TestHookEndpointReachabilityDoesNotFollowRedirects(t *testing.T) {
+	redirected := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirected = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	if hookEndpointReachable(source.URL) {
+		t.Fatal("redirecting endpoint must not be reported reachable")
+	}
+	if redirected {
+		t.Fatal("reachability probe must not follow redirects")
 	}
 }
 

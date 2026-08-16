@@ -73,12 +73,24 @@ export interface ToolCallPage {
   pageSize: number;
 }
 
+export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired" | "consumed";
+
+export type ApprovalErrorCode =
+  | "approval_expired"
+  | "approval_already_reviewed"
+  | "approval_revalidation_failed"
+  | "approval_self_review_denied"
+  | "permission_denied";
+
+export type ApprovalStatusCounts = Record<ApprovalStatus, number>;
+
 export interface ApprovalRequest {
   id: string;
+  callId: string;
   workspaceId: string;
   toolKey: string;
   toolDisplayName: string;
-  status: string;
+  status: ApprovalStatus;
   requestedBy: string;
   reviewedBy?: string;
   reason?: string;
@@ -96,6 +108,14 @@ export interface ApprovalRequest {
   expiresAt: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ApprovalRequestPage {
+  items: ApprovalRequest[];
+  total: number;
+  page: number;
+  pageSize: number;
+  statusCounts: ApprovalStatusCounts;
 }
 
 export interface ApprovalReviewInput {
@@ -282,6 +302,7 @@ export interface ApprovalActionResponse {
   approval: ApprovalRequest;
   toolCall: ToolCall;
   result?: unknown;
+  code?: ApprovalErrorCode;
 }
 
 export interface DatabaseColumnSchema {

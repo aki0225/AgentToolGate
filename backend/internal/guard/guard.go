@@ -207,6 +207,9 @@ func detectDeleteRisk(command, commandText, toolName, actionType, target, worksp
 		if isRootDeleteCommand(commandText, workspaceRoot) {
 			return newDecision("deny", "critical", false, "命中根目录删除", "root_delete", "destructive_write", "删除根目录或父目录"), true
 		}
+		if isRecursiveDelete(commandText) {
+			return newDecision("ask", "high", false, "删除需要确认", "recursive_delete", "destructive_write", "递归删除"), true
+		}
 		return newDecision("ask", "medium", false, "删除需要确认", "delete_action", "destructive_write", "删除操作"), true
 	}
 	normalizedRoot := firstNonEmpty(workspaceRoot, cwd)
@@ -1303,11 +1306,33 @@ func isWriteLike(actionType, toolName, command string) bool {
 }
 
 func isDeleteLike(actionType, toolName, command string) bool {
-	return containsAny(actionType, "delete", "remove") || containsAny(toolName, "delete") || containsAny(command, "rm -rf", "rmdir /s", "del /s", "remove-item -recurse", "remove-item -path", "unlink", "trash")
+	return containsAny(actionType, "delete", "remove") ||
+		containsAny(toolName, "delete") ||
+		containsAny(command, "rm -rf", "rmdir /s", "del /s", "remove-item -recurse", "remove-item -path", "remove-item -literalpath", "unlink", "trash") ||
+		isProjectDeleteCommand(command)
 }
 
 func isRecursiveDelete(command string) bool {
-	return containsAny(command, "rm -rf", "rmdir /s", "remove-item -recurse", "remove-item -path")
+	if containsAny(command, "rm -rf", "rmdir /s", "remove-item -recurse") {
+		return true
+	}
+	for _, tokens := range splitProjectCommandSegments(command) {
+		removeItem := false
+		recursive := false
+		for _, token := range tokens {
+			normalized := strings.ToLower(strings.TrimSpace(token))
+			if projectCommandName(token) == "remove-item" {
+				removeItem = true
+			}
+			if normalized == "-recurse" || strings.HasPrefix(normalized, "-recurse:") {
+				recursive = true
+			}
+		}
+		if removeItem && recursive {
+			return true
+		}
+	}
+	return false
 }
 
 func isSensitivePath(target string) bool {
@@ -1379,6 +1404,25 @@ func isRootDeleteCommand(commandText, workspaceRoot string) bool {
 		return true
 	}
 	normalizedRoot := normalizedPathText(workspaceRoot)
+	for _, operation := range projectCommandTargetOperations(commandText) {
+		if operation.Operation != "delete" {
+			continue
+		}
+		target := normalizedPathText(operation.Target)
+		if target == "." || target == "./" || target == `.\` ||
+			target == ".." || target == "../" || target == `..\` {
+			return true
+		}
+		if normalizedRoot == "" {
+			continue
+		}
+		resolved := normalizePathCandidate(resolveTarget(operation.Target, workspaceRoot, workspaceRoot))
+		root := normalizePathCandidate(workspaceRoot)
+		if resolved != "" && root != "" &&
+			(samePath(resolved, root) || isAncestorOrSamePath(resolved, root)) {
+			return true
+		}
+	}
 	return normalizedRoot != "" && strings.Contains(normalized, normalizedRoot)
 }
 

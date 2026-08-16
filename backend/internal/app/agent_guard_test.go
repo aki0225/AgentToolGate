@@ -26,8 +26,6 @@ import (
 	"agenttoolgate/backend/internal/telemetry"
 )
 
-var agentGuardHookControlMu sync.Mutex
-
 func TestAgentGuardGuardCoreDecisionIsPolicyFloor(t *testing.T) {
 	t.Parallel()
 
@@ -1609,6 +1607,7 @@ func TestAgentGuardHookAdaptersTranslateDecisions(t *testing.T) {
 	repoRoot := agentGuardRepoRoot(t)
 	askInputJSON := mustAgentGuardHookInput(t, repoRoot, "Bash", `{"command":"go test ./..."}`)
 	allowInputJSON := mustAgentGuardHookInput(t, repoRoot, "Bash", `{"command":"git status"}`)
+	ordinaryWriteInputJSON := mustAgentGuardHookInput(t, repoRoot, "Write", `{"path":"src/demo.txt","content":"ordinary update"}`)
 	hardDenyInputJSON := mustAgentGuardHookInput(t, repoRoot, "Write", `{"path":"C:\\Users\\demo\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\run.ps1","content":"Write-Host 'secret-token'"}`)
 
 	t.Run("codex denies deny_with_ticket and never asks", func(t *testing.T) {
@@ -1670,7 +1669,10 @@ func TestAgentGuardHookAdaptersTranslateDecisions(t *testing.T) {
 			server := newAgentGuardDecisionServer(t, tc.body)
 			defer server.Close()
 
-			inputJSON := allowInputJSON
+			inputJSON := ordinaryWriteInputJSON
+			if tc.name == "allow" {
+				inputJSON = allowInputJSON
+			}
 			if tc.name == "deny_with_ticket" {
 				inputJSON = askInputJSON
 			}
@@ -2477,7 +2479,7 @@ func TestAgentGuardRelativeSensitiveTargetsRequireApprovalAndDoNotRemember(t *te
 	}
 }
 
-func TestAgentGuardOfflineReadOnlyCommandWritesLocalPendingAudit(t *testing.T) {
+func TestAgentGuardLiveReadOnlyFastPathWritesLocalPendingAudit(t *testing.T) {
 	t.Parallel()
 
 	python, err := exec.LookPath("python")
@@ -2514,8 +2516,11 @@ func TestAgentGuardOfflineReadOnlyCommandWritesLocalPendingAudit(t *testing.T) {
 			continue
 		}
 		found = true
-		if offline, ok := record["offline"].(bool); !ok || !offline {
-			t.Fatalf("expected offline pending audit record, got %+v", record)
+		if offline, ok := record["offline"].(bool); !ok || offline {
+			t.Fatalf("expected online fast-path audit record, got %+v", record)
+		}
+		if reason, ok := record["reason"].(string); !ok || reason != "local low-risk fast path" {
+			t.Fatalf("expected local fast-path reason, got %+v", record)
 		}
 		if workspace, ok := record["workspace"].(string); !ok || strings.TrimSpace(workspace) == "" {
 			t.Fatalf("expected workspace in pending audit, got %+v", record)
@@ -2549,28 +2554,15 @@ func runAgentGuardHook(t *testing.T, python, scriptPath, serverURL, inputJSON st
 
 func runAgentGuardHookRaw(t *testing.T, python, scriptPath, serverURL, inputJSON string) string {
 	t.Helper()
-	agentGuardHookControlMu.Lock()
-	defer agentGuardHookControlMu.Unlock()
-	restoreControl := writeAgentGuardHookControlLive(t)
-	defer restoreControl()
-
-	cmd := exec.Command(python, scriptPath)
-	cmd.Dir = agentGuardRepoRoot(t)
-	cmd.Env = append(os.Environ(),
-		"AGENTTOOLGATE_URL="+serverURL,
-		"TRELLIS_HOOKS=1",
-		"TRELLIS_DISABLE_HOOKS=0",
+	repoRoot := newAgentGuardHookTestRepo(t)
+	return runAgentGuardHookRawInRepo(
+		t,
+		python,
+		scriptPath,
+		repoRoot,
+		serverURL,
+		rewriteAgentGuardHookInputCWD(t, inputJSON, repoRoot),
 	)
-	cmd.Stdin = strings.NewReader(inputJSON)
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("run hook script %s: %v stderr=%s", scriptPath, err, stderr.String())
-	}
-	return stdout.String()
 }
 
 func runAgentGuardHookRawInRepo(t *testing.T, python, scriptPath, repoRoot, serverURL, inputJSON string) string {
@@ -2612,28 +2604,19 @@ func newAgentGuardHookTestRepo(t *testing.T) string {
 	return repoRoot
 }
 
-func writeAgentGuardHookControlLive(t *testing.T) func() {
+func rewriteAgentGuardHookInputCWD(t *testing.T, inputJSON, repoRoot string) string {
 	t.Helper()
 
-	controlPath := filepath.Join(agentGuardRepoRoot(t), ".tmp", "agenttoolgate", "hook-control.json")
-	original, readErr := os.ReadFile(controlPath)
-	if readErr != nil && !os.IsNotExist(readErr) {
-		t.Fatalf("read hook control file: %v", readErr)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(inputJSON), &payload); err != nil {
+		t.Fatalf("decode hook input: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(controlPath), 0o700); err != nil {
-		t.Fatalf("create hook control dir: %v", err)
+	payload["cwd"] = repoRoot
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("encode hook input: %v", err)
 	}
-	body := []byte(`{"mode":"live","reason":"test"}` + "\n")
-	if err := os.WriteFile(controlPath, body, 0o600); err != nil {
-		t.Fatalf("write hook control file: %v", err)
-	}
-	return func() {
-		if readErr == nil {
-			_ = os.WriteFile(controlPath, original, 0o600)
-			return
-		}
-		_ = os.Remove(controlPath)
-	}
+	return string(raw)
 }
 
 func decodeAgentGuardHookOutput(t *testing.T, scriptPath, stdout, stderr string) agentGuardHookOutput {

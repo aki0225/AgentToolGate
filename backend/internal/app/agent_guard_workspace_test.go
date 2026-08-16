@@ -18,8 +18,9 @@ func TestTrustedAgentGuardWorkspaceRootRejectsClientOverride(t *testing.T) {
 	trustedRoot := t.TempDir()
 	untrustedRoot := t.TempDir()
 	app := &App{cfg: config.Config{ProjectRoot: trustedRoot}}
+	expectedTrustedRoot := canonicalAgentGuardWorkspaceRoot(trustedRoot)
 
-	if got := app.trustedAgentGuardWorkspaceRoot(trustedRoot); !agentGuardPathsEqual(got, trustedRoot) {
+	if got := app.trustedAgentGuardWorkspaceRoot(trustedRoot); got != expectedTrustedRoot {
 		t.Fatalf("trusted root should be accepted, got %q", got)
 	}
 	if got := app.trustedAgentGuardWorkspaceRoot(untrustedRoot); got != "" {

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -214,23 +215,56 @@ func (s *MemoryStore) ListApprovalRequests(_ context.Context, workspaceID string
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now().UTC()
-	ids := append([]string(nil), s.approvalsByWorkspace[workspaceID]...)
-	items := make([]model.ApprovalRequest, 0, len(ids))
-	for _, id := range ids {
-		approval := s.approvals[id]
-		if approval.WorkspaceID != workspaceID {
-			continue
-		}
-		if expireApprovalIfNeeded(&approval, now) {
-			s.approvals[id] = approval
-		}
-		items = append(items, approval)
+	return s.listApprovalRequestsLocked(workspaceID, "")
+}
+
+func (s *MemoryStore) ListApprovalRequestsPage(_ context.Context, workspaceID string, query model.ApprovalRequestQuery) (model.ApprovalRequestPage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	status, ok := NormalizeApprovalStatus(query.Status)
+	if !ok {
+		return model.ApprovalRequestPage{}, fmt.Errorf("unsupported approval status %q", query.Status)
 	}
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].CreatedAt.After(items[j].CreatedAt)
-	})
-	return items, nil
+	allItems, err := s.listApprovalRequestsLocked(workspaceID, "")
+	if err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	statusCounts := newApprovalStatusCounts()
+	for _, approval := range allItems {
+		if normalized, valid := NormalizeApprovalStatus(approval.Status); valid && normalized != "" {
+			statusCounts[normalized]++
+		}
+	}
+
+	items := allItems
+	if status != "" {
+		items = make([]model.ApprovalRequest, 0, len(allItems))
+		for _, approval := range allItems {
+			if strings.EqualFold(approval.Status, status) {
+				items = append(items, approval)
+			}
+		}
+	}
+	total := int64(len(items))
+	page, pageSize, start, err := normalizeApprovalPage(query.Page, query.PageSize)
+	if err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	if start > len(items) {
+		start = len(items)
+	}
+	end := start + pageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	return model.ApprovalRequestPage{
+		Items:        append([]model.ApprovalRequest(nil), items[start:end]...),
+		Total:        total,
+		Page:         page,
+		PageSize:     pageSize,
+		StatusCounts: statusCounts,
+	}, nil
 }
 
 func (s *MemoryStore) GetApprovalRequestByID(_ context.Context, workspaceID, approvalID string) (model.ApprovalRequest, error) {
@@ -244,7 +278,7 @@ func (s *MemoryStore) GetApprovalRequestByID(_ context.Context, workspaceID, app
 	if expireApprovalIfNeeded(&approval, time.Now().UTC()) {
 		s.approvals[approvalID] = approval
 	}
-	return approval, nil
+	return s.withApprovalCallIDLocked(approval), nil
 }
 
 func (s *MemoryStore) GetToolByID(_ context.Context, workspaceID, toolID string) (model.Tool, error) {
@@ -376,12 +410,8 @@ func (s *MemoryStore) GetToolCallByApprovalID(_ context.Context, workspaceID, ap
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	id, ok := s.callsByApprovalID[approvalID]
+	call, ok := s.approvalToolCallLocked(workspaceID, approvalID)
 	if !ok {
-		return model.ToolCall{}, ErrNotFound
-	}
-	call, ok := s.calls[id]
-	if !ok || call.WorkspaceID != workspaceID {
 		return model.ToolCall{}, ErrNotFound
 	}
 	return s.withApprovalStatusLocked(call), nil
@@ -427,6 +457,12 @@ func (s *MemoryStore) CreateToolCall(_ context.Context, input model.CreateToolCa
 	if strings.TrimSpace(call.ApprovalID) != "" {
 		if _, exists := s.callsByApprovalID[call.ApprovalID]; !exists {
 			s.callsByApprovalID[call.ApprovalID] = call.ID
+		}
+		if approval, exists := s.approvals[call.ApprovalID]; exists &&
+			approval.WorkspaceID == call.WorkspaceID &&
+			strings.TrimSpace(approval.CallID) == "" {
+			approval.CallID = call.ID
+			s.approvals[approval.ID] = approval
 		}
 	}
 	return s.withApprovalStatusLocked(call), nil
@@ -729,6 +765,9 @@ func (s *MemoryStore) UpdateApprovalRequest(_ context.Context, workspaceID, appr
 		s.approvals[approvalID] = approval
 		return model.ApprovalRequest{}, ErrExpired
 	}
+	if strings.EqualFold(strings.TrimSpace(approval.Status), "expired") {
+		return model.ApprovalRequest{}, ErrExpired
+	}
 	approval.Status = strings.TrimSpace(input.Status)
 	approval.ReviewedBy = strings.TrimSpace(input.ReviewedBy)
 	if strings.TrimSpace(input.Reason) != "" {
@@ -890,6 +929,72 @@ func (s *MemoryStore) withApprovalStatusLocked(call model.ToolCall) model.ToolCa
 		call.ApprovalStatus = approval.Status
 	}
 	return call
+}
+
+func (s *MemoryStore) listApprovalRequestsLocked(workspaceID, status string) ([]model.ApprovalRequest, error) {
+	now := time.Now().UTC()
+	ids := append([]string(nil), s.approvalsByWorkspace[workspaceID]...)
+	items := make([]model.ApprovalRequest, 0, len(ids))
+	for _, id := range ids {
+		approval, ok := s.approvals[id]
+		if !ok || approval.WorkspaceID != workspaceID {
+			continue
+		}
+		if expireApprovalIfNeeded(&approval, now) {
+			s.approvals[id] = approval
+		}
+		if status != "" && !strings.EqualFold(approval.Status, status) {
+			continue
+		}
+		items = append(items, s.withApprovalCallIDLocked(approval))
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].ID > items[j].ID
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	return items, nil
+}
+
+func (s *MemoryStore) withApprovalCallIDLocked(approval model.ApprovalRequest) model.ApprovalRequest {
+	if strings.TrimSpace(approval.CallID) != "" {
+		return approval
+	}
+	if call, ok := s.approvalToolCallLocked(approval.WorkspaceID, approval.ID); ok {
+		approval.CallID = call.ID
+	}
+	return approval
+}
+
+func (s *MemoryStore) approvalToolCallLocked(workspaceID, approvalID string) (model.ToolCall, bool) {
+	if approval, ok := s.approvals[approvalID]; ok &&
+		approval.WorkspaceID == workspaceID &&
+		strings.TrimSpace(approval.CallID) != "" {
+		if call, exists := s.calls[approval.CallID]; exists && call.WorkspaceID == workspaceID {
+			return call, true
+		}
+	}
+	var selected model.ToolCall
+	found := false
+	for _, callID := range s.callsByWorkspace[workspaceID] {
+		call, ok := s.calls[callID]
+		if !ok || call.WorkspaceID != workspaceID || call.ApprovalID != approvalID {
+			continue
+		}
+		if !found || approvalToolCallComesBefore(call, selected) {
+			selected = call
+			found = true
+		}
+	}
+	return selected, found
+}
+
+func approvalToolCallComesBefore(left, right model.ToolCall) bool {
+	if left.CreatedAt.Equal(right.CreatedAt) {
+		return left.ID < right.ID
+	}
+	return left.CreatedAt.Before(right.CreatedAt)
 }
 
 func (s *MemoryStore) connectorIndexKey(workspaceID, connectorType, name string) string {

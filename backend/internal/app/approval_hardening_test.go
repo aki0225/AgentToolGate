@@ -87,6 +87,13 @@ func TestApprovalSelfReviewForbiddenForApproveAndReject(t *testing.T) {
 			if decisionResp.Code != http.StatusForbidden {
 				t.Fatalf("expected 403, got %d body=%s", decisionResp.Code, decisionResp.Body.String())
 			}
+			var errorPayload struct {
+				Code string `json:"code"`
+			}
+			decodeBody(t, decisionResp.Body.Bytes(), &errorPayload)
+			if errorPayload.Code != approvalSelfReviewDeniedCode {
+				t.Fatalf("expected self-review code %q, got %+v", approvalSelfReviewDeniedCode, errorPayload)
+			}
 
 			approval, err := st.GetApprovalRequestByID(context.Background(), workspace.ID, response.ApprovalID)
 			if err != nil {

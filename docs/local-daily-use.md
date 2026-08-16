@@ -90,7 +90,7 @@ Linux 下命令名是不带 `.exe` 的 `agenttoolgate`：
 ./agenttoolgate up --open
 ```
 
-后续排错用 `agenttoolgate.exe doctor --dir <project>` 或 `./agenttoolgate doctor --dir <project>`。`doctor` 显示本地 URL，并报告 Codex 项目配置的 `missing/unreadable/configured/custom`、`hooks.json` 是否存在、adapter/Core 的 `missing/unreadable/current/modified`、Git/Python 命令可用性与 hook mode；它不代表运行时 trust / live 状态，也不打印 token、Secret 明文或 DSN 密码。
+后续排错用 `agenttoolgate.exe doctor --dir <project>` 或 `./agenttoolgate doctor --dir <project>`。`doctor` 显示本地 URL，并报告 Codex 项目配置的 `missing/unreadable/configured/custom`、`hooks.json` 是否存在、adapter/Core 的 `missing/unreadable/current/modified`、Git/Python 命令可用性、hook mode 与 endpoint 可达性；它不代表运行时 trust 状态，也不打印 token、Secret 明文或 DSN 密码。
 
 `init codex` / `init claude` 只生成对应客户端所需文件；`init all` 会同时生成：
 
@@ -119,9 +119,21 @@ agenttoolgate.exe up --dir <project> --port 8090
 
 `init` 默认不覆盖已有文件，重复执行会跳过用户已修改的文件。项目已有 `.codex/hooks.json` 时，普通 `init codex` / `init all` 会在写入前停止，避免 JSON 与 TOML Hook 同层重复执行；请先人工保留一种来源。继续使用 JSON，或升级后 `doctor` 显示 adapter/Core 为 `modified` 时，先审查差异，再用 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 只安装或刷新 adapter/Core。ATG 会在目标 Git 仓库的本地 `info/exclude` 中按需追加 `/.tmp/agenttoolgate/`，保留用户已有规则且不改项目 `.gitignore`；普通仓库和 linked worktree 都不会把 control、SQLite 或 recovery 暴露到 `git status`。旧运行文件会保留到 `.tmp/agenttoolgate/recovery/` 并打印路径；确认新 Hook 稳定后再手工清理。刷新后重新运行 `up`，才能把非默认 endpoint 和当前 executable 写回 control。`up` 会读取 `.agenttoolgate/config.json`，服务启动成功后写入 repo-local `.tmp/agenttoolgate/hook-control.json`，默认 hook mode 是 `dry-run`。这一步不会修改用户全局 Codex / Claude Code 配置、系统策略或注册表。
 
-`hook control` 当前不接受 `--dir`；从任意目录执行 `up --dir <project>` 后，切换 `off` / `dry-run` / `live` 前仍需进入目标项目或其子目录，避免作用到另一个仓库。
+`hook control` 支持 `--dir <project>`。同时维护多个仓库时应显式传入目标目录，避免
+依赖当前工作目录：
 
-Codex 还需要两次显式确认：先把 `.agenttoolgate/clients/codex.config.snippet.toml` 按键合并到用户级 `config.toml`，再从项目启动 Codex，在 `/hooks` 中核对命令和当前 Hash 后信任 Hook 内容。不要重复追加已有的 `[features]` 或 MCP 表。Windows 的 trust key 使用 Codex 规范化后的小写、反斜杠绝对路径；生成片段用 TOML 单引号保留反斜杠。已有 `.codex/config.toml` 时按键合并 `codex.project-hook.snippet.toml`。`doctor --dir <project>` 能检查安装状态，但不能替代 `/hooks` 的运行时信任状态。项目 Hook 需要 Git 与 Python 3。
+```powershell
+agenttoolgate.exe hook control status --dir <project>
+agenttoolgate.exe hook control dry-run --dir <project> --reason "preview only"
+agenttoolgate.exe hook control live --dir <project> --reason "guard this session"
+agenttoolgate.exe hook control off --dir <project> --reason "pause this project"
+```
+
+切换只修改 repo-local 运行时 control，不会暗中改写
+`.agenttoolgate/config.json`。输出中的 `nextUpMode` 是下一次 `up` 使用的项目配置
+模式；如果它和当前 `mode` 不同，CLI 会明确提示重启后的变化。
+
+Codex 还需要两次显式确认：先把 `.agenttoolgate/clients/codex.config.snippet.toml` 按键合并到用户级 `config.toml`，再从项目启动 Codex，在 `/hooks` 中核对命令和当前 Hash 后信任 Hook 内容。不要重复追加已有的 `[features]` 或 MCP 表。Windows 的 trust key 使用 Codex 规范化后的小写、反斜杠绝对路径；生成片段用 TOML 单引号保留反斜杠。已有 `.codex/config.toml` 时按键合并 `codex.project-hook.snippet.toml`。`doctor --dir <project>` 能检查安装状态，但不能替代 `/hooks` 的运行时信任状态。项目 Hook 需要 Git 与 Python 3.10+；Windows 优先使用 `python`，不可用时使用 `py -3`。
 
 ## 配置项目内保护规则
 
@@ -185,6 +197,22 @@ Codex 用户运行 `init codex` 安装项目 Hook，再把用户级 TOML 与必�
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 .\dist\agenttoolgate.exe --open
 ```
+
+`build-local.ps1`、`build-release.ps1` 和 `verify-local.ps1` 会自动把 Go、npm、pip
+与 Playwright 的重缓存放到仓库忽略的 `.tmp/cache/`。Go 和 Python 的短生命周期
+临时目录放在同盘的 `<workspace-parent>/.tmp/AgentToolGate-public-*`，不会继续使用
+系统盘用户临时目录，也不会放进被 Hook 保护的 Git 仓库内部。
+
+直接运行 `go test`、`go vet` 或其他开发命令前，可以在当前 PowerShell 会话执行：
+
+```powershell
+.\scripts\local-cache-env.ps1
+go -C backend test -count=1 -timeout 60s ./...
+go -C backend vet ./...
+```
+
+该脚本只修改当前 PowerShell 进程的环境变量，不写用户级或机器级配置。关闭终端后设置
+自动失效。
 
 默认行为：
 
@@ -269,7 +297,7 @@ doctor 会显示：
 - HTTP allowed hosts / methods 摘要
 - MCP Streamable HTTP URL、MCP SSE URL、workspace header 示例和 AI client 文档路径
 - 默认 connector 与 MCP outbound 安全摘要
-- Codex 项目配置、adapter/Core、Git/Python 3 和 repo-local hook mode
+- Codex 项目配置、adapter/Core、Git/Python 3.10+、repo-local hook mode 和 endpoint 可达性
 
 `doctor` 的文件状态不等于 Codex 已启用或信任 Hook，也不等于控制模式已经进入 `live`；运行时仍以 Codex `/hooks` 和 `hook control status` 为准。
 
@@ -366,13 +394,15 @@ DATABASE_URL=postgres://agenttoolgate:agenttoolgate@127.0.0.1:5432/agenttoolgate
 项目级真实 PreToolUse hook 有一个 repo-local 热开关，当前会话不需要重启即可切换：
 
 ```powershell
-.\agenttoolgate.exe hook control status
-.\agenttoolgate.exe hook control off --reason "pause ATG hooks"
-.\agenttoolgate.exe hook control dry-run --reason "preview only"
-.\agenttoolgate.exe hook control live --reason "enable guarded session"
+.\agenttoolgate.exe hook control status --dir <project>
+.\agenttoolgate.exe hook control off --dir <project> --reason "pause ATG hooks"
+.\agenttoolgate.exe hook control dry-run --dir <project> --reason "preview only"
+.\agenttoolgate.exe hook control live --dir <project> --reason "enable guarded session"
 ```
 
-控制文件写在 `.tmp/agenttoolgate/hook-control.json`。项目级 `up` 成功且 `doctor` 确认 Codex adapter 为 `current` 时，还会记录实际回环 endpoint 和当前 ATG executable，使自定义端口与未加入 `PATH` 的本地二进制都能被 Hook 正确使用；endpoint 只接受回环 HTTP，executable 必须是现存绝对普通文件。为兼容旧版严格解析的 adapter，`modified` adapter 只写旧版 mode 字段，更新前不会收到扩展 runtime 字段；确认需要覆盖时使用 `init codex --refresh-hooks`，随后重新运行 `up`。该文件位于忽略提交的 `.tmp`，公开 evidence 仍应脱敏本机路径。文件缺失时按 `off` 处理；文件已存在但损坏、不可读、字段非法或无法解析时 fail closed：Hook 返回 `deny`，`status` 报错，可显式执行 `hook control off` 重写后恢复。`off` 会移除 control 中不再需要的 endpoint 和 executable，避免旧临时二进制路径反过来造成无效控制文件。`dry-run` 只写 `.tmp/agenttoolgate/hook-dry-run.jsonl` 的脱敏预览，不阻断；`live` 才执行真实拦截。`TRELLIS_HOOKS=0` 和 `TRELLIS_DISABLE_HOOKS=1` 仍是最高优先级硬关闭。
+控制文件写在 `.tmp/agenttoolgate/hook-control.json`。项目级 `up` 成功且 `doctor` 确认 Codex adapter 为 `current` 时，还会记录实际回环 endpoint 和当前 ATG executable，使自定义端口与未加入 `PATH` 的本地二进制都能被 Hook 正确使用；endpoint 只接受回环 HTTP，executable 必须是现存绝对普通文件。服务正常停止后，只有 control 仍与本进程发布内容一致时才会改为 `off`；若前一个 `up` 实例仍可达，则恢复到前一个实例。服务异常退出时保留当前模式与 endpoint，使 Hook 进入离线保守路径，`doctor` 明确显示 unreachable。并发启动的新进程或手工更新不会被覆盖。
+
+为兼容旧版严格解析的 adapter，`modified` adapter 只写旧版 mode 字段，更新前不会收到扩展 runtime 字段；确认需要覆盖时使用 `init codex --refresh-hooks`，随后重新运行 `up`。该文件位于忽略提交的 `.tmp`，公开 evidence 仍应脱敏本机路径。文件缺失时按 `off` 处理；文件已存在但损坏、不可读、字段非法或无法解析时 fail closed：Hook 返回 `deny`，`status` 报错，可显式执行 `hook control off --dir <project>` 重写后恢复。`off` 会移除 control 中不再需要的 endpoint 和 executable，避免旧临时二进制路径反过来造成无效控制文件。`dry-run` 只写 `.tmp/agenttoolgate/hook-dry-run.jsonl` 的脱敏预览，不阻断；`live` 才执行真实拦截。`live` 下空输入、非法 JSON、非对象或缺少工具名会输出最小化 deny，不回显原始 payload；`off` / `dry-run` 对这些异常仍保持 no-op。`TRELLIS_HOOKS=0` 和 `TRELLIS_DISABLE_HOOKS=1` 仍是最高优先级硬关闭。
 
 `live` 请求后端的默认超时是 1000ms，Python Bridge 等待 Go CLI 的默认超时是 1500ms；如本机性能不同，可分别用 `AGENTTOOLGATE_HOOK_TIMEOUT_MS`（50–2000ms）和 `AGENTTOOLGATE_CLI_TIMEOUT_MS`（100–5000ms）覆盖。该设置不影响 `off` / `dry-run`。
 
@@ -404,7 +434,7 @@ agenttoolgate.exe guard hook claude --input -
 agenttoolgate.exe guard hook codex --input -
 ```
 
-如果需要覆盖二进制路径，可设置 `AGENTTOOLGATE_EXE`。安装项目文件不等于启用保护。Full Access 模式本身不会禁用已加载的 Hook，但只有项目层已加载、Hook 已启用并信任、控制模式为 `live`、调用进入受支持的 `PreToolUse` 路径，且 Hook 成功返回有效 `deny` 或退出码 `2` 时才会实时阻断。Hook 失败、输出无效、绕过、未覆盖工具以及 `off` / `dry-run` 都不受实时阻断。Codex Hook Bridge 是 opt-in guardrail，不是 OS sandbox / OS enforcement boundary；后端已支持一次性 `deny_with_ticket`、批准后精确重试和低/中风险 remembered allow；Codex 运行时仍没有完整 ask 交互，需要确认的动作会保守输出 deny，批准后由客户端重试。
+如果需要覆盖二进制路径，可设置 `AGENTTOOLGATE_EXE`。安装项目文件不等于启用保护。Full Access 模式本身不会禁用已加载的 Hook，但只有项目层已加载、Hook 已启用并信任、控制模式为 `live`、调用进入受支持的 `PreToolUse` 路径，且 Hook 成功返回有效 `deny` 或退出码 `2` 时才会实时阻断。Hook 被绕过、未覆盖工具以及 `off` / `dry-run` 都不受实时阻断；`live` 下无法解析的 Hook 输入会保守拒绝并提示异常输入。Codex Hook Bridge 是 opt-in guardrail，不是 OS sandbox / OS enforcement boundary；后端已支持一次性 `deny_with_ticket`、批准后精确重试和低/中风险 remembered allow；Codex 运行时仍没有完整 ask 交互，需要确认的动作会保守输出 deny，批准后由客户端重试。
 
 ## 备忘
 

@@ -19,6 +19,7 @@ import (
 	"agenttoolgate/backend/internal/auth"
 	"agenttoolgate/backend/internal/config"
 	"agenttoolgate/backend/internal/model"
+	"agenttoolgate/backend/internal/netguard"
 	"agenttoolgate/backend/internal/policy"
 	"agenttoolgate/backend/internal/static"
 	"agenttoolgate/backend/internal/store"
@@ -38,6 +39,7 @@ type App struct {
 	policies                *policy.Engine
 	approvalHub             *approvalSSEHub
 	agentGuardResolveTarget func(string) agentGuardTargetResolution
+	httpResolver            netguard.Resolver
 	rateLimiters            sync.Map
 	frontendFS              http.FileSystem
 }
@@ -46,6 +48,9 @@ type requestContextKey struct{}
 
 var errBadRequest = errors.New("bad request")
 var errForbidden = errors.New("forbidden")
+var errApprovalAlreadyReviewed = errors.New("approval already reviewed")
+var errApprovalRevalidationFailed = errors.New(approvalRevalidationFailedMessage)
+var errApprovalSelfReviewDenied = errors.New("approval requester cannot review their own approval")
 
 type RequestContext struct {
 	Identity  auth.Identity   `json:"identity"`
@@ -512,12 +517,17 @@ func (a *App) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	approvals, err := a.store.ListApprovalRequests(r.Context(), reqCtx.Workspace.ID)
+	query, err := parseApprovalListQuery(r)
 	if err != nil {
 		a.respondError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": newApprovalResponses(approvals)})
+	approvals, err := a.store.ListApprovalRequestsPage(r.Context(), reqCtx.Workspace.ID, query)
+	if err != nil {
+		a.respondError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newApprovalListResponse(approvals))
 }
 
 func (a *App) handleApproveApproval(w http.ResponseWriter, r *http.Request) {
@@ -571,12 +581,20 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, dec
 		a.respondError(w, err)
 		return
 	}
+	if !strings.EqualFold(strings.TrimSpace(approval.Status), "pending") {
+		if decision == "approved" && isConsumedAgentGuardApproval(approval, call) {
+			writeJSON(w, http.StatusOK, newApprovalActionResponse(approval, call))
+			return
+		}
+		a.respondError(w, errApprovalAlreadyReviewed)
+		return
+	}
 
 	var executionPlan approvalExecutionPlan
 	if decision == "approved" {
 		executionPlan, err = a.revalidateApprovalExecution(r.Context(), reqCtx.Workspace.ID, approval, call)
 		if err != nil {
-			a.respondError(w, err)
+			a.respondError(w, approvalRevalidationResponseError(err))
 			return
 		}
 	}
@@ -587,6 +605,9 @@ func (a *App) handleApprovalDecision(w http.ResponseWriter, r *http.Request, dec
 		Reason:     reviewReason,
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			err = errApprovalAlreadyReviewed
+		}
 		a.respondError(w, err)
 		return
 	}
@@ -874,19 +895,31 @@ func (a *App) ensureBuiltinTools(ctx context.Context, workspaceID string) error 
 
 func (a *App) respondError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
+	code := ""
 	switch {
+	case errors.Is(err, errApprovalAlreadyReviewed):
+		status = http.StatusConflict
+		code = approvalAlreadyReviewedCode
+	case errors.Is(err, errApprovalRevalidationFailed):
+		status = http.StatusConflict
+		code = approvalRevalidationFailedCode
+	case errors.Is(err, errApprovalSelfReviewDenied):
+		status = http.StatusForbidden
+		code = approvalSelfReviewDeniedCode
 	case errors.Is(err, store.ErrNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, store.ErrConflict):
 		status = http.StatusConflict
 	case errors.Is(err, store.ErrExpired):
 		status = http.StatusConflict
+		code = approvalExpiredCode
 	case errors.Is(err, errRateLimited):
 		status = http.StatusTooManyRequests
 	case errors.Is(err, errBadRequest):
 		status = http.StatusBadRequest
 	case errors.Is(err, errForbidden):
 		status = http.StatusForbidden
+		code = approvalPermissionDeniedCode
 	case strings.Contains(strings.ToLower(err.Error()), "missing bearer token"):
 		status = http.StatusUnauthorized
 	case strings.Contains(strings.ToLower(err.Error()), "verify id token"):
@@ -901,12 +934,23 @@ func (a *App) respondError(w http.ResponseWriter, err error) {
 
 	a.logger.Warn("request failed", "status", status, "error", err)
 	message := err.Error()
-	if errors.Is(err, errForbidden) {
+	switch {
+	case errors.Is(err, errForbidden):
 		message = "forbidden"
+	case errors.Is(err, errApprovalAlreadyReviewed):
+		message = errApprovalAlreadyReviewed.Error()
+	case errors.Is(err, errApprovalRevalidationFailed):
+		message = approvalRevalidationFailedMessage
+	case errors.Is(err, errApprovalSelfReviewDenied):
+		message = errApprovalSelfReviewDenied.Error()
 	}
-	writeJSON(w, status, map[string]any{
+	payload := map[string]any{
 		"error": message,
-	})
+	}
+	if code != "" {
+		payload["code"] = code
+	}
+	writeJSON(w, status, payload)
 }
 
 func requestContextFrom(ctx context.Context) (RequestContext, bool) {
@@ -1019,6 +1063,49 @@ func parseToolCallListQuery(r *http.Request) (model.ToolCallQuery, error) {
 	}
 
 	return query, nil
+}
+
+func parseApprovalListQuery(r *http.Request) (model.ApprovalRequestQuery, error) {
+	query := model.ApprovalRequestQuery{
+		Page:     1,
+		PageSize: 50,
+	}
+	if rawStatus := strings.TrimSpace(r.URL.Query().Get("status")); rawStatus != "" {
+		status, ok := store.NormalizeApprovalStatus(rawStatus)
+		if !ok || status == "" {
+			return model.ApprovalRequestQuery{}, badRequest("status must be pending, approved, rejected, expired or consumed")
+		}
+		query.Status = status
+	}
+	if rawPage := strings.TrimSpace(r.URL.Query().Get("page")); rawPage != "" {
+		page, err := strconv.Atoi(rawPage)
+		if err != nil || page <= 0 {
+			return model.ApprovalRequestQuery{}, badRequest("page must be a positive integer")
+		}
+		query.Page = page
+	}
+	if rawPageSize := strings.TrimSpace(r.URL.Query().Get("pageSize")); rawPageSize != "" {
+		pageSize, err := strconv.Atoi(rawPageSize)
+		if err != nil || pageSize <= 0 {
+			return model.ApprovalRequestQuery{}, badRequest("pageSize must be a positive integer")
+		}
+		if pageSize > 100 {
+			pageSize = 100
+		}
+		query.PageSize = pageSize
+	}
+	maxInt := int(^uint(0) >> 1)
+	if query.Page-1 > maxInt/query.PageSize {
+		return model.ApprovalRequestQuery{}, badRequest("page exceeds supported range")
+	}
+	return query, nil
+}
+
+func approvalRevalidationResponseError(err error) error {
+	if errors.Is(err, store.ErrConflict) {
+		return fmt.Errorf("%w: %w", errApprovalRevalidationFailed, err)
+	}
+	return err
 }
 
 func parseToolCallTimeQueryParam(raw string, endOfDay bool) (time.Time, error) {

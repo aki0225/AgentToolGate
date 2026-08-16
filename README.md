@@ -99,13 +99,32 @@ Linux 用不带 `.exe` 的 `./agenttoolgate`，参数一样。`init codex` 和 `
 
 如果项目已有 `.codex/hooks.json`，普通 `init codex` 会在写入前停止，避免它和 `.codex/config.toml` 的 Hook 被同层重复加载；请先人工保留一种来源。继续使用 JSON 时可用 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 单独安装或更新 adapter/Core，不会创建项目 TOML。ATG 会在目标 Git 仓库的本地 `info/exclude` 中按需追加 `/.tmp/agenttoolgate/`，不改项目 `.gitignore`，并避免 control、SQLite 和 recovery 污染 `git status`。刷新会把旧运行文件保留到该目录并打印路径；确认新 Hook 稳定后再手工清理。随后重新运行 `up` 发布本次 endpoint 和二进制路径，再在 `/hooks` 中复核信任状态。
 
-项目 Hook 需要 Git 与 Python 3。hook 默认 `dry-run`，不会一上来就真阻断。Full Access 模式本身不会禁用已加载的 Hook，但这不等于完整保护：只有 Hook 已启用并信任、ATG 处于 `live`、调用进入 Codex 支持的 `PreToolUse` 路径，且 Hook 成功返回有效 `deny` 或合法退出码 `2` 时，动作才会被实时阻断。Hook 失败、输出无效、被禁用或绕过、处于 `off` / `dry-run`，以及未覆盖的工具路径，都应视为没有 ATG 实时阻断。完整步骤见 [AI 客户端接入指南](docs/ai-client-integration.md#51-启用项目级本地动作-hook)。
+项目 Hook 需要 Git 与 Python 3.10+。Windows 优先使用 `python`，不可用时支持
+`py -3`；Linux / macOS 使用 `python3`。hook 默认 `dry-run`，不会一上来就真阻断。
+Full Access 模式本身不会禁用已加载的 Hook，但这不等于完整保护：只有 Hook 已启用并
+信任、ATG 处于 `live`、调用进入 Codex 支持的 `PreToolUse` 路径，且 Hook 成功返回
+有效 `deny` 或合法退出码 `2` 时，动作才会被实时阻断。Hook 被禁用或绕过、处于
+`off` / `dry-run`，以及未覆盖的工具路径，都应视为没有 ATG 实时阻断。`live`
+模式下无法解析的 Hook 输入会保守拒绝；完整步骤见
+[AI 客户端接入指南](docs/ai-client-integration.md#51-启用项目级本地动作-hook)。
+
+可以从任意目录精确控制目标项目：
+
+```powershell
+.\agenttoolgate.exe hook control status --dir <project>
+.\agenttoolgate.exe hook control live --dir <project> --reason "enable guarded session"
+.\agenttoolgate.exe hook control off --dir <project> --reason "pause ATG hooks"
+```
+
+该命令切换的是当前运行时 control。输出中的 `nextUpMode` 表示下一次 `up` 会从
+`.agenttoolgate/config.json` 读取的模式；两者不一致时 CLI 会明确警告。项目级服务
+停止后，属于该进程的 control 会自动回到 `off`。
 
 AgentToolGate 不碰系统策略、注册表或 shell profile。Claude Code 的配置仍由用户显式接入。
 
 `init` 同时生成 `.agenttoolgate/protected.json`。默认规则为空，不改变普通开发行为；你可以把核心算法、生产配置等 repo-relative 路径设置为“读取/修改需审批”或“直接拒绝”，也可以对 Hook 可见的网络写入增加项目级 host allowlist。规则只会收紧 Guard Core，不会把原本需要审批的动作改成静默放行。配置示例与边界见 [本地日常使用指南](docs/local-daily-use.md#配置项目内保护规则)。
 
-也可以从源码构建单二进制（需要 Go 1.26+ 与 Node.js 20+）：
+也可以从源码构建单二进制（需要 Go 1.26+ 与 Node.js 20.x）：
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
@@ -118,11 +137,16 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 
 - 当前稳定版是 [`v0.3.2`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.3.2)，
   产品提交为 `60dd6dbd5dc7e59defd83cbad5f2508d11f4ec98`。
-- `v0.3.2` 已冻结；此后的 `main` 提交主要维护公开证据、展示站、测试门禁和文档，
-  不会改变已发布附件。
+- `v0.4` 日常使用加固的候选实现提交
+  `eac8fe07f55187f7c688f553cc64a81b95d5712a` 已通过
+  [CI run 31933630479](https://github.com/aki0225/AgentToolGate/actions/runs/31933630479)；
+  审查与合并状态以 [PR #22](https://github.com/aki0225/AgentToolGate/pull/22) 为准。
+- 在正式 `v0.4` Release 及附件验收完成前，稳定版仍是 `v0.3.2`。
 - 最新状态、已验证能力和维护边界见
   [当前项目状态](docs/current-status.md)；发布级证据见
-  [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)。
+  [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)，稳定版、开发门禁和历史
+  快照的统一入口见 [证据索引](docs/evidence-index.md)。`v0.4` 候选的本地验证范围见
+  [v0.4 发布候选验收](docs/v0.4-release-acceptance.md)。
 
 ## 生产部署前必读
 
@@ -152,6 +176,8 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 
 ### 证据分层
 
+- **统一索引**：[证据索引](docs/evidence-index.md)区分当前稳定版证据、尚待远端
+  run 验证的开发门禁和历史版本快照。
 - **正式发布验收**：[v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)记录正式标签、
   双平台 Release workflow、附件 SHA256，以及使用正式 Linux 包完成的五场景真实
   Codex CLI 验收。
@@ -196,13 +222,16 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 - Codex hook bridge 没有完整的交互式 ask 体验，需要确认的动作目前按保守 `deny` / no-op 处理，不能当成完整的审批弹窗。
 - ATG 管理的 Connector Secret 目前是 env-backed `valueRef`，不是 KMS、Vault 或云 Secret Manager。
 - GitHub 集成适合 PAT / demo token，不是 GitHub App installation token 的生产闭环。
-- HTTP 的 SSRF guard 还没覆盖 DNS rebinding、解析后私网网段判定和 redirect 后的 DNS 复检。
+- HTTP / MCP 出站已按请求和重定向重新解析 DNS、拒绝 metadata/link-local/非显式
+  loopback，并固定拨号到已校验 IP；但显式 allowlist authority 仍可解析到普通
+  RFC1918、ULA 或 CGNAT 私网地址，因此不是完整的私网隔离或 DNS rebinding 防护。
 - 项目规则只覆盖 Hook 暴露的显式目标及当前可静态解析的已知命令、解释器和脚本后缀；动态命令、未知解释器或绕过 Hook 的进程不保证命中。
 - 当前只有基础 role/workspace 隔离；职责分离、版本化迁移、备份、告警、SLO、灾备和组织级策略发布/回滚等生产化前提都还没有。
 
 ## 深入文档
 
 - [当前项目状态](docs/current-status.md)：稳定版本、维护基线、已验证能力和后续变更边界。
+- [证据索引](docs/evidence-index.md)：当前稳定版证据、v0.4 开发门禁和历史快照入口。
 - [架构说明](docs/architecture.md)：项目定位、REST/MCP/Local Action 主链路、核心模块、数据流与信任边界。
 - [MCP 治理](docs/mcp-governance.md)：MCP Inbound Streamable HTTP `/mcp`、SSE fallback `/mcp/sse`、MCP Outbound `mcp_<connector>.<tool>`、ATG 管理的 Connector Secret 与 Connector、Approval 的关系。
 - [本地动作防火墙](docs/local-action-firewall.md)：off / dry-run / live、`deny_with_ticket`、remembered allow、Claude / Codex 差异和 TOCTOU 风险。
@@ -210,6 +239,8 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 - [演示剧本](docs/demo-playbook.md)：产品化演示路径。
 - [安全评审说明](docs/security-review-notes.md)：安全评审视角的控制与剩余风险。
 - [Daily Use Acceptance](docs/daily-use-acceptance.md)：日常开发低噪音验收证据。
+- [v0.4 发布候选验收](docs/v0.4-release-acceptance.md)：日常使用加固的本地真实验收、
+  安全边界复核和远端待验证项。
 - [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)：当前稳定版的双平台 Release、正式附件和五场景真实 Codex 证据。
 - [v0.3.1 发布验收](docs/v0.3.1-release-acceptance.md)：上一稳定版的双平台 Release、正式附件和真实 Codex 接入证据。
 - [v0.3.0 发布验收](docs/v0.3.0-release-acceptance.md)：项目保护规则、跨平台评估附件和正式 Release 的可追溯验收记录。

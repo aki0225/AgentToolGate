@@ -42,6 +42,7 @@ CREATE INDEX IF NOT EXISTS policy_rules_workspace_order_idx
 
 CREATE TABLE IF NOT EXISTS approval_requests (
 	id TEXT PRIMARY KEY,
+	call_id TEXT NOT NULL DEFAULT '',
 	workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
 	tool_key TEXT NOT NULL,
 	tool_display_name TEXT NOT NULL,
@@ -70,6 +71,13 @@ DROP INDEX IF EXISTS approval_requests_workspace_fingerprint_idx;
 CREATE UNIQUE INDEX IF NOT EXISTS approval_requests_workspace_active_fingerprint_idx
 	ON approval_requests (workspace_id, fingerprint)
 	WHERE fingerprint <> '' AND status IN ('pending', 'approved');
+
+-- 该文件用于空库初始化；已有 PostgreSQL 由应用启动迁移并发创建分页索引。
+CREATE INDEX IF NOT EXISTS approval_requests_workspace_created_id_v1_idx
+	ON approval_requests (workspace_id, created_at DESC, id DESC);
+
+CREATE INDEX IF NOT EXISTS approval_requests_workspace_status_created_id_v1_idx
+	ON approval_requests (workspace_id, status, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS connectors (
 	id TEXT PRIMARY KEY,
@@ -141,3 +149,7 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 	trace_id TEXT NOT NULL,
 	created_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS tool_calls_workspace_approval_created_id_v1_idx
+	ON tool_calls (workspace_id, approval_id, created_at, id)
+	WHERE approval_id <> '';

@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -18,6 +20,7 @@ import (
 	"agenttoolgate/backend/internal/auth"
 	"agenttoolgate/backend/internal/config"
 	"agenttoolgate/backend/internal/model"
+	"agenttoolgate/backend/internal/netguard"
 	"agenttoolgate/backend/internal/store"
 )
 
@@ -332,6 +335,89 @@ func TestHTTPRequestRejectsSSRFAndNonHTTPScheme(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestRejectsUnsafeResolvedAddresses(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		addr string
+	}{
+		{name: "metadata", addr: "169.254.169.254"},
+		{name: "link-local IPv6", addr: "fe80::1"},
+		{name: "loopback alias", addr: "127.0.0.1"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			const authority = "resolved.test:8080"
+			srv, st, workspace := newHTTPTestApp(t, httpTestConfig{
+				allowedHosts: []string{authority},
+			})
+			srv.httpResolver = appStaticResolver{
+				"resolved.test": {netip.MustParseAddr(tc.addr)},
+			}
+
+			resp := postJSON(t, srv, "/api/tool-calls", `{"tool":"http.request","arguments":{"method":"GET","url":"http://`+authority+`/status"}}`)
+			if resp.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body=%s", resp.Code, resp.Body.String())
+			}
+			call := singleHTTPTestCall(t, st, workspace.ID)
+			if call.Status != "failed" || call.ErrorMessage != "bad request: http request target is not allowed" {
+				t.Fatalf("unexpected failed audit: %+v", call)
+			}
+		})
+	}
+}
+
+func TestHTTPRequestLocalDemoRequiresCompleteAuthority(t *testing.T) {
+	t.Parallel()
+
+	var requestCount atomic.Int32
+	mockHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(mockHTTP.Close)
+
+	parsed, err := url.Parse(mockHTTP.URL)
+	if err != nil {
+		t.Fatalf("parse mock URL: %v", err)
+	}
+	_, port, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		t.Fatalf("split mock authority: %v", err)
+	}
+	authority := net.JoinHostPort("localhost", port)
+	srv, _, _ := newHTTPTestApp(t, httpTestConfig{
+		allowedHosts: []string{authority},
+	})
+	srv.httpResolver = appStaticResolver{
+		"localhost": {netip.MustParseAddr("127.0.0.1")},
+	}
+
+	resp := postJSON(t, srv, "/api/tool-calls", `{"tool":"http.request","arguments":{"method":"GET","url":"http://`+authority+`/status"}}`)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected explicit local demo authority success, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got := requestCount.Load(); got != 1 {
+		t.Fatalf("expected one local demo request, got %d", got)
+	}
+
+	incomplete, _, _ := newHTTPTestApp(t, httpTestConfig{
+		allowedHosts: []string{"localhost"},
+	})
+	incomplete.httpResolver = srv.httpResolver
+	resp = postJSON(t, incomplete, "/api/tool-calls", `{"tool":"http.request","arguments":{"method":"GET","url":"http://`+authority+`/status"}}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected incomplete authority rejection, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if got := requestCount.Load(); got != 1 {
+		t.Fatalf("incomplete authority must not reach local demo target, got %d requests", got)
+	}
+}
+
 func TestHTTPRequestRejectsForbiddenHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -434,6 +520,90 @@ func TestHTTPRequestRejectsRedirectToNonAllowlistHost(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestRejectsCrossOriginRedirectWithoutLeakingSecretHeader(t *testing.T) {
+	const (
+		secretName  = "http_redirect_secret"
+		secretValue = "redirect-api-key-secret"
+	)
+	t.Setenv("HTTP_REDIRECT_SECRET_ENV", secretValue)
+
+	var targetCount atomic.Int32
+	var targetHeader atomic.Value
+	targetHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetCount.Add(1)
+		targetHeader.Store(r.Header.Get("X-Api-Key"))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(targetHTTP.Close)
+
+	var redirectCount atomic.Int32
+	redirectHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectCount.Add(1)
+		if r.Header.Get("X-Api-Key") != secretValue {
+			t.Errorf("source endpoint did not receive resolved Secret header: %q", r.Header.Get("X-Api-Key"))
+		}
+		http.Redirect(w, r, targetHTTP.URL+"/secret", http.StatusFound)
+	}))
+	t.Cleanup(redirectHTTP.Close)
+
+	srv, st, workspace := newHTTPTestApp(t, httpTestConfig{
+		allowedHosts: []string{mustURLHost(t, redirectHTTP.URL), mustURLHost(t, targetHTTP.URL)},
+	})
+	if _, err := st.CreateSecret(context.Background(), model.CreateSecretInput{
+		WorkspaceID:    workspace.ID,
+		WorkspaceOrgID: workspace.ZitadelOrganizationID,
+		Name:           secretName,
+		Description:    "HTTP redirect header Secret",
+		Enabled:        true,
+		SecretType:     "token",
+		ValueSource:    "env",
+		ValueRef:       "HTTP_REDIRECT_SECRET_ENV",
+		Metadata:       json.RawMessage(`{"scope":"http"}`),
+	}); err != nil {
+		t.Fatalf("create redirect Secret: %v", err)
+	}
+
+	body := fmt.Sprintf(`{
+		"tool":"http.request",
+		"arguments":{
+			"method":"GET",
+			"url":%q,
+			"headerSecretRefs":{"X-Api-Key":%q}
+		}
+	}`, redirectHTTP.URL+"/start", secretName)
+	resp := postJSON(t, srv, "/api/tool-calls", body)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected stable 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if strings.Contains(resp.Body.String(), secretValue) {
+		t.Fatalf("HTTP error response leaked resolved Secret: %s", resp.Body.String())
+	}
+	if got := redirectCount.Load(); got != 1 {
+		t.Fatalf("expected initial redirect endpoint once, got %d", got)
+	}
+	if got := targetCount.Load(); got != 0 {
+		t.Fatalf("cross-origin redirect target must not receive the Secret header, got %d requests", got)
+	}
+	if value := targetHeader.Load(); value != nil && value.(string) != "" {
+		t.Fatalf("unexpected target header value: %q", value)
+	}
+
+	call := singleHTTPTestCall(t, st, workspace.ID)
+	if call.Status != "failed" || call.ErrorMessage != "bad request: http redirect target is not allowed" {
+		t.Fatalf("unexpected failed audit: %+v", call)
+	}
+	for _, field := range []string{
+		string(call.InputRedactedJSON),
+		string(call.InputExecutionJSON),
+		string(call.OutputRedactedJSON),
+		call.ErrorMessage,
+	} {
+		if strings.Contains(field, secretValue) {
+			t.Fatalf("HTTP redirect audit leaked resolved Secret: %s", field)
+		}
+	}
+}
+
 func TestHTTPRequestRejectsRedirectToMetadataAddress(t *testing.T) {
 	t.Parallel()
 
@@ -468,13 +638,10 @@ func TestHTTPRequestRejectsRedirectToMetadataAddress(t *testing.T) {
 func TestGuardedHTTPClientDisablesEnvironmentProxy(t *testing.T) {
 	t.Parallel()
 
-	client := newGuardedHTTPClient(0, []string{"example.test"})
-	transport, ok := client.Transport.(*http.Transport)
+	client := newGuardedHTTPClient(0, []string{"example.test"}, net.DefaultResolver)
+	_, ok := client.Transport.(*netguard.Transport)
 	if !ok {
-		t.Fatalf("expected *http.Transport, got %T", client.Transport)
-	}
-	if transport.Proxy != nil {
-		t.Fatalf("expected HTTP adapter transport to disable proxy")
+		t.Fatalf("expected shared guarded transport, got %T", client.Transport)
 	}
 }
 
@@ -1031,6 +1198,16 @@ func singleHTTPTestCall(t *testing.T, st store.Store, workspaceID string) model.
 		t.Fatalf("expected 1 call, got %d", len(calls))
 	}
 	return calls[0]
+}
+
+type appStaticResolver map[string][]netip.Addr
+
+func (r appStaticResolver) LookupNetIP(_ context.Context, _ string, host string) ([]netip.Addr, error) {
+	values, ok := r[strings.ToLower(host)]
+	if !ok {
+		return nil, fmt.Errorf("unexpected resolver host %s", host)
+	}
+	return append([]netip.Addr(nil), values...), nil
 }
 
 type gatedApprovalStore struct {

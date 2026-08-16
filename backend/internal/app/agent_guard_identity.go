@@ -48,15 +48,29 @@ func (a *App) resolveAgentGuardTargetWithinWorkspace(target, workspaceRoot strin
 }
 
 func (a *App) trustedAgentGuardWorkspaceRoot(claimedRoot string) string {
-	trustedRoot := normalizeAgentGuardTarget(a.cfg.ProjectRoot)
+	trustedRoot := canonicalAgentGuardWorkspaceRoot(a.cfg.ProjectRoot)
 	if trustedRoot == "" {
 		return ""
 	}
-	claimed := normalizeAgentGuardTarget(claimedRoot)
+	claimed := canonicalAgentGuardWorkspaceRoot(claimedRoot)
 	if claimed == "" || agentGuardPathsEqual(claimed, trustedRoot) {
 		return trustedRoot
 	}
 	return ""
+}
+
+func canonicalAgentGuardWorkspaceRoot(raw string) string {
+	candidate := strings.TrimSpace(raw)
+	if candidate == "" {
+		return ""
+	}
+	if absPath, err := filepath.Abs(candidate); err == nil && strings.TrimSpace(absPath) != "" {
+		candidate = absPath
+	}
+	if resolved, err := filepath.EvalSymlinks(candidate); err == nil && strings.TrimSpace(resolved) != "" {
+		candidate = resolved
+	}
+	return normalizeAgentGuardTarget(candidate)
 }
 
 func (a *App) resolveAgentGuardTargetWithinContext(target, workspaceRoot, workingDirectory string) agentGuardTargetResolution {

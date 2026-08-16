@@ -120,28 +120,36 @@ func (a *App) syncMCPConnector(ctx context.Context, workspaceID string, connecto
 		return syncConnectorResponse{}, err
 	}
 
-	client := mcp.NewOutboundClient(cfg.URL, resolvedHeaders, effectiveMCPTimeout(cfg.TimeoutMs))
+	client := mcp.NewOutboundClient(cfg.URL, resolvedHeaders, effectiveMCPTimeout(cfg.TimeoutMs), mcp.OutboundClientOptions{
+		AllowedAuthorities: a.cfg.MCPAllowedHosts,
+		Resolver:           a.httpResolver,
+	})
 	remoteTools, err := client.SyncTools(ctx)
 	if err != nil {
 		return syncConnectorResponse{}, fmt.Errorf("mcp outbound sync failed")
 	}
 
 	namespace := mcpConnectorNamespace(connector.Name)
-	created := make([]string, 0, len(remoteTools))
-	updated := make([]string, 0)
+	inputs, remoteKeys, err := prepareMCPToolSyncInputs(workspaceID, namespace, connector, remoteTools, resolvedSecretValues)
+	if err != nil {
+		return syncConnectorResponse{}, err
+	}
+	existingTools, err := a.store.ListTools(ctx, workspaceID)
+	if err != nil {
+		return syncConnectorResponse{}, err
+	}
+	existingByKey := make(map[string]model.Tool, len(existingTools))
+	for _, tool := range existingTools {
+		existingByKey[tool.Key()] = tool
+	}
+	stale := mcpStaleToolKeys(existingTools, namespace, remoteKeys)
+
+	created := make([]string, 0, len(inputs))
+	updated := make([]string, 0, len(inputs))
 	skipped := make([]string, 0)
-	remoteKeys := map[string]struct{}{}
-	for _, remoteTool := range remoteTools {
-		remoteTool = redactMCPRemoteTool(remoteTool, resolvedSecretValues)
-		toolName := normalizeMCPRemoteToolName(remoteTool.Name)
-		if toolName == "" {
-			continue
-		}
-		key := namespace + "." + toolName
-		remoteKeys[key] = struct{}{}
-		operationType, riskLevel, requiresApproval := inferMCPToolGovernance(remoteTool)
-		input := mcpCreateToolInput(workspaceID, namespace, toolName, connector, remoteTool, operationType, riskLevel, requiresApproval)
-		if existing, err := a.store.GetToolByKey(ctx, workspaceID, key); err == nil {
+	for _, input := range inputs {
+		key := input.Namespace + "." + input.Name
+		if existing, ok := existingByKey[key]; ok {
 			if _, updateErr := a.store.UpdateTool(ctx, workspaceID, existing.ID, model.UpdateToolInput{
 				DisplayName:      input.DisplayName,
 				Description:      input.Description,
@@ -156,8 +164,6 @@ func (a *App) syncMCPConnector(ctx context.Context, workspaceID string, connecto
 			}
 			updated = append(updated, key)
 			continue
-		} else if !errors.Is(err, store.ErrNotFound) {
-			return syncConnectorResponse{}, err
 		}
 
 		tool, createErr := a.store.CreateTool(ctx, input)
@@ -170,10 +176,6 @@ func (a *App) syncMCPConnector(ctx context.Context, workspaceID string, connecto
 		}
 		created = append(created, tool.Key())
 	}
-	stale, err := a.mcpStaleToolKeys(ctx, workspaceID, namespace, remoteKeys)
-	if err != nil {
-		return syncConnectorResponse{}, err
-	}
 
 	return syncConnectorResponse{
 		Connector:    connector,
@@ -182,6 +184,30 @@ func (a *App) syncMCPConnector(ctx context.Context, workspaceID string, connecto
 		SkippedTools: skipped,
 		StaleTools:   stale,
 	}, nil
+}
+
+func prepareMCPToolSyncInputs(workspaceID, namespace string, connector model.Connector, remoteTools []mcp.OutboundTool, secretValues []string) ([]model.CreateToolInput, map[string]struct{}, error) {
+	inputs := make([]model.CreateToolInput, 0, len(remoteTools))
+	remoteKeys := make(map[string]struct{}, len(remoteTools))
+	for _, remoteTool := range remoteTools {
+		remoteTool = redactMCPRemoteTool(remoteTool, secretValues)
+		toolName := normalizeMCPRemoteToolName(remoteTool.Name)
+		if toolName == "" {
+			return nil, nil, badRequest("mcp remote tool name is invalid")
+		}
+		if err := validateMCPRemoteToolInputSchema(remoteTool.InputSchema); err != nil {
+			return nil, nil, err
+		}
+		key := namespace + "." + toolName
+		if _, exists := remoteKeys[key]; exists {
+			return nil, nil, badRequest(fmt.Sprintf("mcp remote tool %s is duplicated", key))
+		}
+		remoteKeys[key] = struct{}{}
+		operationType, riskLevel, requiresApproval := inferMCPToolGovernance(remoteTool)
+		input := mcpCreateToolInput(workspaceID, namespace, toolName, connector, remoteTool, operationType, riskLevel, requiresApproval)
+		inputs = append(inputs, input)
+	}
+	return inputs, remoteKeys, nil
 }
 
 func (a *App) validateMCPToolCallBeforePolicy(ctx context.Context, workspaceID string, tool model.Tool, decodedArgs any) error {
@@ -266,7 +292,10 @@ func (a *App) executeMCPTool(ctx context.Context, tool model.Tool, decodedArgs a
 		return nil, nil, err
 	}
 
-	client := mcp.NewOutboundClient(cfg.URL, resolvedHeaders, effectiveMCPTimeout(cfg.TimeoutMs))
+	client := mcp.NewOutboundClient(cfg.URL, resolvedHeaders, effectiveMCPTimeout(cfg.TimeoutMs), mcp.OutboundClientOptions{
+		AllowedAuthorities: a.cfg.MCPAllowedHosts,
+		Resolver:           a.httpResolver,
+	})
 	result, err := client.CallTool(ctx, tool.Name, defaultJSON(marshalDecodedValue(decodedArgs)))
 	if err != nil {
 		return nil, nil, fmt.Errorf("mcp outbound tool call failed")
@@ -358,11 +387,7 @@ func mcpCreateToolInput(workspaceID, namespace, toolName string, connector model
 	}
 }
 
-func (a *App) mcpStaleToolKeys(ctx context.Context, workspaceID, namespace string, remoteKeys map[string]struct{}) ([]string, error) {
-	tools, err := a.store.ListTools(ctx, workspaceID)
-	if err != nil {
-		return nil, err
-	}
+func mcpStaleToolKeys(tools []model.Tool, namespace string, remoteKeys map[string]struct{}) []string {
 	stale := make([]string, 0)
 	for _, tool := range tools {
 		if !strings.EqualFold(strings.TrimSpace(tool.Namespace), namespace) {
@@ -373,7 +398,7 @@ func (a *App) mcpStaleToolKeys(ctx context.Context, workspaceID, namespace strin
 		}
 	}
 	sort.Strings(stale)
-	return stale, nil
+	return stale
 }
 
 func mcpConnectorNamespace(connectorName string) string {
@@ -402,6 +427,17 @@ func normalizeMCPRemoteToolName(name string) string {
 		return ""
 	}
 	return trimmed
+}
+
+func validateMCPRemoteToolInputSchema(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil || schema == nil {
+		return badRequest("mcp remote tool input schema must be a JSON object")
+	}
+	return nil
 }
 
 func inferMCPToolGovernance(tool mcp.OutboundTool) (string, string, bool) {
@@ -583,18 +619,40 @@ func isMCPForbiddenSecretRefHeader(header string) bool {
 }
 
 func (a *App) validateMCPConnectorRuntimeTarget(cfg mcpConnectorConfig) error {
-	parsed, err := parseAndValidateMCPConnectorURL(cfg.URL)
+	if !hasConfiguredMCPAllowedHost(a.cfg.MCPAllowedHosts) {
+		return badRequest("MCP_ALLOWED_HOSTS must be configured for MCP outbound")
+	}
+	parsed, err := parseAndValidateHTTPURL(cfg.URL, a.cfg.MCPAllowedHosts)
 	if err != nil {
 		return err
 	}
-	if len(a.cfg.MCPAllowedHosts) > 0 {
-		_, err := parseAndValidateHTTPURL(parsed.String(), a.cfg.MCPAllowedHosts)
-		return err
-	}
-	if len(cfg.HeaderSecretRefs) > 0 {
-		return badRequest("MCP_ALLOWED_HOSTS must be configured for secret-bearing MCP connector")
+	if len(cfg.HeaderSecretRefs) > 0 &&
+		!strings.EqualFold(parsed.Scheme, "https") &&
+		!isMCPHTTPSecretLoopback(parsed) {
+		return badRequest("secret-bearing MCP connector url must use https unless the target is explicitly allowlisted localhost, 127.0.0.1, or ::1")
 	}
 	return nil
+}
+
+func hasConfiguredMCPAllowedHost(rawHosts []string) bool {
+	for _, rawHost := range rawHosts {
+		if strings.TrimSpace(rawHost) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func isMCPHTTPSecretLoopback(parsed *url.URL) bool {
+	if parsed == nil || !strings.EqualFold(parsed.Scheme, "http") {
+		return false
+	}
+	switch strings.ToLower(strings.Trim(parsed.Hostname(), "[]")) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		return false
+	}
 }
 
 func redactMCPRemoteTool(tool mcp.OutboundTool, secretValues []string) mcp.OutboundTool {

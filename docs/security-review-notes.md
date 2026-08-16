@@ -58,8 +58,9 @@ workspace 托管 policy rules 用于解释或收紧默认策略，不允许绕�
 | --- | --- |
 | `database.query` | SELECT-only、禁止多语句、禁止 DML/DDL、表白名单、schema introspection、LIMIT、timeout、敏感字段脱敏 |
 | `github.*` | repo allowlist、owner/repo/pullNumber/title/body 校验、token redaction、write approval |
-| `http.request` | http/https only、host allowlist、metadata/0.0.0.0/非白名单 localhost 拒绝、危险 header 拒绝、response 限长与脱敏、write approval |
-| MCP Outbound | workspace-scoped connector、SSE 最小协议、headerSecretRefs 注入、读写治理、input/output/error/body 脱敏 |
+| `http.request` | http/https only、authority allowlist、逐请求和 redirect DNS 复检、固定 IP 拨号、环境代理禁用、metadata/link-local/非显式 loopback 拒绝、危险 header 拒绝、response 限长与脱敏、write approval |
+| MCP Inbound | `/mcp` 与 `/mcp/sse` 共用鉴权和 `createToolCall`；请求/响应 1 MiB 上限、单 JSON 对象校验 |
+| MCP Outbound | workspace-scoped connector、部署级 authority ceiling、同源 redirect、固定 IP 拨号、环境代理禁用、headerSecretRefs 注入、读写治理、SSE/POST/result/tool/schema 固定上限、input/output/error/body 脱敏 |
 
 ### 2.5 Audit 与 Telemetry 脱敏
 
@@ -88,8 +89,10 @@ workspace 托管 policy rules 用于解释或收紧默认策略，不允许绕�
    - 生产应改为 GitHub App installation token，并按 repo/org 最小授权。
 
 3. **HTTP SSRF 防护仍不完整**
-   - 当前有 scheme、host allowlist、metadata 地址、0.0.0.0、非白名单 localhost 等基础 guard。
-   - 尚未做 DNS 解析后网段判定、DNS rebinding 防护、redirect 后 DNS 复检。
+   - 当前已有 scheme、authority allowlist、逐请求和 redirect DNS 复检、固定 IP 拨号、
+     metadata/link-local/非显式 loopback 拒绝及环境代理禁用。
+   - 显式 allowlist authority 仍可解析到普通 RFC1918、IPv6 ULA 或 CGNAT 私网地址；
+     尚无公网/私网分区策略，不能视为完整私网隔离。
 
 4. **RBAC 与职责分离仍需加强**
    - owner/admin 边界已存在，但 Secret、Connector、Policy、Approval 的细粒度权限和双人复核还不是生产级。
@@ -100,7 +103,7 @@ workspace 托管 policy rules 用于解释或收紧默认策略，不允许绕�
 
 ### P2 后续增强
 
-- MCP Outbound 支持 Streamable HTTP、OAuth、长连接韧性、大 payload 策略。
+- MCP Outbound 支持 Streamable HTTP、OAuth、长连接韧性和可配置 payload 分级策略。
 - Policy 支持版本发布、回滚、dry-run rollout、导入导出。
 - Audit 支持报表、保留策略、归档、SIEM 集成。
 - Approval 支持 Slack/飞书通知、多级审批和超时升级。
@@ -118,7 +121,7 @@ workspace 托管 policy rules 用于解释或收紧默认策略，不允许绕�
 
 1. 将 Secret 后端从 env-backed demo 升级为外部 Secret Provider。
 2. 将 GitHub PAT 替换为 GitHub App installation token。
-3. 为 HTTP adapter 增加 DNS 解析后 IP 网段判定和 rebinding 防护。
+3. 为 HTTP / MCP 出站增加公网与私网目标分区策略，明确普通私网地址的授权方式。
 4. 将 RBAC 细化到 Secret / Connector / Policy / Approval 的动作级权限。
 5. 建立 migration、备份、审计保留、告警和 SLO。
 6. 为 MCP Outbound 增加 OAuth / Streamable HTTP 与 payload 分级治理。

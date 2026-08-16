@@ -96,6 +96,9 @@ SSE fallback:    /mcp/sse
 
 如果工具需要审批，MCP response 返回 `approval_required` JSON-RPC error，并携带安全的 call id、approval id、reason 等 metadata。审批前不会触达上游 connector。
 
+两个 inbound endpoint 都把 JSON-RPC 请求和响应限制为 1 MiB。请求必须只包含一个
+JSON 对象；超限、截断或带尾随 JSON 的输入会在工具执行前返回稳定 parse error。
+
 ## MCP Outbound 主链路
 
 外部 MCP Server 以 `type=mcp` Connector 接入。同步 connector 时会调用远端 `initialize` 和 `tools/list`，再把远端工具注册为本地 Tool Registry 条目：
@@ -113,6 +116,11 @@ mcp_<connector>.<remote_tool>
 执行时，`mcp_*` 工具仍然是普通 tool call：按 workspace 查 connector，通过 `headerSecretRefs` 查找 workspace Secret，再由 Secret 的 env-backed `valueRef` 在后端运行时解析真实值；随后脱敏 payload，为写/未知风险工具创建 approval，写 audit explanation 和 OTel child span。所有 MCP Connector（包括没有 `secretRefMode` 的旧记录）都必须通过 workspace Secret 解析；引用缺失时 fail closed。
 
 当前 MCP Outbound 只支持 HTTP + SSE transport，不应写成已支持 stdio、OAuth 或完整 Streamable HTTP outbound。
+
+Outbound transport 使用部署级 authority ceiling、逐请求和 redirect DNS 复检、固定
+IP 拨号及环境代理禁用。SSE 单行限制 64 KiB，单事件、POST 请求、POST 响应和
+JSON-RPC result 均限制 1 MiB；单次最多同步 256 个工具，单个 input schema 限制
+64 KiB。JSON-RPC 响应还必须匹配版本、请求 ID，并且 result/error 只能出现一个。
 
 ## Local Action Firewall 主链路
 
@@ -183,7 +191,8 @@ ATG 当前不提供：
 - 阻止提示词注入发生。
 - KMS/Vault-backed secret storage。
 - GitHub App installation-token 生产生命周期。
-- 完整 HTTP SSRF 防护，尤其是 DNS rebinding 和 DNS 解析后私网 IP 变化。
+- 普通 RFC1918、IPv6 ULA 或 CGNAT 私网目标的独立授权策略，以及完整私网隔离。
 - 完整生产 RBAC、backup、SLO、alerting、disaster recovery 或 policy rollout management。
-- 完整 MCP OAuth、Dynamic Client Registration、resources、prompts、sampling 或大 payload governance。
+- 完整 MCP OAuth、Dynamic Client Registration、resources、prompts、sampling 或
+  可配置 payload 分级治理。
 - 完整 Codex interactive ask flow。Codex runtime 当前对需要确认的动作采用保守 deny/no-op 映射。

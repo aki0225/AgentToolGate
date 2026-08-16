@@ -115,6 +115,7 @@ type ToolCallQuery struct {
 
 type ApprovalRequest struct {
 	ID                   string          `json:"id"`
+	CallID               string          `json:"callId"`
 	WorkspaceID          string          `json:"workspaceId"`
 	ToolKey              string          `json:"toolKey"`
 	ToolDisplayName      string          `json:"toolDisplayName"`
@@ -136,6 +137,20 @@ type ApprovalRequest struct {
 	ExpiresAt            time.Time       `json:"expiresAt"`
 	CreatedAt            time.Time       `json:"createdAt"`
 	UpdatedAt            time.Time       `json:"updatedAt"`
+}
+
+type ApprovalRequestPage struct {
+	Items        []ApprovalRequest `json:"items"`
+	Total        int64             `json:"total"`
+	Page         int               `json:"page"`
+	PageSize     int               `json:"pageSize"`
+	StatusCounts map[string]int64  `json:"statusCounts"`
+}
+
+type ApprovalRequestQuery struct {
+	Status   string
+	Page     int
+	PageSize int
 }
 
 type Connector struct {

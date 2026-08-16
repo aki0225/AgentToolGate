@@ -281,10 +281,23 @@ func (s *SQLiteStore) GetToolCallByID(ctx context.Context, workspaceID, callID s
 
 func (s *SQLiteStore) GetToolCallByApprovalID(ctx context.Context, workspaceID, approvalID string) (model.ToolCall, error) {
 	return s.getToolCall(ctx, sqliteToolCallSelect()+`
-		WHERE tc.workspace_id = ? AND tc.approval_id = ?
-		ORDER BY CASE WHEN tc.status = 'approval_required' THEN 0 ELSE 1 END, tc.created_at ASC, tc.id ASC
+		WHERE tc.workspace_id = ?
+		  AND tc.id = COALESCE(
+			  NULLIF((
+				  SELECT linked_approval.call_id
+				  FROM approval_requests linked_approval
+				  WHERE linked_approval.workspace_id = ? AND linked_approval.id = ?
+			  ), ''),
+			  (
+				  SELECT linked_call.id
+				  FROM tool_calls linked_call
+				  WHERE linked_call.workspace_id = ? AND linked_call.approval_id = ?
+				  ORDER BY linked_call.created_at ASC, linked_call.id ASC
+				  LIMIT 1
+			  )
+		  )
 		LIMIT 1
-	`, workspaceID, approvalID)
+	`, workspaceID, workspaceID, approvalID, workspaceID, approvalID)
 }
 
 func (s *SQLiteStore) CreateToolCall(ctx context.Context, input model.CreateToolCallInput) (model.ToolCall, error) {
@@ -292,7 +305,15 @@ func (s *SQLiteStore) CreateToolCall(ctx context.Context, input model.CreateTool
 	approvalID := strings.TrimSpace(input.ApprovalID)
 	id := ensureID("", "call")
 	requestID := ensureID(input.RequestID, "req")
-	_, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.ToolCall{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO tool_calls (
 			id, request_id, workspace_id, actor_id, actor_subject, actor_email, actor_name, tool_id, tool_key,
 			status, risk_level, policy_decision, approval_id, duration_ms, input_redacted_json, input_execution_json, output_redacted_json,
@@ -304,6 +325,18 @@ func (s *SQLiteStore) CreateToolCall(ctx context.Context, input model.CreateTool
 		string(defaultJSON(input.InputExecutionJSON)), string(defaultJSON(input.OutputRedactedJSON)), string(defaultToolCallExplanationJSON(input.Explanation)),
 		input.ErrorMessage, input.TraceID, sqliteTimestamp(now))
 	if err != nil {
+		return model.ToolCall{}, mapSQLiteErr(err)
+	}
+	if approvalID != "" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE approval_requests
+			SET call_id = ?
+			WHERE workspace_id = ? AND id = ? AND call_id = ''
+		`, id, input.WorkspaceID, approvalID); err != nil {
+			return model.ToolCall{}, mapSQLiteErr(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return model.ToolCall{}, mapSQLiteErr(err)
 	}
 	return s.GetToolCallByID(ctx, input.WorkspaceID, id)
@@ -618,7 +651,7 @@ func (s *SQLiteStore) ListApprovalRequests(ctx context.Context, workspaceID stri
 		SELECT `+approvalRequestColumnList+`
 		FROM approval_requests
 		WHERE workspace_id = ?
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, id DESC
 	`, workspaceID)
 	if err != nil {
 		return nil, err
@@ -635,11 +668,114 @@ func (s *SQLiteStore) ListApprovalRequests(ctx context.Context, workspaceID stri
 	return items, rows.Err()
 }
 
+func (s *SQLiteStore) ListApprovalRequestsPage(ctx context.Context, workspaceID string, query model.ApprovalRequestQuery) (model.ApprovalRequestPage, error) {
+	status, ok := NormalizeApprovalStatus(query.Status)
+	if !ok {
+		return model.ApprovalRequestPage{}, fmt.Errorf("unsupported approval status %q", query.Status)
+	}
+	page, pageSize, offset, err := normalizeApprovalPage(query.Page, query.PageSize)
+	if err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if err := expirePendingApprovalsSQLite(ctx, tx, workspaceID); err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+
+	statusCounts := newApprovalStatusCounts()
+	countRows, err := tx.QueryContext(ctx, `
+		SELECT status, COUNT(*)
+		FROM approval_requests
+		WHERE workspace_id = ?
+		GROUP BY status
+	`, workspaceID)
+	if err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	for countRows.Next() {
+		var itemStatus string
+		var count int64
+		if err := countRows.Scan(&itemStatus, &count); err != nil {
+			countRows.Close()
+			return model.ApprovalRequestPage{}, err
+		}
+		if normalized, valid := NormalizeApprovalStatus(itemStatus); valid && normalized != "" {
+			statusCounts[normalized] = count
+		}
+	}
+	if err := countRows.Close(); err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+
+	whereClause := "workspace_id = ?"
+	args := []any{workspaceID}
+	if status != "" {
+		whereClause += " AND status = ?"
+		args = append(args, status)
+	}
+	var total int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM approval_requests WHERE `+whereClause, args...).Scan(&total); err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+
+	pagedArgs := append(append([]any(nil), args...), pageSize, offset)
+	rows, err := tx.QueryContext(ctx, `
+		SELECT `+approvalRequestColumnList+`
+		FROM approval_requests
+		WHERE `+whereClause+`
+		ORDER BY created_at DESC, id DESC
+		LIMIT ? OFFSET ?
+	`, pagedArgs...)
+	if err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	defer rows.Close()
+
+	items := make([]model.ApprovalRequest, 0)
+	for rows.Next() {
+		item, err := scanSQLiteApprovalRequest(rows)
+		if err != nil {
+			return model.ApprovalRequestPage{}, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return model.ApprovalRequestPage{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return model.ApprovalRequestPage{}, mapSQLiteErr(err)
+	}
+	return model.ApprovalRequestPage{
+		Items:        items,
+		Total:        total,
+		Page:         page,
+		PageSize:     pageSize,
+		StatusCounts: statusCounts,
+	}, nil
+}
+
 func (s *SQLiteStore) GetApprovalRequestByID(ctx context.Context, workspaceID, approvalID string) (model.ApprovalRequest, error) {
 	if err := s.expirePendingApprovals(ctx, workspaceID); err != nil {
 		return model.ApprovalRequest{}, err
 	}
-	return s.getApprovalRequest(ctx, `SELECT `+approvalRequestColumnList+` FROM approval_requests WHERE workspace_id = ? AND id = ?`, workspaceID, approvalID)
+	item, err := scanSQLiteApprovalRequest(s.db.QueryRowContext(ctx, `
+		SELECT `+approvalRequestColumnList+`
+		FROM approval_requests
+		WHERE workspace_id = ? AND id = ?
+	`, workspaceID, approvalID))
+	if err != nil {
+		return model.ApprovalRequest{}, mapSQLiteErr(err)
+	}
+	return item, nil
 }
 
 func (s *SQLiteStore) CreateApprovalRequest(ctx context.Context, input model.CreateApprovalRequestInput) (model.ApprovalRequest, error) {
@@ -673,46 +809,53 @@ func (s *SQLiteStore) CreateApprovalRequest(ctx context.Context, input model.Cre
 }
 
 func (s *SQLiteStore) UpdateApprovalRequest(ctx context.Context, workspaceID, approvalID string, input model.UpdateApprovalRequestInput) (model.ApprovalRequest, error) {
-	if err := s.expirePendingApprovals(ctx, workspaceID); err != nil {
-		return model.ApprovalRequest{}, err
-	}
-	current, err := s.GetApprovalRequestByID(ctx, workspaceID, approvalID)
-	if err != nil {
-		return model.ApprovalRequest{}, err
-	}
-	if strings.EqualFold(strings.TrimSpace(current.Status), "expired") {
-		return model.ApprovalRequest{}, ErrExpired
-	}
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE approval_requests
 		SET status = ?, reviewed_by = ?, reason = CASE WHEN ? = '' THEN reason ELSE ? END, updated_at = ?
-		WHERE workspace_id = ? AND id = ?
+		WHERE workspace_id = ?
+		  AND id = ?
+		  AND status <> 'expired'
+		  AND NOT (status = 'pending' AND julianday(expires_at) <= julianday('now'))
 	`, strings.TrimSpace(input.Status), strings.TrimSpace(input.ReviewedBy), strings.TrimSpace(input.Reason), strings.TrimSpace(input.Reason), sqliteTimestamp(now), workspaceID, approvalID)
 	if err != nil {
 		return model.ApprovalRequest{}, mapSQLiteErr(err)
 	}
 	if affected, _ := result.RowsAffected(); affected == 0 {
-		return model.ApprovalRequest{}, ErrNotFound
+		if expireErr := s.expireApprovalByIDIfNeeded(ctx, workspaceID, approvalID); expireErr != nil {
+			return model.ApprovalRequest{}, expireErr
+		}
+		current, getErr := s.getApprovalRequest(ctx, `SELECT `+approvalRequestColumnList+` FROM approval_requests WHERE workspace_id = ? AND id = ?`, workspaceID, approvalID)
+		if getErr != nil {
+			return model.ApprovalRequest{}, getErr
+		}
+		if strings.EqualFold(strings.TrimSpace(current.Status), "expired") {
+			return model.ApprovalRequest{}, ErrExpired
+		}
+		return model.ApprovalRequest{}, ErrConflict
 	}
 	return s.GetApprovalRequestByID(ctx, workspaceID, approvalID)
 }
 
 func (s *SQLiteStore) TransitionApprovalRequest(ctx context.Context, workspaceID, approvalID, fromStatus string, input model.UpdateApprovalRequestInput) (model.ApprovalRequest, error) {
-	if err := s.expirePendingApprovals(ctx, workspaceID); err != nil {
-		return model.ApprovalRequest{}, err
-	}
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE approval_requests
 		SET status = ?, reviewed_by = ?, reason = CASE WHEN ? = '' THEN reason ELSE ? END, updated_at = ?
-		WHERE workspace_id = ? AND id = ? AND status = ?
-	`, strings.TrimSpace(input.Status), strings.TrimSpace(input.ReviewedBy), strings.TrimSpace(input.Reason), strings.TrimSpace(input.Reason), sqliteTimestamp(now), workspaceID, approvalID, strings.TrimSpace(fromStatus))
+		WHERE workspace_id = ?
+		  AND id = ?
+		  AND status = ?
+		  AND (? <> 'pending' OR julianday(expires_at) > julianday('now'))
+	`, strings.TrimSpace(input.Status), strings.TrimSpace(input.ReviewedBy), strings.TrimSpace(input.Reason), strings.TrimSpace(input.Reason), sqliteTimestamp(now),
+		workspaceID, approvalID, strings.TrimSpace(fromStatus), strings.TrimSpace(fromStatus))
 	if err != nil {
 		return model.ApprovalRequest{}, mapSQLiteErr(err)
 	}
 	if affected, _ := result.RowsAffected(); affected > 0 {
 		return s.GetApprovalRequestByID(ctx, workspaceID, approvalID)
+	}
+	if expireErr := s.expireApprovalByIDIfNeeded(ctx, workspaceID, approvalID); expireErr != nil {
+		return model.ApprovalRequest{}, expireErr
 	}
 	current, getErr := s.getApprovalRequest(ctx, `SELECT `+approvalRequestColumnList+` FROM approval_requests WHERE workspace_id = ? AND id = ?`, workspaceID, approvalID)
 	if getErr != nil {
@@ -768,6 +911,7 @@ func (s *SQLiteStore) ensureSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS policy_rules_workspace_order_idx ON policy_rules (workspace_id, priority, created_at, id)`,
 		`CREATE TABLE IF NOT EXISTS approval_requests (
 			id TEXT PRIMARY KEY,
+			call_id TEXT NOT NULL DEFAULT '',
 			workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
 			tool_key TEXT NOT NULL,
 			tool_display_name TEXT NOT NULL,
@@ -793,6 +937,10 @@ func (s *SQLiteStore) ensureSchema(ctx context.Context) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS approval_requests_workspace_active_fingerprint_idx
 			ON approval_requests (workspace_id, fingerprint)
 			WHERE fingerprint <> '' AND status IN ('pending', 'approved')`,
+		`CREATE INDEX IF NOT EXISTS approval_requests_workspace_created_id_v1_idx
+			ON approval_requests (workspace_id, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS approval_requests_workspace_status_created_id_v1_idx
+			ON approval_requests (workspace_id, status, created_at DESC, id DESC)`,
 		`CREATE TABLE IF NOT EXISTS connectors (
 			id TEXT PRIMARY KEY,
 			workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -860,11 +1008,65 @@ func (s *SQLiteStore) ensureSchema(ctx context.Context) error {
 			trace_id TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		)`,
+		`CREATE INDEX IF NOT EXISTS tool_calls_workspace_approval_created_id_v1_idx
+			ON tool_calls (workspace_id, approval_id, created_at, id)
+			WHERE approval_id <> ''`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("init sqlite schema: %w", err)
 		}
+	}
+	if err := s.ensureApprovalCallIDColumn(ctx); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE approval_requests
+		SET call_id = COALESCE((
+			SELECT linked_call.id
+			FROM tool_calls linked_call
+			WHERE linked_call.workspace_id = approval_requests.workspace_id
+			  AND linked_call.approval_id = approval_requests.id
+			ORDER BY linked_call.created_at ASC, linked_call.id ASC
+			LIMIT 1
+		), '')
+		WHERE call_id = ''
+	`); err != nil {
+		return fmt.Errorf("backfill sqlite approval call id: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ensureApprovalCallIDColumn(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(approval_requests)`)
+	if err != nil {
+		return fmt.Errorf("inspect sqlite approval schema: %w", err)
+	}
+	found := false
+	for rows.Next() {
+		var columnID, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&columnID, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan sqlite approval schema: %w", err)
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "call_id") {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("read sqlite approval schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close sqlite approval schema rows: %w", err)
+	}
+	if found {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE approval_requests ADD COLUMN call_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add sqlite approval call id: %w", err)
 	}
 	return nil
 }
@@ -939,12 +1141,35 @@ func (s *SQLiteStore) ensureBuiltinConnectors(ctx context.Context, inputs []mode
 }
 
 func (s *SQLiteStore) expirePendingApprovals(ctx context.Context, workspaceID string) error {
+	return expirePendingApprovalsSQLite(ctx, s.db, workspaceID)
+}
+
+type sqliteApprovalExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+func expirePendingApprovalsSQLite(ctx context.Context, executor sqliteApprovalExecer, workspaceID string) error {
+	now := sqliteTimestamp(time.Now().UTC())
+	_, err := executor.ExecContext(ctx, `
+		UPDATE approval_requests
+		SET status = 'expired', updated_at = ?
+		WHERE workspace_id = ?
+		  AND status = 'pending'
+		  AND julianday(expires_at) <= julianday('now')
+	`, now, workspaceID)
+	return err
+}
+
+func (s *SQLiteStore) expireApprovalByIDIfNeeded(ctx context.Context, workspaceID, approvalID string) error {
 	now := sqliteTimestamp(time.Now().UTC())
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE approval_requests
 		SET status = 'expired', updated_at = ?
-		WHERE workspace_id = ? AND status = 'pending' AND expires_at <= ?
-	`, now, workspaceID, now)
+		WHERE workspace_id = ?
+		  AND id = ?
+		  AND status = 'pending'
+		  AND julianday(expires_at) <= julianday('now')
+	`, now, workspaceID, approvalID)
 	return err
 }
 
@@ -1232,15 +1457,18 @@ func scanSQLitePolicyRule(row sqliteScanner) (model.PolicyRule, error) {
 
 func scanSQLiteApprovalRequest(row sqliteScanner) (model.ApprovalRequest, error) {
 	var item model.ApprovalRequest
-	var payloadJSON, expiresAt, createdAt, updatedAt any
-	if err := row.Scan(&item.ID, &item.WorkspaceID, &item.ToolKey, &item.ToolDisplayName, &item.Status, &item.RequestedBy,
+	var decisionPayload, expiresAt, createdAt, updatedAt any
+	destinations := []any{
+		&item.ID, &item.CallID, &item.WorkspaceID, &item.ToolKey, &item.ToolDisplayName, &item.Status, &item.RequestedBy,
 		&item.ReviewedBy, &item.Reason, &item.Fingerprint, &item.Adapter, &item.ActionType, &item.Target,
 		&item.CanonicalTarget, &item.ContentEncoding, &item.ContentHash, &item.ScriptHash, &item.ResolvedFileIdentity,
-		&item.ParentIdentity, &payloadJSON, &expiresAt, &createdAt, &updatedAt); err != nil {
+		&item.ParentIdentity, &decisionPayload, &expiresAt, &createdAt, &updatedAt,
+	}
+	if err := row.Scan(destinations...); err != nil {
 		return model.ApprovalRequest{}, err
 	}
+	item.DecisionPayloadJSON = sqliteRawJSON(decisionPayload)
 	var err error
-	item.DecisionPayloadJSON = sqliteRawJSON(payloadJSON)
 	item.ExpiresAt, err = sqliteParseTime(expiresAt)
 	if err != nil {
 		return model.ApprovalRequest{}, err

@@ -6,7 +6,7 @@ hooks = true
 [hooks]
 
 [[hooks.PreToolUse]]
-matcher = "^(Bash|Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|command|powershell|pwsh|apply_patch|http[.]request|network[.]request|mcp__.*)$"
+matcher = "^(Bash|Read|Grep|Glob|Write|Edit|MultiEdit|NotebookEdit|WebFetch|WebSearch|shell|shell_command|sh|command|powershell|pwsh|apply_patch|http[.]request|network[.]request|mcp__.*)$"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"

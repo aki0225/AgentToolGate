@@ -57,6 +57,11 @@ type hookControlDocument struct {
 	Executable string `json:"executable,omitempty"`
 }
 
+type hookControlCLIOptions struct {
+	Dir    string
+	Reason string
+}
+
 type hookAgentGuardRequest struct {
 	Adapter          string   `json:"adapter"`
 	Tool             string   `json:"tool"`
@@ -101,6 +106,9 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if code := runHookControlCLI(args, stdout, stderr); code >= 0 {
+		return code
+	}
+	if code := runProjectCLI(args, stdout, stderr); code >= 0 {
 		return code
 	}
 	if code := runGuardCLI(args, stdout, stderr); code >= 0 {
@@ -158,12 +166,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 func startServer(cfg config.Config, openBrowser bool, stdout, stderr io.Writer, hooks ...func() error) int {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	var onStarted func() error
-	var onFailure func() error
+	var onStartFailure func() error
+	var onStopped func() error
 	if len(hooks) > 0 {
 		onStarted = hooks[0]
 	}
 	if len(hooks) > 1 {
-		onFailure = hooks[1]
+		onStartFailure = hooks[1]
+	}
+	if len(hooks) > 2 {
+		onStopped = hooks[2]
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -251,8 +263,8 @@ func startServer(cfg config.Config, openBrowser bool, stdout, stderr io.Writer, 
 	if onStarted != nil {
 		if err := onStarted(); err != nil {
 			logger.Error("post-start hook failed", "error", err)
-			if onFailure != nil {
-				if rollbackErr := onFailure(); rollbackErr != nil {
+			if onStartFailure != nil {
+				if rollbackErr := onStartFailure(); rollbackErr != nil {
 					logger.Error("post-start rollback failed", "error", rollbackErr)
 					fmt.Fprintln(stderr, "hook control rollback failed:", rollbackErr)
 				}
@@ -268,17 +280,21 @@ func startServer(cfg config.Config, openBrowser bool, stdout, stderr io.Writer, 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	_ = server.Shutdown(shutdownCtx)
+	var serveErr error
 	select {
-	case err := <-serveFailures:
-		if onFailure != nil {
-			if rollbackErr := onFailure(); rollbackErr != nil {
-				logger.Error("server failure rollback failed", "error", rollbackErr)
-				fmt.Fprintln(stderr, "hook control rollback failed:", rollbackErr)
-			}
-		}
-		fmt.Fprintln(stderr, "server failed:", err)
-		return 1
+	case serveErr = <-serveFailures:
 	default:
+	}
+	if serveErr == nil && onStopped != nil {
+		if stopErr := onStopped(); stopErr != nil {
+			logger.Error("server stop cleanup failed", "error", stopErr)
+			fmt.Fprintln(stderr, "hook control stop cleanup failed:", stopErr)
+			return 1
+		}
+	}
+	if serveErr != nil {
+		fmt.Fprintln(stderr, "server failed:", serveErr)
+		return 1
 	}
 	return 0
 }
@@ -291,7 +307,7 @@ func runHookControlCLI(args []string, stdout, stderr io.Writer) int {
 		return -1
 	}
 	if len(args) < 2 || strings.ToLower(strings.TrimSpace(args[1])) != "control" {
-		fmt.Fprintln(stderr, "hook control 用法：agenttoolgate.exe hook control status|off|dry-run|live [--reason ...]")
+		fmt.Fprintln(stderr, "hook control 用法：agenttoolgate.exe hook control status|off|dry-run|live [--dir <project>] [--reason ...]")
 		return 2
 	}
 	if len(args) < 3 {
@@ -299,17 +315,23 @@ func runHookControlCLI(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	mode := strings.ToLower(strings.TrimSpace(args[2]))
-	repoRoot, err := findCLIRepoRoot("")
+	options, err := parseHookControlCLIOptions(args[3:], mode != "status")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
+	}
+	var repoRoot string
+	if strings.TrimSpace(options.Dir) != "" {
+		repoRoot, err = findExplicitCLIRepoRoot(options.Dir)
+	} else {
+		repoRoot, err = findCLIRepoRoot("")
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
 	switch mode {
 	case "status":
-		if len(args) > 3 {
-			fmt.Fprintln(stderr, "hook control status 不接受额外参数")
-			return 2
-		}
 		doc, err := readHookControlDocument(repoRoot)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
@@ -318,11 +340,6 @@ func runHookControlCLI(args []string, stdout, stderr io.Writer) int {
 		printHookControlStatus(stdout, repoRoot, doc)
 		return 0
 	case "off", "dry-run", "live":
-		reason, err := parseHookControlReason(args[3:])
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 2
-		}
 		if mode != projectHookModeOff {
 			if _, err := guard.LoadProjectProtection(repoRoot); err != nil {
 				fmt.Fprintf(stderr, "项目保护策略无效：%v\n", err)
@@ -349,7 +366,7 @@ func runHookControlCLI(args []string, stdout, stderr io.Writer) int {
 		doc := hookControlDocument{
 			Mode:       mode,
 			UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
-			Reason:     reason,
+			Reason:     options.Reason,
 			Endpoint:   endpoint,
 			Executable: executable,
 		}
@@ -365,28 +382,52 @@ func runHookControlCLI(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func parseHookControlReason(args []string) (string, error) {
-	reason := ""
+func parseHookControlCLIOptions(args []string, allowReason bool) (hookControlCLIOptions, error) {
+	options := hookControlCLIOptions{}
 	for i := 0; i < len(args); i++ {
 		arg := strings.TrimSpace(args[i])
 		if arg == "" || arg == "--" {
 			continue
 		}
+		if arg == "--dir" {
+			i++
+			if i >= len(args) || strings.TrimSpace(args[i]) == "" {
+				return hookControlCLIOptions{}, fmt.Errorf("hook control --dir 需要一个项目目录")
+			}
+			options.Dir = strings.TrimSpace(args[i])
+			continue
+		}
+		if value, ok := strings.CutPrefix(arg, "--dir="); ok {
+			options.Dir = strings.TrimSpace(value)
+			if options.Dir == "" {
+				return hookControlCLIOptions{}, fmt.Errorf("hook control --dir 需要一个项目目录")
+			}
+			continue
+		}
 		if arg == "--reason" {
+			if !allowReason {
+				return hookControlCLIOptions{}, fmt.Errorf("hook control status 仅支持 --dir 参数")
+			}
 			i++
 			if i >= len(args) {
-				return "", fmt.Errorf("hook control --reason 需要说明文本")
+				return hookControlCLIOptions{}, fmt.Errorf("hook control --reason 需要说明文本")
 			}
-			reason = strings.TrimSpace(args[i])
+			options.Reason = strings.TrimSpace(args[i])
 			continue
 		}
 		if value, ok := strings.CutPrefix(arg, "--reason="); ok {
-			reason = strings.TrimSpace(value)
+			if !allowReason {
+				return hookControlCLIOptions{}, fmt.Errorf("hook control status 仅支持 --dir 参数")
+			}
+			options.Reason = strings.TrimSpace(value)
 			continue
 		}
-		return "", fmt.Errorf("hook control 仅支持 --reason 参数")
+		if allowReason {
+			return hookControlCLIOptions{}, fmt.Errorf("hook control 仅支持 --dir 和 --reason 参数")
+		}
+		return hookControlCLIOptions{}, fmt.Errorf("hook control status 仅支持 --dir 参数")
 	}
-	return reason, nil
+	return options, nil
 }
 
 func findCLIRepoRoot(start string) (string, error) {
@@ -432,6 +473,33 @@ func findCLIRepoRoot(start string) (string, error) {
 	}
 }
 
+func findExplicitCLIRepoRoot(start string) (string, error) {
+	current, err := filepath.Abs(strings.TrimSpace(start))
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(current)
+	if err != nil {
+		return "", fmt.Errorf("无法访问 --dir 项目目录")
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("--dir 必须指向项目目录")
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(current, ".git")); err == nil {
+			return current, nil
+		}
+		if _, err := os.Stat(filepath.Join(current, ".agenttoolgate")); err == nil {
+			return current, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("未找到仓库根目录：--dir 必须位于目标项目内")
+		}
+		current = parent
+	}
+}
+
 func hookControlPath(repoRoot string) string {
 	return filepath.Join(repoRoot, ".tmp", "agenttoolgate", "hook-control.json")
 }
@@ -447,6 +515,10 @@ func readHookControlDocument(repoRoot string) (hookControlDocument, error) {
 		}
 		return hookControlDocument{}, errors.New("hook control invalid")
 	}
+	return decodeHookControlDocument(raw)
+}
+
+func decodeHookControlDocument(raw []byte) (hookControlDocument, error) {
 	if err := rejectDuplicateJSONFields(raw); err != nil {
 		return hookControlDocument{}, errors.New("hook control invalid")
 	}
@@ -471,14 +543,16 @@ func readHookControlDocument(repoRoot string) (hookControlDocument, error) {
 		return hookControlDocument{}, errors.New("hook control invalid")
 	}
 	doc.Mode = strings.ToLower(strings.TrimSpace(doc.Mode))
-	doc.Endpoint, err = normalizeHookControlEndpoint(doc.Endpoint)
+	endpoint, err := normalizeHookControlEndpoint(doc.Endpoint)
 	if err != nil {
 		return hookControlDocument{}, errors.New("hook control invalid")
 	}
-	doc.Executable, err = normalizeHookControlExecutable(doc.Executable)
+	doc.Endpoint = endpoint
+	executable, err := normalizeHookControlExecutable(doc.Executable)
 	if err != nil {
 		return hookControlDocument{}, errors.New("hook control invalid")
 	}
+	doc.Executable = executable
 	switch doc.Mode {
 	case "off", "dry-run", "live":
 		return doc, nil
@@ -507,10 +581,51 @@ func printHookControlStatus(w io.Writer, repoRoot string, doc hookControlDocumen
 	}
 	if doc.Endpoint != "" {
 		fmt.Fprintf(w, "endpoint: %s\n", doc.Endpoint)
+		fmt.Fprintf(w, "endpointReachable: %s\n", yesNo(hookEndpointReachable(doc.Endpoint)))
 	}
 	if doc.Executable != "" {
 		fmt.Fprintln(w, "executable: configured")
 	}
+	nextMode := configuredProjectHookMode(repoRoot)
+	fmt.Fprintf(w, "nextUpMode: %s\n", nextMode)
+	if nextMode != "invalid" && doc.Mode != nextMode {
+		fmt.Fprintf(w, "warning: 当前模式仅作用于运行时；下一次 up 将使用项目配置中的 %s\n", nextMode)
+	}
+}
+
+func configuredProjectHookMode(repoRoot string) string {
+	cfg, loaded, _, err := loadProjectRunConfig(repoRoot)
+	if err != nil {
+		return "invalid"
+	}
+	if !loaded {
+		return defaultProjectRunConfig(repoRoot).HookMode
+	}
+	return cfg.HookMode
+}
+
+func hookEndpointReachable(endpoint string) bool {
+	normalized, err := normalizeHookControlEndpoint(endpoint)
+	if err != nil || normalized == "" {
+		return false
+	}
+	client := &http.Client{
+		Timeout: 300 * time.Millisecond,
+		Transport: &http.Transport{
+			Proxy:             nil,
+			DisableKeepAlives: true,
+		},
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	response, err := client.Get(normalized + "/health")
+	if err != nil {
+		return false
+	}
+	defer response.Body.Close()
+	_, _ = io.CopyN(io.Discard, response.Body, 1024)
+	return response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
 }
 
 func normalizeHookControlEndpoint(raw string) (string, error) {
@@ -577,6 +692,8 @@ func runGuardCLI(args []string, stdout, stderr io.Writer) int {
 		return runGuardAdapt(args[2:], stdout, stderr)
 	case "hook":
 		return runGuardHook(args[2:], stdout, stderr)
+	case "explain":
+		return runGuardExplain(args[2:], stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, "不支持的 guard 子命令")
 		return 2
@@ -818,7 +935,7 @@ func runGuardHook(args []string, stdout, stderr io.Writer) int {
 		}, stdout, stderr)
 	}
 	request.TicketID = ticketID
-	status, decision, requestErr := callHookAgentGuard(request)
+	status, decision, requestErr := callHookAgentGuard(control.Endpoint, request)
 	if requestErr != nil {
 		if status != 0 {
 			return emitHookDecision(client, hookAgentGuardResponse{
@@ -1033,20 +1150,23 @@ func isHookScriptTarget(value string) bool {
 	return false
 }
 
-func hookAgentGuardURL() string {
+func hookAgentGuardURL(controlEndpoint string) string {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("AGENTTOOLGATE_URL")), "/")
+	if base == "" {
+		base = strings.TrimRight(strings.TrimSpace(controlEndpoint), "/")
+	}
 	if base == "" {
 		base = "http://127.0.0.1:8080"
 	}
 	return base + "/api/agent-guard/evaluate"
 }
 
-func callHookAgentGuard(payload hookAgentGuardRequest) (int, hookAgentGuardResponse, error) {
+func callHookAgentGuard(controlEndpoint string, payload hookAgentGuardRequest) (int, hookAgentGuardResponse, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return -1, hookAgentGuardResponse{}, err
 	}
-	req, err := http.NewRequest(http.MethodPost, hookAgentGuardURL(), bytes.NewReader(raw))
+	req, err := http.NewRequest(http.MethodPost, hookAgentGuardURL(controlEndpoint), bytes.NewReader(raw))
 	if err != nil {
 		return -1, hookAgentGuardResponse{}, err
 	}
@@ -1565,16 +1685,18 @@ func printUsage(w io.Writer) {
 
   agenttoolgate.exe [serve] [--open] [--port 8090]
   agenttoolgate.exe [serve] --addr 127.0.0.1:8090
-	  agenttoolgate.exe init [all|codex|claude] [--dir <path>] [--refresh-hooks]
+  agenttoolgate.exe init [all|codex|claude] [--dir <path>] [--refresh-hooks]
   agenttoolgate.exe up [--dir <path>] [--open] [--port 8090]
+  agenttoolgate.exe project validate --dir <project> --format text|json
   agenttoolgate.exe doctor
   agenttoolgate.exe guard evaluate --input action.json
+  agenttoolgate.exe guard explain codex|claude|action --input payload.json --dir <project> --format text|json
   agenttoolgate.exe guard adapt claude --input payload.json
   agenttoolgate.exe guard adapt codex --input payload.json --mode dry-run
   agenttoolgate.exe guard hook claude --input payload.json
   agenttoolgate.exe guard hook codex --input payload.json
-  agenttoolgate.exe hook control status
-  agenttoolgate.exe hook control off --reason "pause ATG hooks"
+  agenttoolgate.exe hook control status [--dir <project>]
+  agenttoolgate.exe hook control off --dir <project> --reason "pause ATG hooks"
 
 常用环境变量：
   HOST=127.0.0.1

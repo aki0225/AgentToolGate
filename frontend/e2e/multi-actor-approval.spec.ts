@@ -11,12 +11,12 @@ const toolKey = `mock.${toolName}`;
 const toolDisplayName = `多 Actor 审批工具 ${runId}`;
 const approvalReason = `reviewer approve ${runId}`;
 const toolArguments = {
-  message: `multi-actor payload ${runId}`,
+  message: "multi actor frozen payload",
   runId,
   stage: "requester",
 };
 
-test.describe.configure({ mode: "serial" });
+test.describe.configure({ mode: "serial", retries: 0 });
 test.skip(!enabled, "多 Actor 审批验收仅在 verify-local.ps1 -WithMultiActorE2E 中运行");
 
 test.describe("Requester 阶段", () => {
@@ -73,14 +73,16 @@ test.describe("Requester 阶段", () => {
       await page.goto("/approvals");
       const pendingRow = page.getByRole("row").filter({ hasText: toolDisplayName });
       await expect(pendingRow).toBeVisible({ timeout: 30_000 });
-      await expect(pendingRow).toContainText("pending");
+      await expect(pendingRow).toContainText("待处理");
       await expect(pendingRow).toContainText(requesterSubject);
 
       await pendingRow.getByRole("button", { name: "批准" }).click();
       await expect(page.getByRole("heading", { name: "批准工具调用" })).toBeVisible();
       await page.getByLabel("审批备注").fill("self review must be blocked");
       await page.getByRole("button", { name: "批准并执行" }).click();
-      await expect(page.getByText("当前角色无权执行该操作")).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText("请求人不能审批自己的请求，请交由独立审批人处理。")).toBeVisible({
+        timeout: 30_000,
+      });
       await page.getByRole("button", { name: "关闭" }).click();
 
       const approvalAfterReview = await readApproval(api, createBody.approvalId!);
@@ -126,7 +128,7 @@ test.describe("Reviewer 阶段", () => {
       await page.goto("/approvals");
       const pendingRow = page.getByRole("row").filter({ hasText: toolDisplayName });
       await expect(pendingRow).toBeVisible({ timeout: 30_000 });
-      await expect(pendingRow).toContainText("pending");
+      await expect(pendingRow).toContainText("待处理");
       await expect(pendingRow).toContainText(approval?.requestedBy ?? "");
 
       await pendingRow.getByRole("button", { name: "批准" }).click();
@@ -139,7 +141,7 @@ test.describe("Reviewer 阶段", () => {
       await page.getByRole("tab", { name: "已批准" }).click();
       const approvedRow = page.getByRole("row").filter({ hasText: toolDisplayName });
       await expect(approvedRow).toBeVisible({ timeout: 30_000 });
-      await expect(approvedRow).toContainText("approved");
+      await expect(approvedRow).toContainText("已批准");
       await expect(approvedRow).toContainText(approvalReason);
       await expect(approvedRow).toContainText(reviewerSubject);
 
@@ -154,8 +156,13 @@ test.describe("Reviewer 阶段", () => {
       expect(call.approvalStatus).toBe("approved");
       expect(call.policyDecision).toBe("require_approval");
       expect("inputExecutionJson" in call).toBe(false);
-      expect(JSON.stringify(call.outputRedactedJson)).toContain(toolArguments.message);
-      expect(JSON.stringify(call.outputRedactedJson)).toContain(runId);
+      const output = call.outputRedactedJson as {
+        echo?: { message?: unknown; runId?: unknown; stage?: unknown };
+      };
+      expect(output.echo?.message).toBe(toolArguments.message);
+      expect(output.echo?.stage).toBe(toolArguments.stage);
+      expect(output.echo?.runId).not.toBe(runId);
+      expect(String(output.echo?.runId)).toContain("***");
     } finally {
       await api.dispose();
     }

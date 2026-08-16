@@ -3,7 +3,10 @@ import type {
   ApiPage,
   ApprovalActionResponse,
   ApprovalRequest,
+  ApprovalRequestPage,
   ApprovalReviewInput,
+  ApprovalStatus,
+  ApprovalStatusCounts,
   Connector,
   DashboardSummary,
   DatabaseSchemaResponse,
@@ -56,15 +59,18 @@ type RequestOptions = {
   workspaceOrgId?: string | null;
   body?: unknown;
   method?: string;
+  signal?: AbortSignal;
 };
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly code?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -76,8 +82,8 @@ export function getApiErrorMessage(
   if (error instanceof ApiError && error.status === 403) {
     return permissionDenied;
   }
-  if (error instanceof Error && error.message.trim()) {
-    return error.message;
+  if (error instanceof ApiError && error.status < 500) {
+    return safeApiErrorMessage(error.message) ?? fallback;
   }
   return fallback;
 }
@@ -100,12 +106,13 @@ async function requestJson<T>(path: string, options: RequestOptions = {}): Promi
     method: options.method ?? "GET",
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    signal: options.signal,
   });
 
   const text = await response.text();
   const payload = parseJsonResponse(text, response.status, response.ok);
   if (!response.ok) {
-    throw createApiError(response.status, response.statusText, payload);
+    throw createApiError(response.status, payload);
   }
   return payload as T;
 }
@@ -124,23 +131,85 @@ function parseJsonResponse(text: string, status: number, responseOK: boolean): u
   }
 }
 
-function apiErrorMessage(payload: unknown): string | null {
+function apiErrorCode(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return null;
+    return undefined;
   }
   const record = payload as Record<string, unknown>;
-  for (const key of ["error", "message"]) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
+  const code = typeof record.code === "string" ? record.code.trim() : "";
+  if (!/^[a-z][a-z0-9_]{0,63}$/.test(code)) {
+    return undefined;
   }
-  return null;
+  return code;
 }
 
-function createApiError(status: number, statusText: string, payload: unknown): ApiError {
-  const message = apiErrorMessage(payload) ?? statusText.trim();
-  return new ApiError(status, message || `Request failed with status ${status}`);
+function createApiError(status: number, payload: unknown): ApiError {
+  const message = status >= 400 && status < 500
+    ? apiErrorMessage(payload) ?? stableHttpErrorMessage(status)
+    : stableHttpErrorMessage(status);
+  return new ApiError(status, message, apiErrorCode(payload));
+}
+
+function apiErrorMessage(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return undefined;
+  }
+  const record = payload as Record<string, unknown>;
+  for (const key of ["message", "error"] as const) {
+    const message = safeApiErrorMessage(record[key]);
+    if (message) {
+      return message;
+    }
+  }
+  return undefined;
+}
+
+function safeApiErrorMessage(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const message = value.trim();
+  if (!message || message.length > 240 || /[\u0000-\u001f\u007f-\u009f]/.test(message)) {
+    return undefined;
+  }
+  if (
+    /(?:https?|ftp|file):\/\/|www\./i.test(message)
+    || /(?:^|[\s"'(])(?:[a-z]:[\\/]|\\\\[^\\\s]+\\|\/(?:home|users|private|var|etc|root|tmp|opt|mnt)(?:[\\/]|$))/i.test(message)
+    || /\b(?:bearer|basic)\s+\S+/i.test(message)
+    || /\b(?:access[_-]?token|refresh[_-]?token|api[_-]?key|secret|password|passwd|authorization|cookie|credential|signature|session)\b/i.test(message)
+    || /\bgh[pousr]_[a-z0-9]{8,}\b/i.test(message)
+    || /\beyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\b/i.test(message)
+  ) {
+    return undefined;
+  }
+  return message;
+}
+
+function stableHttpErrorMessage(status: number): string {
+  switch (status) {
+    case 400:
+      return "Bad Request";
+    case 401:
+      return "Unauthorized";
+    case 403:
+      return "Forbidden";
+    case 404:
+      return "Not Found";
+    case 409:
+      return "Conflict";
+    case 429:
+      return "Too Many Requests";
+    case 500:
+      return "Internal Server Error";
+    case 502:
+      return "Bad Gateway";
+    case 503:
+      return "Service Unavailable";
+    case 504:
+      return "Gateway Timeout";
+    default:
+      return `Request failed with status ${status}`;
+  }
 }
 
 function normalizeApiList<T>(payload: ApiList<T> | null | undefined): ApiList<T> {
@@ -156,6 +225,68 @@ function normalizeApiPage<T>(payload: ApiPage<T> | null | undefined): ApiPage<T>
     page: payload?.page ?? 1,
     pageSize: payload?.pageSize && payload.pageSize > 0 ? payload.pageSize : 1,
   };
+}
+
+const approvalStatuses = [
+  "pending",
+  "approved",
+  "rejected",
+  "expired",
+  "consumed",
+] as const satisfies ReadonlyArray<ApprovalStatus>;
+
+function normalizeApprovalRequestPage(
+  payload: ApprovalRequestPage | null | undefined,
+  requestedPage: number,
+  requestedPageSize: number,
+): ApprovalRequestPage {
+  const items = Array.isArray(payload?.items)
+    ? payload.items.map((approval) => ({
+        ...approval,
+        callId: typeof approval.callId === "string" ? approval.callId.trim() : "",
+      }))
+    : [];
+  const statusCounts = emptyApprovalStatusCounts();
+  if (payload?.statusCounts && typeof payload.statusCounts === "object") {
+    for (const status of approvalStatuses) {
+      statusCounts[status] = normalizedCount(payload.statusCounts[status]);
+    }
+  } else {
+    for (const approval of items) {
+      if (approvalStatuses.includes(approval.status)) {
+        statusCounts[approval.status] += 1;
+      }
+    }
+  }
+  return {
+    items,
+    total: normalizedCount(payload?.total ?? items.length),
+    page: normalizedPositiveInteger(payload?.page, requestedPage),
+    pageSize: normalizedPositiveInteger(payload?.pageSize, requestedPageSize),
+    statusCounts,
+  };
+}
+
+function emptyApprovalStatusCounts(): ApprovalStatusCounts {
+  return {
+    pending: 0,
+    approved: 0,
+    rejected: 0,
+    expired: 0,
+    consumed: 0,
+  };
+}
+
+function normalizedCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.trunc(value)
+    : 0;
+}
+
+function normalizedPositiveInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.trunc(value)
+    : fallback;
 }
 
 function normalizeDashboardSummary(payload: DashboardSummary | null | undefined): DashboardSummary {
@@ -406,7 +537,38 @@ export function deleteSecret(
 }
 
 export function listApprovals(token?: string | null, workspaceOrgId?: string | null): Promise<ApiList<ApprovalRequest>> {
-  return requestJson<ApiList<ApprovalRequest> | null>("/api/approvals", { token, workspaceOrgId }).then(normalizeApiList);
+  return listApprovalRequestsPage(token, workspaceOrgId).then(({ items }) => ({ items }));
+}
+
+export function listApprovalRequestsPage(
+  token?: string | null,
+  workspaceOrgId?: string | null,
+  query: {
+    status?: ApprovalStatus;
+    page?: number;
+    pageSize?: number;
+  } = {},
+  signal?: AbortSignal,
+): Promise<ApprovalRequestPage> {
+  const searchParams = new URLSearchParams();
+  if (query.status) {
+    searchParams.set("status", query.status);
+  }
+  if (query.page) {
+    searchParams.set("page", String(query.page));
+  }
+  if (query.pageSize) {
+    searchParams.set("pageSize", String(query.pageSize));
+  }
+  const suffix = searchParams.toString();
+  return requestJson<ApprovalRequestPage | null>(
+    suffix ? `/api/approvals?${suffix}` : "/api/approvals",
+    { token, workspaceOrgId, signal },
+  ).then((payload) => normalizeApprovalRequestPage(
+    payload,
+    query.page ?? 1,
+    query.pageSize ?? 50,
+  ));
 }
 
 export function listPolicies(token?: string | null, workspaceOrgId?: string | null): Promise<ApiList<PolicyRule>> {
@@ -568,7 +730,7 @@ export function connectApprovalStream(handlers: ApprovalStreamHandlers): Approva
       if (!response.ok) {
         const text = await response.text().catch(() => "");
         const payload = parseJsonResponse(text, response.status, false);
-        throw createApiError(response.status, response.statusText, payload);
+        throw createApiError(response.status, payload);
       }
       if (!response.body) {
         throw new ApiError(response.status, "approval stream response body is missing");

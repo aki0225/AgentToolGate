@@ -365,16 +365,36 @@ func TestEvaluateAllowsProjectMetadataReadsButStillGuardsMutations(t *testing.T)
 
 func TestEvaluateDeniesRootDelete(t *testing.T) {
 	t.Parallel()
+	for _, command := range []string{
+		"Remove-Item -Recurse .",
+		"Remove-Item -LiteralPath '.' -Recurse -Force",
+		"Remove-Item -Path . -Recurse -Force",
+		"powershell -Command Remove-Item -LiteralPath . -Recurse -Force",
+	} {
+		got := Evaluate(ActionInput{
+			ToolName:    "PowerShell",
+			ActionType:  "command",
+			Command:     command,
+			CWD:         `X:\demo\AgentToolGate`,
+			ProjectRoot: `X:\demo\AgentToolGate`,
+		})
+		if got.Decision != "deny" || got.RiskLevel != "critical" || got.Silent {
+			t.Fatalf("expected critical deny for root delete %q, got %+v", command, got)
+		}
+	}
+}
+
+func TestEvaluateRequiresConfirmationForRecursiveLiteralPathBelowRoot(t *testing.T) {
+	t.Parallel()
 	got := Evaluate(ActionInput{
 		ToolName:    "PowerShell",
-		ActionType:  "delete",
-		Command:     "Remove-Item -Recurse .",
-		Target:      ".",
+		ActionType:  "command",
+		Command:     "Remove-Item -LiteralPath '.tmp/cache' -Recurse -Force",
 		CWD:         `X:\demo\AgentToolGate`,
 		ProjectRoot: `X:\demo\AgentToolGate`,
 	})
-	if got.Decision != "deny" || got.RiskLevel != "critical" || got.Silent {
-		t.Fatalf("expected critical deny for root delete, got %+v", got)
+	if got.Decision != "ask" || got.RiskLevel != "high" || got.Silent {
+		t.Fatalf("expected high-risk confirmation below root, got %+v", got)
 	}
 }
 
