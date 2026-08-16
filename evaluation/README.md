@@ -9,8 +9,8 @@
 
 ## 当前阶段
 
-评估计划已完成并随 `v0.3.0` 冻结；当前稳定版 `v0.3.2` 继续发布同一套可复跑评估
-附件，并补充正式 Release 上的真实 Codex 五场景证据。当前公开评估快照来自 GitHub Actions run
+评估计划已完成并随 `v0.3.0` 冻结；当前稳定版 `v0.4.0` 继续发布同一套可复跑评估
+附件。当前公开评估快照来自 GitHub Actions run
 [`31465745397`](https://github.com/aki0225/AgentToolGate/actions/runs/31465745397)：
 
 - Quick Linux：20 passed / 0 failed / 0 skipped。
@@ -18,7 +18,9 @@
 - Linux full：26 passed / 0 failed / 4 skipped。
 - 审批前上游请求、Secret 泄漏和 Ticket 重放成功数均为 0。
 
-当前稳定版的正式 Release、双平台 smoke 和真实 Codex 证据边界见
+当前稳定版的正式 Release、双平台 smoke 和附件校验边界见
+[`docs/v0.4-release-acceptance.md`](../docs/v0.4-release-acceptance.md)；
+`v0.3.2` 正式包上的真实 Codex 五场景证据见
 [`docs/v0.3.2-release-acceptance.md`](../docs/v0.3.2-release-acceptance.md)；
 `v0.3.0` 的完整评估附件复跑记录仍保留在
 [`docs/v0.3.0-release-acceptance.md`](../docs/v0.3.0-release-acceptance.md)。以下阶段

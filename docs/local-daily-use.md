@@ -4,7 +4,7 @@
 
 > [!IMPORTANT]
 > 本文所述新版 `init codex`、配套 `doctor` 检查、项目 TOML 和自包含 Hook 已在
-> AgentToolGate 当前稳定版 `v0.3.2` 提供。请从 GitHub Release 下载正式包；
+> AgentToolGate 当前稳定版 `v0.4.0` 提供。请从 GitHub Release 下载正式包；
 > `v0.3.0` 的旧接入方式只保留用于历史版本。
 
 ## 适合谁
@@ -15,7 +15,11 @@
 
 ## 从 Release 下载即跑
 
-当前 Release 只发布两个包：`agenttoolgate-windows-amd64.zip` 和 `agenttoolgate-linux-amd64.tar.gz`。Linux 支持口径是 amd64 glibc-based distributions，并在 GitHub Actions Ubuntu 上验证；暂不支持 macOS、Linux arm64、Alpine/musl、安装器、systemd service、托盘、自启动或自动更新。
+日常运行使用两个主程序包：`agenttoolgate-windows-amd64.zip` 和
+`agenttoolgate-linux-amd64.tar.gz`。Release 还提供对应的 Windows / Linux 评估包和
+`SHA256SUMS`。Linux 支持口径是 amd64 glibc-based distributions，并在 GitHub Actions
+Ubuntu 上验证；暂不支持 macOS、Linux arm64、Alpine/musl、安装器、systemd service、
+托盘、自启动或自动更新。
 
 ### Windows amd64
 
