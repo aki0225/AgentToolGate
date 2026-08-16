@@ -49,6 +49,9 @@ func (a *App) newMCPHandler() *mcp.Handler {
 			}
 			result, err := a.createToolCall(ctx, reqCtx, req.Tool, req.Arguments)
 			if err != nil {
+				if errors.Is(err, errBadRequest) {
+					return mcp.ToolCallResult{}, mcp.NewInvalidParamsError(err.Error())
+				}
 				return mcp.ToolCallResult{}, err
 			}
 			return mcp.ToolCallResult{

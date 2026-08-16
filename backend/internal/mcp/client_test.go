@@ -307,6 +307,59 @@ func TestDecodeJSONRPCResponseEnforcesResultLimit(t *testing.T) {
 	}
 }
 
+func TestValidateOutboundJSONRPCResponseRejectsInvalidEnvelope(t *testing.T) {
+	t.Parallel()
+
+	request := JSONRPCRequest{JSONRPC: "2.0", ID: "tools/list", Method: "tools/list"}
+	cases := []struct {
+		name     string
+		response outboundJSONRPCResponse
+	}{
+		{
+			name: "invalid version",
+			response: outboundJSONRPCResponse{
+				JSONRPCResponse: JSONRPCResponse{JSONRPC: "1.0", ID: "tools/list", Result: map[string]any{}},
+				rawResult:       json.RawMessage(`{}`),
+			},
+		},
+		{
+			name: "mismatched id",
+			response: outboundJSONRPCResponse{
+				JSONRPCResponse: JSONRPCResponse{JSONRPC: "2.0", ID: "other", Result: map[string]any{}},
+				rawResult:       json.RawMessage(`{}`),
+			},
+		},
+		{
+			name: "missing result and error",
+			response: outboundJSONRPCResponse{
+				JSONRPCResponse: JSONRPCResponse{JSONRPC: "2.0", ID: "tools/list"},
+			},
+		},
+		{
+			name: "result and error together",
+			response: outboundJSONRPCResponse{
+				JSONRPCResponse: JSONRPCResponse{
+					JSONRPC: "2.0",
+					ID:      "tools/list",
+					Result:  map[string]any{},
+					Error:   &JSONRPCError{Code: ErrInternal, Message: "failed"},
+				},
+				rawResult: json.RawMessage(`{}`),
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if err := validateOutboundJSONRPCResponse(request, tc.response); err == nil {
+				t.Fatalf("expected invalid JSON-RPC envelope rejection")
+			}
+		})
+	}
+}
+
 func TestBuildOutboundToolCallRequestEnforcesExactPOSTBodyLimit(t *testing.T) {
 	t.Parallel()
 

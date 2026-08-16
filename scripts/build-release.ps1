@@ -9,6 +9,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+& (Join-Path $PSScriptRoot "local-cache-env.ps1") -RepositoryRoot $RepoRoot -Quiet
+
 $FrontendDir = Join-Path $RepoRoot "frontend"
 $BackendDir = Join-Path $RepoRoot "backend"
 $EvaluatorDir = Join-Path (Join-Path $RepoRoot "tools") "atg-eval"
@@ -342,7 +344,7 @@ Write-Host "==> 发布元数据: $releaseVersion / $releaseCommit / $releaseBuil
 Write-Host "==> 构建前端" -ForegroundColor Cyan
 Push-Location $FrontendDir
 try {
-    npm run build
+    npm --cache $env:NPM_CONFIG_CACHE run build
     if ($LASTEXITCODE -ne 0) {
         throw "前端构建失败，退出码 $LASTEXITCODE"
     }

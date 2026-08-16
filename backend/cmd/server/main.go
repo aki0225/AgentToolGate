@@ -935,7 +935,7 @@ func runGuardHook(args []string, stdout, stderr io.Writer) int {
 		}, stdout, stderr)
 	}
 	request.TicketID = ticketID
-	status, decision, requestErr := callHookAgentGuard(request)
+	status, decision, requestErr := callHookAgentGuard(control.Endpoint, request)
 	if requestErr != nil {
 		if status != 0 {
 			return emitHookDecision(client, hookAgentGuardResponse{
@@ -1150,20 +1150,23 @@ func isHookScriptTarget(value string) bool {
 	return false
 }
 
-func hookAgentGuardURL() string {
+func hookAgentGuardURL(controlEndpoint string) string {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("AGENTTOOLGATE_URL")), "/")
+	if base == "" {
+		base = strings.TrimRight(strings.TrimSpace(controlEndpoint), "/")
+	}
 	if base == "" {
 		base = "http://127.0.0.1:8080"
 	}
 	return base + "/api/agent-guard/evaluate"
 }
 
-func callHookAgentGuard(payload hookAgentGuardRequest) (int, hookAgentGuardResponse, error) {
+func callHookAgentGuard(controlEndpoint string, payload hookAgentGuardRequest) (int, hookAgentGuardResponse, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return -1, hookAgentGuardResponse{}, err
 	}
-	req, err := http.NewRequest(http.MethodPost, hookAgentGuardURL(), bytes.NewReader(raw))
+	req, err := http.NewRequest(http.MethodPost, hookAgentGuardURL(controlEndpoint), bytes.NewReader(raw))
 	if err != nil {
 		return -1, hookAgentGuardResponse{}, err
 	}

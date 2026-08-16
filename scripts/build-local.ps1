@@ -5,6 +5,8 @@ param()
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+& (Join-Path $PSScriptRoot "local-cache-env.ps1") -RepositoryRoot $RepoRoot -Quiet
+
 function Resolve-GoExe {
     if ($env:AGT_GO_EXE) {
         if (-not (Test-Path -LiteralPath $env:AGT_GO_EXE)) {
@@ -44,7 +46,7 @@ $PlaceholderIndex = @'
 Write-Host "==> 构建前端" -ForegroundColor Cyan
 Push-Location $FrontendDir
 try {
-    npm run build
+    npm --cache $env:NPM_CONFIG_CACHE run build
     if ($LASTEXITCODE -ne 0) {
         throw "前端构建失败，退出码 $LASTEXITCODE"
     }

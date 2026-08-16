@@ -1,10 +1,12 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -25,7 +27,12 @@ const (
 	ErrInvalidParams    = -32602
 	ErrInternal         = -32603
 	ErrApprovalRequired = -32050
+
+	inboundMaxJSONRPCBodyBytes     = 1 << 20
+	inboundMaxJSONRPCResponseBytes = 1 << 20
 )
+
+var fallbackJSONRPCResponse = []byte(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal error"}}`)
 
 type Config struct {
 	Store                 store.Store
@@ -56,6 +63,27 @@ type ToolCallResult struct {
 }
 
 type ToolCaller func(context.Context, ToolCallRequest) (ToolCallResult, error)
+
+type publicToolCallError interface {
+	error
+	jsonRPCError() (int, string)
+}
+
+type invalidParamsError struct {
+	message string
+}
+
+func (e invalidParamsError) Error() string {
+	return e.message
+}
+
+func (e invalidParamsError) jsonRPCError() (int, string) {
+	return ErrInvalidParams, e.message
+}
+
+func NewInvalidParamsError(message string) error {
+	return invalidParamsError{message: strings.TrimSpace(message)}
+}
 
 type Handler struct {
 	store                 store.Store
@@ -176,8 +204,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func decodeJSONRPCRequest(r *http.Request) (JSONRPCRequest, error) {
+	payload, err := io.ReadAll(io.LimitReader(r.Body, inboundMaxJSONRPCBodyBytes+1))
+	if err != nil {
+		return JSONRPCRequest{}, err
+	}
+	if len(payload) > inboundMaxJSONRPCBodyBytes {
+		return JSONRPCRequest{}, fmt.Errorf("MCP JSON-RPC request exceeds %d bytes", inboundMaxJSONRPCBodyBytes)
+	}
+
 	var raw map[string]json.RawMessage
-	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	if err := decoder.Decode(&raw); err != nil {
+		return JSONRPCRequest{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return JSONRPCRequest{}, errors.New("MCP JSON-RPC request must contain one object")
+		}
 		return JSONRPCRequest{}, err
 	}
 	_, idSet := raw["id"]
@@ -410,12 +453,9 @@ func mcpToolCallPublicError(err error) (int, string) {
 	if err == nil {
 		return ErrInternal, "MCP tool call failed"
 	}
-	lower := strings.ToLower(err.Error())
-	if strings.Contains(lower, "bad request") ||
-		strings.Contains(lower, "invalid argument") ||
-		strings.Contains(lower, "invalid params") ||
-		strings.Contains(lower, "validation") {
-		return ErrInvalidParams, err.Error()
+	var publicErr publicToolCallError
+	if errors.As(err, &publicErr) {
+		return publicErr.jsonRPCError()
 	}
 	return ErrInternal, "MCP tool call failed"
 }
@@ -453,11 +493,7 @@ func jsonRPCError(id any, code int, message string, data any) JSONRPCResponse {
 }
 
 func (h *Handler) writeEvent(w http.ResponseWriter, response JSONRPCResponse) {
-	payload, err := json.Marshal(response)
-	if err != nil {
-		h.logger.Warn("encode MCP response failed", "error", err)
-		payload = []byte(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal error"}}`)
-	}
+	payload := h.marshalJSONRPCResponse(response)
 	h.writeNamedEvent(w, "message", payload)
 }
 
@@ -470,11 +506,23 @@ func (h *Handler) writeNamedEvent(w http.ResponseWriter, event string, payload [
 }
 
 func (h *Handler) writeJSONResponse(w http.ResponseWriter, status int, response JSONRPCResponse) {
+	payload := h.marshalJSONRPCResponse(response)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		h.logger.Warn("encode MCP streamable HTTP response failed", "error", err)
+	_, _ = w.Write(payload)
+}
+
+func (h *Handler) marshalJSONRPCResponse(response JSONRPCResponse) []byte {
+	payload, err := json.Marshal(response)
+	if err != nil {
+		h.logger.Warn("encode MCP response failed", "error", err)
+		return fallbackJSONRPCResponse
 	}
+	if len(payload) > inboundMaxJSONRPCResponseBytes {
+		h.logger.Warn("MCP response exceeded size limit", "bytes", len(payload))
+		return fallbackJSONRPCResponse
+	}
+	return payload
 }
 
 func (h *Handler) sendSessionResponse(sessionID string, response JSONRPCResponse) bool {

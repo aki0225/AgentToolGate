@@ -198,6 +198,22 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 .\dist\agenttoolgate.exe --open
 ```
 
+`build-local.ps1`、`build-release.ps1` 和 `verify-local.ps1` 会自动把 Go、npm、pip
+与 Playwright 的重缓存放到仓库忽略的 `.tmp/cache/`。Go 和 Python 的短生命周期
+临时目录放在同盘的 `<workspace-parent>/.tmp/AgentToolGate-public-*`，不会继续使用
+系统盘用户临时目录，也不会放进被 Hook 保护的 Git 仓库内部。
+
+直接运行 `go test`、`go vet` 或其他开发命令前，可以在当前 PowerShell 会话执行：
+
+```powershell
+.\scripts\local-cache-env.ps1
+go -C backend test -count=1 -timeout 60s ./...
+go -C backend vet ./...
+```
+
+该脚本只修改当前 PowerShell 进程的环境变量，不写用户级或机器级配置。关闭终端后设置
+自动失效。
+
 默认行为：
 
 - `DATABASE_URL` 为空时使用 SQLite。

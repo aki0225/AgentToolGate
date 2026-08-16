@@ -309,6 +309,10 @@ func (s *outboundSession) callJSONRPCPayload(ctx context.Context, req JSONRPCReq
 		s.Close()
 		return outboundJSONRPCResponse{}, err
 	}
+	if err := validateOutboundJSONRPCResponse(req, decoded); err != nil {
+		s.Close()
+		return outboundJSONRPCResponse{}, err
+	}
 	if decoded.Error != nil {
 		return decoded, nil
 	}
@@ -468,6 +472,29 @@ func decodeOutboundJSONRPCResponse(data string, decodeResult bool) (outboundJSON
 		},
 		rawResult: append(json.RawMessage(nil), envelope.Result...),
 	}, nil
+}
+
+func validateOutboundJSONRPCResponse(request JSONRPCRequest, response outboundJSONRPCResponse) error {
+	if response.JSONRPC != "2.0" {
+		return fmt.Errorf("mcp JSON-RPC response has invalid version")
+	}
+	expectedID, err := json.Marshal(request.ID)
+	if err != nil {
+		return fmt.Errorf("encode mcp JSON-RPC request id: %w", err)
+	}
+	actualID, err := json.Marshal(response.ID)
+	if err != nil {
+		return fmt.Errorf("encode mcp JSON-RPC response id: %w", err)
+	}
+	if !bytes.Equal(expectedID, actualID) {
+		return fmt.Errorf("mcp JSON-RPC response id does not match request")
+	}
+	hasResult := len(response.rawResult) > 0
+	hasError := response.Error != nil
+	if hasResult == hasError {
+		return fmt.Errorf("mcp JSON-RPC response must contain exactly one of result or error")
+	}
+	return nil
 }
 
 func resolveMCPEndpoint(base *url.URL, raw string) (*url.URL, error) {

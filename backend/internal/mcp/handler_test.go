@@ -169,6 +169,102 @@ func TestStreamableHTTPReturnsStableJSONRPCErrors(t *testing.T) {
 	}
 }
 
+func TestMCPHandlersRejectOversizedJSONRPCBody(t *testing.T) {
+	t.Parallel()
+
+	handler := NewHandler(Config{
+		Store:          newMCPTestStore(t),
+		ResolveContext: fixedMCPContext,
+		CallTool:       neverCallMCPTool(t),
+		Logger:         slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+	})
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"padding":"` +
+		strings.Repeat("a", inboundMaxJSONRPCBodyBytes) + `"}}`
+
+	t.Run("streamable HTTP", func(t *testing.T) {
+		rec := postMCPStreamableHTTPJSONRPC(t, handler.StreamableHTTPHandler(), body)
+		response := decodeMCPJSON(t, rec)
+		if response.Error == nil || response.Error.Code != ErrParse {
+			t.Fatalf("expected parse error for oversized body, got %+v", response)
+		}
+	})
+
+	t.Run("SSE fallback", func(t *testing.T) {
+		rec := postMCPJSONRPC(t, handler, body)
+		response := decodeMCPEvent(t, rec)
+		if response.Error == nil || response.Error.Code != ErrParse {
+			t.Fatalf("expected parse error for oversized body, got %+v", response)
+		}
+	})
+}
+
+func TestMCPHandlersRejectTrailingJSON(t *testing.T) {
+	t.Parallel()
+
+	handler := NewHandler(Config{
+		Store:          newMCPTestStore(t),
+		ResolveContext: fixedMCPContext,
+		CallTool:       neverCallMCPTool(t),
+		Logger:         slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+	})
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize"} {}`
+
+	t.Run("streamable HTTP", func(t *testing.T) {
+		rec := postMCPStreamableHTTPJSONRPC(t, handler.StreamableHTTPHandler(), body)
+		response := decodeMCPJSON(t, rec)
+		if response.Error == nil || response.Error.Code != ErrParse {
+			t.Fatalf("expected parse error for trailing JSON, got %+v", response)
+		}
+	})
+
+	t.Run("SSE fallback", func(t *testing.T) {
+		rec := postMCPJSONRPC(t, handler, body)
+		response := decodeMCPEvent(t, rec)
+		if response.Error == nil || response.Error.Code != ErrParse {
+			t.Fatalf("expected parse error for trailing JSON, got %+v", response)
+		}
+	})
+}
+
+func TestMCPHandlersBoundOversizedToolResponses(t *testing.T) {
+	t.Parallel()
+
+	handler := NewHandler(Config{
+		Store:          newMCPTestStore(t),
+		ResolveContext: fixedMCPContext,
+		CallTool: func(context.Context, ToolCallRequest) (ToolCallResult, error) {
+			return ToolCallResult{
+				Status: "success",
+				Result: map[string]any{"value": strings.Repeat("a", inboundMaxJSONRPCResponseBytes)},
+			}, nil
+		},
+		Logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+	})
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mock.echo","arguments":{}}}`
+
+	t.Run("streamable HTTP", func(t *testing.T) {
+		rec := postMCPStreamableHTTPJSONRPC(t, handler.StreamableHTTPHandler(), body)
+		if rec.Body.Len() > len(fallbackJSONRPCResponse) {
+			t.Fatalf("oversized response was not bounded: %d bytes", rec.Body.Len())
+		}
+		response := decodeMCPJSON(t, rec)
+		if response.Error == nil || response.Error.Code != ErrInternal {
+			t.Fatalf("expected bounded internal error, got %+v", response)
+		}
+	})
+
+	t.Run("SSE fallback", func(t *testing.T) {
+		rec := postMCPJSONRPC(t, handler, body)
+		if rec.Body.Len() > len(fallbackJSONRPCResponse)+64 {
+			t.Fatalf("oversized SSE response was not bounded: %d bytes", rec.Body.Len())
+		}
+		response := decodeMCPEvent(t, rec)
+		if response.Error == nil || response.Error.Code != ErrInternal {
+			t.Fatalf("expected bounded internal error, got %+v", response)
+		}
+	})
+}
+
 func TestHandleToolsListReturnsOnlyEnabledTools(t *testing.T) {
 	t.Parallel()
 
@@ -331,7 +427,7 @@ func TestHandleToolsCallKeepsBadRequestErrorsActionable(t *testing.T) {
 		Store:          newMCPTestStore(t),
 		ResolveContext: fixedMCPContext,
 		CallTool: func(context.Context, ToolCallRequest) (ToolCallResult, error) {
-			return ToolCallResult{}, errors.New("bad request: url is required")
+			return ToolCallResult{}, NewInvalidParamsError("bad request: url is required")
 		},
 		Logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
 	})
@@ -341,6 +437,25 @@ func TestHandleToolsCallKeepsBadRequestErrorsActionable(t *testing.T) {
 
 	if response.Error == nil || response.Error.Code != ErrInvalidParams || response.Error.Message != "bad request: url is required" {
 		t.Fatalf("expected actionable bad-request error, got %+v", response.Error)
+	}
+}
+
+func TestHandleToolsCallDoesNotExposeUntypedValidationError(t *testing.T) {
+	t.Parallel()
+
+	handler := NewHandler(Config{
+		Store:          newMCPTestStore(t),
+		ResolveContext: fixedMCPContext,
+		CallTool: func(context.Context, ToolCallRequest) (ToolCallResult, error) {
+			return ToolCallResult{}, errors.New("validation failed for http://10.0.0.5/private?token=secret")
+		},
+		Logger: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+	})
+
+	rec := postMCPJSONRPC(t, handler, `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"http.request","arguments":{}}}`)
+	response := decodeMCPEvent(t, rec)
+	if response.Error == nil || response.Error.Code != ErrInternal || response.Error.Message != "MCP tool call failed" {
+		t.Fatalf("expected generic internal error, got %+v", response.Error)
 	}
 }
 

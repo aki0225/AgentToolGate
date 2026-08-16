@@ -789,6 +789,37 @@ func TestRunGuardHookHonorsRepoControlAndCallsBackendInLiveMode(t *testing.T) {
 	}
 }
 
+func TestRunGuardHookUsesControlEndpointWhenEnvironmentIsUnset(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatalf("create git marker: %v", err)
+	}
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		writeHookDecisionResponse(t, w, map[string]any{"decision": "deny", "reason": "control endpoint reached"})
+	}))
+	t.Cleanup(server.Close)
+	if err := writeHookControlDocument(repo, hookControlDocument{
+		Mode:     projectHookModeLive,
+		Endpoint: server.URL,
+	}); err != nil {
+		t.Fatalf("write live control with endpoint: %v", err)
+	}
+	t.Setenv("AGENTTOOLGATE_URL", "")
+	t.Setenv("TRELLIS_HOOKS", "1")
+	t.Setenv("TRELLIS_DISABLE_HOOKS", "0")
+	inputPath := writeHookPayloadForRepo(t, repo, "shell", map[string]any{"command": "go test ./..."})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"guard", "hook", "claude", "--input", inputPath}, &stdout, &stderr)
+	if code != 0 || requests != 1 || !strings.Contains(stdout.String(), `"permissionDecision":"deny"`) {
+		t.Fatalf("control endpoint must receive hook request, code=%d requests=%d stdout=%s stderr=%s", code, requests, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunGuardHookDryRunPreviewsProjectProtectionWithoutBlocking(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {

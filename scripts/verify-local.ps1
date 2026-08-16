@@ -13,6 +13,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+& (Join-Path $PSScriptRoot "local-cache-env.ps1") -RepositoryRoot $RepoRoot -Quiet
+
 function Resolve-GoExe {
     if ($env:AGT_GO_EXE) {
         if (-not (Test-Path -LiteralPath $env:AGT_GO_EXE)) {
@@ -277,7 +279,7 @@ function Start-ManagedServices {
 
     Write-Host "`n==> 启动真实 frontend" -ForegroundColor Cyan
     $script:frontendProcess = Start-ProcessWithEnv -FilePath "npm" `
-        -Arguments @("run", "dev", "--", "--host", "127.0.0.1", "--port", [string]$FrontendPort) `
+        -Arguments @("--cache", $env:NPM_CONFIG_CACHE, "run", "dev", "--", "--host", "127.0.0.1", "--port", [string]$FrontendPort) `
         -WorkingDirectory (Join-Path $RepoRoot "frontend") `
         -Environment $frontendEnv `
         -LogPath $FrontendLog
@@ -371,7 +373,7 @@ function Invoke-MultiActorApprovalE2E {
 
     Write-Host "`n==> 启动真实 frontend" -ForegroundColor Cyan
     $script:frontendProcess = Start-ProcessWithEnv -FilePath "npm" `
-        -Arguments @("run", "dev", "--", "--host", "127.0.0.1", "--port", [string]$FrontendPort) `
+        -Arguments @("--cache", $env:NPM_CONFIG_CACHE, "run", "dev", "--", "--host", "127.0.0.1", "--port", [string]$FrontendPort) `
         -WorkingDirectory (Join-Path $RepoRoot "frontend") `
         -Environment @{
             VITE_API_BASE_URL = "http://127.0.0.1:8080"
@@ -398,7 +400,7 @@ function Invoke-MultiActorApprovalE2E {
             if (-not $env:E2E_BROWSER_CHANNEL -and (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe")) {
                 $env:E2E_BROWSER_CHANNEL = "chrome"
             }
-            npm run e2e -- e2e/multi-actor-approval.spec.ts
+            npm --cache $env:NPM_CONFIG_CACHE run e2e -- e2e/multi-actor-approval.spec.ts
         }
         finally {
             $env:E2E_API_BASE_URL = $previousApi
@@ -441,7 +443,7 @@ function Invoke-MultiActorApprovalE2E {
             if (-not $env:E2E_BROWSER_CHANNEL -and (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe")) {
                 $env:E2E_BROWSER_CHANNEL = "chrome"
             }
-            npm run e2e -- e2e/multi-actor-approval.spec.ts
+            npm --cache $env:NPM_CONFIG_CACHE run e2e -- e2e/multi-actor-approval.spec.ts
         }
         finally {
             $env:E2E_API_BASE_URL = $previousApi
@@ -509,11 +511,11 @@ try {
     }
 
     Invoke-Step -Name "前端 npm run check" -Directory (Join-Path $RepoRoot "frontend") -Command {
-        npm run check
+        npm --cache $env:NPM_CONFIG_CACHE run check
     }
 
     Invoke-Step -Name "前端 npm run build" -Directory (Join-Path $RepoRoot "frontend") -Command {
-        npm run build
+        npm --cache $env:NPM_CONFIG_CACHE run build
     }
 
     if ($WithE2E) {
@@ -543,7 +545,7 @@ try {
                 if (-not $env:E2E_BROWSER_CHANNEL -and (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe")) {
                     $env:E2E_BROWSER_CHANNEL = "chrome"
                 }
-                npm run e2e -- e2e/local-real-demo.spec.ts
+                npm --cache $env:NPM_CONFIG_CACHE run e2e -- e2e/local-real-demo.spec.ts
             }
             finally {
                 $env:E2E_API_BASE_URL = $previousApi
@@ -568,7 +570,8 @@ try {
     }
 
     Invoke-Step -Name "Git diff whitespace check" -Directory $RepoRoot -Command {
-        git diff --check
+        $safeRepoRoot = $RepoRoot -replace '\\', '/'
+        git -c "safe.directory=$safeRepoRoot" -C $RepoRoot diff --check
     }
 
     $script:verificationSucceeded = $true
