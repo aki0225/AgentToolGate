@@ -234,6 +234,12 @@ try {
         Assert-True `
             -Condition (-not $Workflow.Contains("softprops/action-gh-release")) `
             -Message "Release workflow 不得重新引入会复用既有 Release 的 softprops action。"
+        Assert-True `
+            -Condition $Workflow.Contains('-Uri "${uploadUri}?name=$encodedName"') `
+            -Message "Release 附件上传 URI 必须使用显式变量边界，避免 PowerShell 把查询参数解析为变量名。"
+        Assert-True `
+            -Condition (-not $Workflow.Contains('-Uri "$uploadUri?name=$encodedName"')) `
+            -Message "Release 附件上传 URI 不得使用会被 PowerShell 误解析的变量写法。"
 
         $ValidateJob = [regex]::Match(
             $Workflow,
