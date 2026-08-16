@@ -15,7 +15,7 @@
 > Release workflow：
 > [`31946508434`](https://github.com/aki0225/AgentToolGate/actions/runs/31946508434)
 >
-> 本页更新依据的 `main` 基线：`43868521e56c85cf074e92f572daff49121651b9`
+> 稳定版产品代码基线：`43868521e56c85cf074e92f572daff49121651b9`
 
 ## 1. 版本状态
 
@@ -36,10 +36,12 @@ workflow、正式附件及当前验证边界见
 当前公开仓已有以下分层证据：
 
 - **稳定 Release**：Windows amd64 和 Linux amd64 正式包、SHA256、原生 runner smoke。
-- **自动安全评估**：Quick、Windows full、Linux full 的逐 case Proof Pack；Linux
-  平台不适用项保持 skipped，不冒充 passed。
+- **自动安全评估**：公开快照来自历史提交
+  `e809c66ea8e82a27ab25531072cc1ca813550384`，包含 Quick、Windows full、Linux
+  full 的逐 case Proof Pack；Linux 平台不适用项保持 skipped，不冒充 passed。
 - **真实客户端**：历史 Codex CLI / Claude Code 双客户端链路验收，以及
-  `v0.3.2` 正式 Linux 包上的五次独立 Codex CLI 会话。
+  `v0.3.2` 正式 Linux 包、源提交
+  `0126bc24fb6189fd80b8070a23712a1e07b02514` 上的五次独立 Codex CLI 会话。
 - **真实 Codex 五场景展示**：低摩擦开发、敏感读取、破坏性删除、网络外传和受保护
   写入，动作摘要均来自唯一 Hook 请求匹配，并带对应 Audit 和独立后置条件。
 - **现行展示结构**：Hero、工作方式、实测证据、安全边界和下载；首页只保留真实

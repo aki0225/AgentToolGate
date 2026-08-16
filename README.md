@@ -26,7 +26,7 @@
 
 </div>
 
-AgentToolGate（下面简称 ATG）是一个跑在本地的 AI Agent 工具调用治理网关。它不做“防注入”，只管一件事——数据库、GitHub、HTTP、外部 MCP 和本地高危动作在真正执行之前，先过 policy、审批、ATG 管理的 Connector Secret 注入和审计这一道。
+AgentToolGate（下面简称 ATG）是一个跑在本地的 AI Agent 工具调用治理网关。它不做“防注入”，只管一件事——数据库、GitHub、HTTP、外部 MCP 和本地动作在真正执行之前，先进入各自的治理入口，按需经过 policy、硬护栏、审批和 ATG 管理的 Connector Secret 解析，并留下脱敏审计。
 
 > [!IMPORTANT]
 > ATG 是 guardrail，不是操作系统沙箱，也不是 EDR 或企业 DLP。真要跑高风险场景，最小权限账户、系统沙箱、网络策略和上游服务自己的权限边界仍然缺一不可，ATG 替代不了它们。
@@ -53,7 +53,12 @@ flowchart TD
     Runtime --> HTTP[http.request]
     Runtime --> MCPOut["mcp_&lt;connector&gt;.&lt;tool&gt;"]
     Runtime --> Audit
-    Guard --> Ticket[deny_with_ticket / one-time ticket]
+    Guard --> GuardDecision{allow / deny / deny_with_ticket}
+    GuardDecision -->|allow| HookContinue[Hook no-op / continue]
+    GuardDecision -->|deny| Audit
+    GuardDecision -->|deny_with_ticket| Ticket[Approval + one-time ticket]
+    Ticket --> Audit
+    Ticket -->|approved + exact retry| Guard
     ToolCall --> Trace[OpenTelemetry trace]
     Audit --> Trace
 ```
@@ -63,7 +68,7 @@ flowchart TD
 - REST 主链路是 `POST /api/tool-calls -> createToolCall -> Policy / Approval / Audit / Connector Runtime / OTel`。
 - MCP Inbound Streamable HTTP 使用 `/mcp`，SSE `/mcp/sse` 仅作 fallback。`tools/call` 走的也是 `createToolCall`，没有旁路。
 - MCP Outbound 把外部 MCP Server 的工具同步成 `mcp_<connector>.<tool>`，进同一条治理链路。
-- 本地动作防火墙走独立入口 `/api/agent-guard/evaluate`，对 Claude / Codex 的本地动作做风险分类、审计和 `deny_with_ticket` 闭环。
+- 本地动作防火墙走独立入口 `/api/agent-guard/evaluate`。安全动作直接放行，明确危险动作直接拒绝，只有需要人工判断的动作才创建一次性 `deny_with_ticket`。
 
 ## 快速开始
 
@@ -118,7 +123,10 @@ Full Access 模式本身不会禁用已加载的 Hook，但这不等于完整保
 
 该命令切换的是当前运行时 control。输出中的 `nextUpMode` 表示下一次 `up` 会从
 `.agenttoolgate/config.json` 读取的模式；两者不一致时 CLI 会明确警告。项目级服务
-停止后，属于该进程的 control 会自动回到 `off`。
+正常停止时，只有 control 仍与本进程发布内容一致才会切到 `off`；若先前的 `up`
+实例仍可达，则恢复该实例。异常退出可能留下指向不可达 endpoint 的 `live` control，
+此时 Hook 走离线保守路径，`doctor` 会显示 unreachable；可显式执行
+`hook control off --dir <project>` 恢复开发。
 
 AgentToolGate 不碰系统策略、注册表或 shell profile。Claude Code 的配置仍由用户显式接入。
 
@@ -151,15 +159,14 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 
 ## 生产部署前必读
 
-仓库默认 `docker-compose.yml` 使用 `HOST=0.0.0.0`、`AUTH_MODE=local`、
-`LOCAL_ROLE=owner` 和 `DEV_MODE=true`。这套配置只用于单机本地开发：
-任何能够访问 backend 的调用方都会进入本地 owner 身份，不能直接作为多用户、
-共享主机或网络暴露部署的鉴权方案。
+默认 Compose 在容器内使用 `HOST=0.0.0.0`，但宿主端口只映射到
+`127.0.0.1:8080`。`AUTH_MODE=local` 不验证 Bearer token，并默认以
+`LOCAL_ROLE=owner` 处理请求；`DEV_MODE` 不是认证或授权开关。只要 backend 被其他
+调用方访问，这套 local 配置就等同于无鉴权的 owner 访问。
 
-如果要让其他机器或其他用户访问，至少需要切换到 OIDC、限制监听地址和网络入口，
-并为上游凭据配置最小权限。不要把默认 Compose 配置直接暴露到公网。
-否则请求等同于无鉴权访问。当前仅提供基础 role/workspace 隔离，不具备职责
-分离或组织级访问控制。
+任何多用户、共享主机或网络暴露部署都必须启用 OIDC，放在可信网络边界内，并为上游
+凭据配置最小权限。审批接口允许 `owner`、`admin`、`approver` 角色操作，请求者不可
+自批；local 模式可选配置独立 reviewer token，但这仍不是组织级强职责分离。
 
 <!-- agent-safety-proof:start -->
 ## 实测评估
@@ -174,6 +181,9 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 数字由 [公开评估快照](evaluation/published/agent-safety-proof.json) 的逐 case 状态计算；同一文件记录 Artifact 名称、
 ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex / Claude Code 客户端验收。
 <!-- agent-safety-proof:end -->
+
+该自动评估来自历史提交 `e809c66`，不是 `v0.4.1` 同版本结果。对应的良性中断率为：
+Quick Linux 25%，Windows full 16.7%，Linux full 16.7%。
 
 ### 证据分层
 
@@ -202,7 +212,7 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 
 两个入口：
 
-- **工具治理网关**：`database.query`、`github.*`、`http.request`、`mcp_<connector>.<tool>` 在执行前过 workspace policy、审批、限流、ATG 管理的 Connector Secret 运行时注入、脱敏审计和 OTel trace。
+- **工具治理网关**：`database.query`、`github.*`、`http.request`、`mcp_<connector>.<tool>` 进入 `createToolCall` 后执行 workspace policy、硬校验和限流，仅在需要时创建审批。GitHub / HTTP / MCP 的 Secret 引用会在审批创建前做 fail-closed 校验，真正执行时重新解析并注入，结果进入脱敏审计和 OTel trace。
 - **本地动作防火墙**：Claude / Codex 要写 Startup、`.ssh`、`.env`、`.git/hooks` 或 ATG 自身的 hook/config，或者脚本里出现 `ExecutionPolicy Bypass`、`WindowStyle Hidden`、encoded payload 这类特征时，先进 guard 评估。
 - **项目内保护规则**：`.agenttoolgate/protected.json` 可为核心目录配置 read / write / delete / exec 的 `require_approval` 或 `deny`，并对未列出的网络写入目标继续收紧。
 
@@ -221,14 +231,14 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 
 ## 已知限制
 
-- Codex hook bridge 没有完整的交互式 ask 体验，需要确认的动作目前按保守 `deny` / no-op 处理，不能当成完整的审批弹窗。
+- Codex hook bridge 没有完整的交互式 ask 体验：Guard `allow` 是零输出 no-op，`ask` 和 `deny_with_ticket` 在运行时保守映射为 `deny`，不能当成完整的审批弹窗。
 - ATG 管理的 Connector Secret 目前是 env-backed `valueRef`，不是 KMS、Vault 或云 Secret Manager。
 - GitHub 集成适合 PAT / demo token，不是 GitHub App installation token 的生产闭环。
 - HTTP / MCP 出站已按请求和重定向重新解析 DNS、拒绝 metadata/link-local/非显式
   loopback，并固定拨号到已校验 IP；但显式 allowlist authority 仍可解析到普通
   RFC1918、ULA 或 CGNAT 私网地址，因此不是完整的私网隔离或 DNS rebinding 防护。
 - 项目规则只覆盖 Hook 暴露的显式目标及当前可静态解析的已知命令、解释器和脚本后缀；动态命令、未知解释器或绕过 Hook 的进程不保证命中。
-- 当前只有基础 role/workspace 隔离；职责分离、版本化迁移、备份、告警、SLO、灾备和组织级策略发布/回滚等生产化前提都还没有。
+- 当前有基础 role/workspace 隔离、`owner/admin/approver` 审批角色、自批保护和可选 local reviewer token；仍缺组织级强职责分离、版本化迁移、备份、告警、SLO、灾备和策略发布/回滚。
 
 ## 深入文档
 
@@ -240,7 +250,9 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 - [威胁模型](docs/threat-model.md)：资产、攻击面、可信边界、关键攻击路径、已有缓解和未覆盖项。
 - [演示剧本](docs/demo-playbook.md)：产品化演示路径。
 - [安全评审说明](docs/security-review-notes.md)：安全评审视角的控制与剩余风险。
-- [Daily Use Acceptance](docs/daily-use-acceptance.md)：日常开发低噪音验收证据。
+- [Daily Use Acceptance](docs/daily-use-acceptance.md)：2026-07 历史日常使用验收；当前
+  `live` 基线对 `go test` / `npm run check` 的决策以
+  [本地动作防火墙](docs/local-action-firewall.md)为准。
 - [v0.4.1 发布验收](docs/v0.4.1-release-acceptance.md)：当前稳定版的产品 CI、双平台 Release、正式附件 digest 和补丁范围。
 - [v0.4.0 发布验收](docs/v0.4-release-acceptance.md)：上一版本的产品 CI、双平台 Release、正式附件 SHA256 和日常使用加固验收。
 - [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)：历史稳定版的双平台 Release、正式附件和五场景真实 Codex 证据。

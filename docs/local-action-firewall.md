@@ -135,7 +135,7 @@ hook payload 会被规范化为本地动作：
 - PowerShell `WindowStyle Hidden`
 - `-EncodedCommand` / `-enc`
 
-低风险 workspace 动作可以 allow 或 dry-run preview，避免打扰。高风险持久化、凭据、自我防篡改动作会变成 deny 或 `deny_with_ticket`。
+低风险 workspace 动作可以 allow 或 dry-run preview。明确禁止的持久化、凭据或自我防篡改动作可直接 deny；只有需要人工判断的动作才返回 `deny_with_ticket`。
 
 ## `deny_with_ticket`
 
@@ -189,14 +189,18 @@ ticket TTL 是 10 分钟，并且只能消费一次。审批后，带相同 tick
 
 ## 日常开发体验
 
-项目级 `up` 默认使用 `dry-run`，不是 `live`。普通开发会话不应因为这些动作被频繁打断：
+项目级 `up` 默认使用 `dry-run`，不是 `live`。在当前公开评估基线里，以下动作可直接放行：
 
 - `git status`、`git diff`、`git log`
-- 定向测试
 - 读取和编辑 workspace docs
 - 在 repo 内写临时文件
 
-`live` 用于用户显式开启的受保护会话。它应该阻断或 ticket 高危动作，而不是对每次 write/exec 都 nag。
+`go test` 和 `npm run check` 当前预期决策是 `ask`。Claude Code 可以呈现确认语义；
+Codex 会把 `ask` 保守映射为 `deny`。因此不能把当前 `live` 模式笼统描述为“测试
+低打扰”；自动评估应同时查看 `benignInterruptionRate`，而不只看危险动作治理率。
+
+`live` 用于用户显式开启的受保护会话。它阻断或 ticket 高危动作，但当前仍可能打断
+部分正常检查命令；需要连续重度开发时可先使用 `dry-run` 观察，再决定是否切到 `live`。
 
 ## 已知限制和 TOCTOU 风险
 

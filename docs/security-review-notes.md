@@ -23,13 +23,15 @@ Agent -> Tool Call API -> Policy -> Approval -> Connector Runtime -> Audit / Tel
 
 ### 2.1 Policy 与 Approval
 
-- 所有 tool call 先进入 policy 决策，输出 `allow` / `deny` / `require_approval`。
+- 所有 Tool Registry call 先进入 policy 决策，输出 `allow` / `deny` / `require_approval`；Local Action Guard 走独立评估入口。
 - 写操作、高风险工具、`requiresApproval=true` 工具默认进入 approval。
 - `http.request` 根据 method 派生治理：safe methods 可直通，write methods 必须审批。
 - `github.create_issue` 等写工具必须 approval 后才触达上游。
 - MCP Outbound 写工具、破坏性工具或未知风险工具必须 approval。
-- approve/reject 只允许 owner/admin。
+- approve/reject 允许 `owner`、`admin`、`approver`；请求者不可自批。
+- local 模式可选配置至少 24 个字符的独立 reviewer token，但不等于组织级双人复核。
 - 审批使用原子状态迁移，避免重复 approve 导致重复执行。
+- 普通 Tool Registry 审批通过后，由后端使用冻结参数执行一次；只有 Local Action ticket 需要客户端精确重试。
 
 ### 2.2 用户 Policy 不能放开硬护栏
 
@@ -47,7 +49,8 @@ workspace 托管 policy rules 用于解释或收紧默认策略，不允许绕�
 - Secret 是 workspace-scoped 元数据。
 - 当前只支持 env-backed `valueRef`，即后端环境变量名。
 - API 和前端不返回解析后的 secret 值。
-- GitHub/HTTP/MCP 运行时只在最终执行前解析并注入 secret。
+- GitHub / HTTP / MCP 在创建审批前会解析 Secret 引用做 fail-closed 校验；需审批路径在批准前不触达上游。
+- 真正执行 Connector 时会重新解析并注入 Secret，避免把审批前解析值当成长期缓存。
 - Secret 缺失、禁用、env 未配置时 fail closed，不触达上游。
 - Secret Usage API 可展示被哪些 connector 字段引用。
 - 被引用 Secret 默认删除返回 409；force delete 后后续调用继续 fail closed。
@@ -73,7 +76,8 @@ workspace 托管 policy rules 用于解释或收紧默认策略，不允许绕�
 ### 2.6 Local Action Firewall 边界
 
 - PreToolUse / adapter 能把高危本地动作导入治理闭环。
-- Codex 侧 `require_approval` 降级为 `deny_with_ticket`，避免输出不支持的 ask。
+- Agent Guard 的明确危险动作可以直接 `deny`；只有需要审批的动作返回一次性 `deny_with_ticket`。
+- Codex 运行时对 Guard `allow` 保持零输出 no-op，并把 `ask` / `deny_with_ticket` 保守映射为 `deny`，避免输出不支持的 ask。
 - synthetic Windows Startup demo 只使用临时/模拟路径，不写真实 Startup。
 
 ## 3. 明确剩余风险
@@ -95,7 +99,8 @@ workspace 托管 policy rules 用于解释或收紧默认策略，不允许绕�
      尚无公网/私网分区策略，不能视为完整私网隔离。
 
 4. **RBAC 与职责分离仍需加强**
-   - owner/admin 边界已存在，但 Secret、Connector、Policy、Approval 的细粒度权限和双人复核还不是生产级。
+   - Secret、Connector、Policy 管理限于 owner/admin；Approval review 允许 owner/admin/approver，并有自批保护。
+   - local reviewer token 只能提供本机开发中的独立审批者，不是组织级强职责分离或生产级双人复核。
 
 5. **迁移与部署仍是 MVP**
    - schema bootstrap / migration 不是完整版本化迁移系统。

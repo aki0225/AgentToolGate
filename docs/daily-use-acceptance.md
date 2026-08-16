@@ -1,4 +1,10 @@
-# Daily Use Acceptance
+# Daily Use Acceptance（历史快照）
+
+> [!NOTE]
+> 本文记录 2026-07 的一次日常使用验收，保留当时规则与 evidence 的原始结论，不代表
+> 当前 `live` 决策基线。当前公开评估中，`go test` 和 `npm run check` 首次执行预期为
+> `ask`；Claude Code 可呈现确认语义，Codex 会保守映射为 `deny`。当前口径见
+> [本地动作防火墙](local-action-firewall.md)和[当前状态](current-status.md)。
 
 AgentToolGate 的本地 hook 目标不是把开发机变成企业安全平台，而是做一个轻量、可解释、可随时关闭的 AI coding agent safety guardrail：默认不打扰开发者；显式进入 `live` 后，在危险工具动作真正落地前阻断或拉回审批。
 
@@ -63,7 +69,7 @@ Daily Use Acceptance 只用 synthetic payload 验证分类与 hook 输出，不�
 
 ## Daily Developer Experience
 
-验收中的普通动作均为 no-op，不向 Codex 输出 hook JSON：
+本次历史验收中的普通动作均为 no-op，不向 Codex 输出 hook JSON：
 
 - `git status`
 - `go test ./...`
@@ -72,7 +78,8 @@ Daily Use Acceptance 只用 synthetic payload 验证分类与 hook 输出，不�
 - README / docs 类编辑
 - `.tmp` 下临时文件写入
 
-这说明 ATG 可以作为日常开发默认存在的 guardrail，而不是每个普通命令都打断用户。
+这说明当时的规则快照可以作为低噪音 guardrail。它不能用于推导当前规则；当前
+`go test` 和 `npm run check` 首次执行会进入 `ask`。
 
 ## Disaster Prevention Cases
 
@@ -103,6 +110,6 @@ Daily Use Acceptance 只用 synthetic payload 验证分类与 hook 输出，不�
 - Codex 当前不依赖交互式 ask；需要人工确认的动作会保守 deny。
 - `live` 需要显式打开；控制文件缺失时 no-op，已存在但损坏或无法解析时 fail closed，可用显式 `hook control off` 恢复。
 
-## Resume-Ready Summary
+## 历史验收结论
 
-AgentToolGate 是一个面向 AI coding agent 的本地工具调用防火墙与治理网关。它不试图阻止提示词注入发生，而是在 agent 调用 Bash、Write、HTTP、GitHub、数据库或 MCP 工具前，用确定性策略识别高危动作，把写操作和敏感落点拉进 approval、audit 和 risk explanation。日常使用时它默认 no-op，不干扰 `git status`、测试和文档编辑；显式 `live` 后能阻断 Windows Startup 持久化、`.ssh`、`.env`、git hooks 和隐藏 PowerShell 等危险工具调用。这个项目的边界也很明确：它是 guardrail，不是 OS sandbox，上线仍要叠加最小权限和系统级隔离。
+AgentToolGate 是一个面向 AI coding agent 的本地工具调用防火墙与治理网关。它不试图阻止提示词注入发生，而是在 agent 调用 Bash、Write、HTTP、GitHub、数据库或 MCP 工具前，用确定性策略识别高危动作，把写操作和敏感落点拉进 approval、audit 和 risk explanation。本次历史验收中，`git status`、测试和文档编辑保持 no-op；显式 `live` 后能阻断 Windows Startup 持久化、`.ssh`、`.env`、git hooks 和隐藏 PowerShell 等危险工具调用。当前规则对测试命令的决策已经变化，应以现行评估与本地动作防火墙文档为准。这个项目的边界仍然明确：它是 guardrail，不是 OS sandbox，上线仍要叠加最小权限和系统级隔离。

@@ -2,14 +2,14 @@
 
 ## 生产部署前必读
 
-仓库默认 Compose 配置使用 `HOST=0.0.0.0`、`AUTH_MODE=local`、
-`LOCAL_ROLE=owner` 和 `DEV_MODE=true`。它只适用于单机本地开发，不是生产鉴权方案。
-在该模式下，任何能够访问 backend 的调用方都会进入本地 owner 身份。
+默认 Compose 在容器内使用 `HOST=0.0.0.0`，但宿主端口只映射到
+`127.0.0.1:8080`。`AUTH_MODE=local` 不验证 Bearer token，并默认以
+`LOCAL_ROLE=owner` 处理请求；`DEV_MODE` 不是认证或授权开关。只要 backend 被其他
+调用方访问，这套 local 配置就等同于无鉴权的 owner 访问。
 
-多用户、共享主机或网络暴露部署必须启用 OIDC，并同时限制监听地址、网络入口和上游凭据权限。
-不要把默认 Compose 配置直接暴露到公网。
-否则请求等同于无鉴权访问。当前项目不宣称已提供企业级 RBAC、职责分离或
-组织级访问控制。
+任何多用户、共享主机或网络暴露部署都必须启用 OIDC，放在可信网络边界内，并限制
+上游凭据权限。审批接口允许 `owner`、`admin`、`approver` 角色操作，请求者不可自批；
+local 模式可选配置独立 reviewer token，但这仍不是企业级 RBAC 或组织级强职责分离。
 
 ## 支持版本
 
@@ -23,7 +23,7 @@
 
 ## 范围
 
-AgentToolGate 是本地 AI 编程 Agent guardrail 和工具治理网关，用于在高风险工具调用触达本地文件、数据库、GitHub、HTTP 目标或外部 MCP 工具前进行评估、审批和审计。
+AgentToolGate 是本地 AI 编程 Agent guardrail 和工具治理网关，用于在工具调用触达本地文件、数据库、GitHub、HTTP 目标或外部 MCP 工具前进入对应治理入口，按风险进行评估、拒绝或审批，并留下脱敏审计。
 
 AgentToolGate 不是完整沙箱、EDR、企业 DLP、操作系统权限边界或企业安全边界，也不能替代最小权限凭据。生产或高风险环境仍应配合 OS 权限、网络控制、Secret 管理和隔离执行环境。
 

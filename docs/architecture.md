@@ -1,6 +1,6 @@
 # AgentToolGate 架构说明
 
-AgentToolGate 是本地 AI Agent 工具治理网关。它把 Agent 对数据库、GitHub、HTTP、MCP 和本地危险动作的调用收敛到一个可解释、可审批、可审计的治理层。
+AgentToolGate 是本地 AI Agent 工具治理网关。它让 Agent 对数据库、GitHub、HTTP、MCP 和本地动作的调用进入对应治理入口，形成可解释、按需审批、可审计的 guardrail。
 
 它不是 OS sandbox，也不是完整 enforcement boundary。它的职责是在工具调用落地前做确定性 guardrail：允许安全调用，拒绝明显危险调用，把需要人判断的调用送入 approval，并保留脱敏审计证据。
 
@@ -46,8 +46,10 @@ flowchart TD
 
     Guard --> GuardPolicy[Guard Risk + Policy]
     GuardPolicy --> GuardDecision{allow / deny / deny_with_ticket}
-    GuardDecision --> GuardAudit[Tool-call audit<br/>agent_guard.evaluate]
-    GuardDecision --> Ticket[Approval ticket<br/>TTL + fingerprint + one-time consume]
+    GuardDecision -->|allow / deny| GuardAudit[Tool-call audit<br/>agent_guard.evaluate]
+    GuardDecision -->|deny_with_ticket| Ticket[Approval ticket<br/>TTL + fingerprint + one-time consume]
+    Ticket --> GuardAudit
+    Ticket -->|approved + exact retry| Guard
 ```
 
 ## REST Tool Call 主链路
@@ -67,7 +69,7 @@ handler 解码 `{ "tool": "...", "arguments": {...} }` 后调用 `createToolCall
 - 为公开审计生成脱敏 input。
 - 检查 workspace rate limit。
 - 执行默认 policy。
-- 在审批或执行前做 adapter hard validation。
+- 在审批或执行前做 adapter hard validation。GitHub / HTTP / MCP 会在这里解析 Secret 引用做 fail-closed 校验，但不会向上游发请求。
 - 执行 workspace managed policy。
 - 按结果进入三种分支：
   - `deny`：写 denied audit，不执行。
@@ -75,7 +77,7 @@ handler 解码 `{ "tool": "...", "arguments": {...} }` 后调用 `createToolCall
   - `allow`：执行 connector runtime，脱敏 output，写 success/failed audit。
 - 将 OpenTelemetry trace id 持久化到 tool call。
 
-审批通过时不会从 approve request body 重新读取参数，而是执行创建 approval 时冻结的内部 `input_execution_json`。approve/reject 完成后，该字段会清空为 `{}`。
+审批通过时不会从 approve request body 重新读取参数，而是由后端执行创建 approval 时冻结的内部 `input_execution_json`；客户端不应重试同一条 Tool Registry 写操作。GitHub / HTTP / MCP 在真正执行前会重新解析并注入 Secret。approve/reject 完成后，冻结参数字段会清空为 `{}`。
 
 ## MCP Inbound 主链路
 
@@ -101,7 +103,12 @@ JSON 对象；超限、截断或带尾随 JSON 的输入会在工具执行前返
 
 ## MCP Outbound 主链路
 
-外部 MCP Server 以 `type=mcp` Connector 接入。同步 connector 时会调用远端 `initialize` 和 `tools/list`，再把远端工具注册为本地 Tool Registry 条目：
+外部 MCP Server 以 `type=mcp` Connector 接入。Connector sync 是 `owner/admin`
+控制面操作：它校验配置、解析同步所需 Secret、调用远端 `initialize` / `tools/list`
+并更新 Tool Registry，但不进入 `createToolCall`，因此不经过 tool-call policy、
+approval、rate limit 或 Tool Call Audit。只有同步后的工具调用进入完整治理链。
+
+同步出的本地 Tool Registry 条目格式为：
 
 ```text
 mcp_<connector>.<remote_tool>
@@ -113,9 +120,9 @@ mcp_<connector>.<remote_tool>
 - `destructiveHint=true` 注册为 delete/high，需要审批。
 - `openWorldHint=true`、写类名称或未知名称都需要审批。
 
-执行时，`mcp_*` 工具仍然是普通 tool call：按 workspace 查 connector，通过 `headerSecretRefs` 查找 workspace Secret，再由 Secret 的 env-backed `valueRef` 在后端运行时解析真实值；随后脱敏 payload，为写/未知风险工具创建 approval，写 audit explanation 和 OTel child span。所有 MCP Connector（包括没有 `secretRefMode` 的旧记录）都必须通过 workspace Secret 解析；引用缺失时 fail closed。
+执行时，`mcp_*` 工具仍然是普通 tool call：按 workspace 查 connector，在创建审批前通过 `headerSecretRefs` 解析 workspace Secret 做 fail-closed 校验；写/未知风险工具批准前不触达上游。真正执行时再次解析并注入 Secret，随后脱敏结果，写 audit explanation 和 OTel child span。所有 MCP Connector（包括没有 `secretRefMode` 的旧记录）都必须通过 workspace Secret 解析；引用缺失时 fail closed。
 
-当前 MCP Outbound 只支持 HTTP + SSE transport，不应写成已支持 stdio、OAuth 或完整 Streamable HTTP outbound。
+当前 MCP Outbound 只接受 `transport=sse`，实现的是旧式 SSE transport over HTTP(S)；不应写成已支持 stdio、OAuth 或完整 Streamable HTTP outbound。
 
 Outbound transport 使用部署级 authority ceiling、逐请求和 redirect DNS 复检、固定
 IP 拨号及环境代理禁用。SSE 单行限制 64 KiB，单事件、POST 请求、POST 响应和
@@ -134,12 +141,12 @@ POST /api/agent-guard/evaluate
 
 后端会分类：
 
-- action type：read / write / exec / delete / patch / post
+- 主要 action type：read / write / delete / command / network
 - target category：workspace / sensitive / self_tamper
 - content signals：secret 关键词、私钥特征、base64、PowerShell hidden execution、encoded command
 - canonical target 和可选 file identity
 
-高风险或敏感动作返回 `deny_with_ticket` 并创建 approval。ticket 绑定 workspace、actor、adapter、tool、action type、canonical target、file identity / parent identity 和 content hash。高风险已批准 ticket 只能消费一次。低/中风险已批准 fingerprint 可以在 TTL 内 remembered allow；高风险不能变成长期静默放行。
+明确危险或禁止的动作可以直接 `deny`。只有需要人工判断的动作才返回 `deny_with_ticket` 并创建 approval。ticket 绑定 workspace、actor、adapter、tool、action type、canonical target、file identity / parent identity 和 content hash。高风险已批准 ticket 只能消费一次，并要求客户端精确重试；低/中风险已批准 fingerprint 可以在 TTL 内 remembered allow，高风险不能变成长期静默放行。
 
 ## 核心模块职责
 
@@ -149,7 +156,7 @@ POST /api/agent-guard/evaluate
 | Policy Engine | YAML 默认策略和 workspace 托管 policy rules |
 | Approval | 人在回路队列、原子 approve/reject、自批保护 |
 | Audit Logs | tool-call status、policy decision、approval status、risk explanation、脱敏 input/output |
-| Secret Resolver | 运行时解析 env-backed `valueRef`；缺失、禁用或未配置时 fail closed |
+| Secret Resolver | GitHub / HTTP / MCP 在审批创建前校验 env-backed `valueRef`，执行时重新解析并注入；缺失、禁用或未配置时 fail closed |
 | Connector Runtime | `database.query`、`github.*`、`http.request`、`mcp_*` 执行 |
 | MCP Inbound | `/mcp` 和 `/mcp/sse` JSON-RPC 入口，进入 `createToolCall` |
 | MCP Outbound | 外部 MCP sync/call，生成受治理的 `mcp_<connector>.<tool>` |
@@ -163,7 +170,7 @@ POST /api/agent-guard/evaluate
 - Agent 或 MCP client 输入不可信。
 - Tool arguments 在 adapter hard validation 之前不可信。
 - 用户托管 policy 可以解释或收紧决策，但不能绕过 SQL guard、repo allowlist、HTTP allowlist、SSRF checks、MCP connector validation、secret resolution 或 rate limit。
-- Secret 不是以明文 secret value 存储在 ATG。当前 Secret 只保存 metadata 和 env `valueRef`，后端只在运行时解析 env 值。
+- Secret 不是以明文 secret value 存储在 ATG。当前 Secret 只保存 metadata 和 env `valueRef`；GitHub / HTTP / MCP 在审批创建前解析引用做 fail-closed 校验，真正执行时重新解析并注入。
 - Audit 是脱敏问责层，不是 raw payload 仓库。
 - OpenTelemetry attribute 不能包含 raw SQL literal、headers、bodies、tokens、MCP session id 或 secret values。
 

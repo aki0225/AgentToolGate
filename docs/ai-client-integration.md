@@ -212,14 +212,14 @@ agenttoolgate.exe hook control live --dir <project> --reason "enable guarded ses
 ```
 
 `hook control` 只切换当前运行时状态；输出中的 `nextUpMode` 表示下一次 `up` 会从
-项目配置读取的模式。服务正常停止后，属于该进程的 control 会自动改为 `off`；若前一个
-`up` 实例仍可达，则恢复到该实例的 control。服务异常退出时保留 `live` / `dry-run`
-和 endpoint，使 Hook 进入离线保守路径并让 `doctor` 明确显示 unreachable。并发
-更新不会被覆盖。
+项目配置读取的模式。服务正常停止后，只有 control 仍与本进程发布内容一致时才会切到
+`off`；若前一个 `up` 实例仍可达，则恢复到该实例的 control。服务异常退出时保留
+`live` / `dry-run` 和 endpoint，使 Hook 进入离线保守路径并让 `doctor` 明确显示
+unreachable。并发更新不会被覆盖。
 
 Codex Full Access 与 Hook 是两套独立机制。Full Access 模式本身不会禁用已加载的 Hook，但这不是充分安全条件。只有项目层已加载、Hook 已启用并信任、ATG 处于 `live`、调用进入受支持的 `PreToolUse` 路径，且 Hook 成功返回有效 `deny` 或退出码 `2` 时，ATG 才会阻断动作。Hook 被禁用或绕过、处于 `off` / `dry-run`，以及未覆盖的工具路径，均不受 ATG 实时阻断。`live` 下无法解析的 Hook 输入会保守拒绝；`off` / `dry-run` 对异常输入保持 no-op。
 
-Codex 当前没有完整的 ask / confirm 体验。需要确认的本地动作会保守 `deny`，在 ATG UI 批准后由客户端精确重试。ATG 仍是 guardrail，不是 OS sandbox。
+Codex 当前没有完整的 ask / confirm 体验。需要确认的本地动作会保守 `deny`，在 ATG UI 批准一次性 ticket 后由客户端精确重试。普通 Tool Registry 审批则由 ATG 后端在批准动作内执行冻结参数，不需要客户端重试。ATG 仍是 guardrail，不是 OS sandbox。
 
 ## 6. 最小 smoke prompts
 
@@ -228,15 +228,15 @@ Codex 当前没有完整的 ask / confirm 体验。需要确认的本地动作�
 1. “列出 AgentToolGate 暴露的 MCP 工具。”
 2. “调用 `mock.echo`，参数 `message=hello from ai client`。”
 3. “触发一个需要 approval 的写操作，例如 HTTP POST 或 GitHub create issue；如果返回 approval_required，请告诉我 approval id，不要当成失败。”
-4. “我在 UI 审批后，请重试或让我到 Audit Logs 查看结果。”
+4. “我在 UI 审批后，请到 Audit Logs 查看后端执行结果，不要重试同一条 Tool Registry 写操作。”
 
 ## 7. 治理语义
 
 - AI client 不应直接持有数据库、GitHub、HTTP、外部 MCP 上游凭据；凭据通过 AgentToolGate Secret / Connector 在后端运行时注入。
 - `mock.echo` 这类低风险读/演示工具可直接成功，并写入 Audit Logs。
 - `approval_required` 表示请求已经进入审批队列，审批前不会执行高风险上游操作。
-- 审批通过后，客户端应重试，或让用户在 AgentToolGate UI / Audit Logs 查看结果。
-- Codex 如果没有原生 ask/defer 交互，就使用“ticket / UI approval / retry”的心智模型，不要把 pending approval 说成成功。
+- 普通 Tool Registry 审批通过后，ATG 后端使用冻结参数执行一次；客户端只需查看 Approvals / Audit Logs，不应重试同一写操作。
+- 只有 Local Action `deny_with_ticket` 在批准后需要客户端携带同一动作指纹精确重试。Codex 没有原生 ask/defer 交互时会先保守拒绝，不要把 pending approval 说成成功。
 
 ## 8. 常见错误排查
 
@@ -245,7 +245,8 @@ Codex 当前没有完整的 ask / confirm 体验。需要确认的本地动作�
 | 连接 `/mcp` 或 `/mcp/sse` 失败 | 确认 `agenttoolgate.exe` 正在运行，端口和 URL 与 doctor 输出一致。 |
 | 工具列表为空 | 确认使用的是 `local-org` workspace，且本地初始化已完成；打开 `/tools` 看工具是否存在。 |
 | 返回 401 / workspace 不对 | local mode 下补 `X-Workspace-Org-Id: local-org`；OIDC 模式需要真实 bearer token，本指南不覆盖。 |
-| 返回 `approval_required` | 这是治理命中，不是失败；去 UI 的 Approvals 审批，再重试或看 Audit Logs。 |
+| Tool Registry 返回 `approval_required` | 这是治理命中，不是失败；去 UI 的 Approvals 审批，ATG 后端会执行冻结参数，再到 Audit Logs 查看结果，不要重试同一写操作。 |
+| Local Action 返回 `deny_with_ticket` | 去 UI 批准一次性 ticket，再由客户端精确重试原动作；ticket 不能复用。 |
 | Codex 无法连接 SSE | 不要用 `codex mcp add --url .../mcp/sse`；优先改用 `--url .../mcp`，旧客户端再用 `mcp-remote` bridge 成 stdio。 |
 | Codex `/hooks` 看不到项目 Hook | 确认从目标项目启动 Codex、用户级配置已信任该项目、项目 `.codex/config.toml` 存在且 `[features] hooks = true`。 |
 | `/hooks` 显示 untrusted / changed | 核对 Hook 定义和当前 Hash；确认来源可信后由用户重新信任，不写死旧 `trusted_hash`。若 `doctor` 单独显示 adapter/Core `modified`，先核对差异；确认覆盖时运行 `init codex --refresh-hooks`，重新运行 `up` 后再审查 Hook trust。 |

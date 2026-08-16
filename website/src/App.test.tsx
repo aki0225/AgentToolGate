@@ -12,7 +12,16 @@ describe("展示站首屏入口", () => {
     expect(html).toContain("Stable v0.4.1");
     expect(html).toContain("/docs/v0.4.1-release-acceptance.md");
     expect(html).toContain("/releases/tag/v0.4.1");
-    expect(html).toContain("发布验收");
+    expect(html).toContain("v0.4.1 发布验收");
+    expect(html).toContain("v0.3.2 / 0126bc2");
+    expect(html).toContain("e809c66 历史快照");
+    expect(html).toContain("Windows <strong>30 passed</strong>");
+    expect(html).toContain("26 passed · 4 skipped");
+    expect(html).toContain("良性中断 W/L");
+    expect(html).toContain("AUTH_MODE=local");
+    expect(html).toContain("DEV_MODE");
+    expect(html.indexOf("init codex")).toBeLessThan(html.indexOf("up --open"));
+    expect(html.indexOf("up --open")).toBeLessThan(html.indexOf("doctor --dir ."));
     expect(html).not.toContain('href="#demo"');
     expect(html).not.toContain(">交互演示</a>");
   });

@@ -367,7 +367,7 @@ DATABASE_URL=postgres://agenttoolgate:agenttoolgate@127.0.0.1:5432/agenttoolgate
 - Claude Code 默认使用 Streamable HTTP endpoint：`http://127.0.0.1:8080/mcp`。
 - 旧客户端需要时才使用 SSE fallback：`http://127.0.0.1:8080/mcp/sse`。
 - local mode 带 `X-Workspace-Org-Id: local-org`。
-- 写操作命中 `approval_required` 时，到本地 Console 审批，再重试或看 Audit Logs。
+- 普通 Tool Registry 写操作命中 `approval_required` 时，到本地 Console 审批；ATG 后端会使用冻结参数执行一次，客户端不要重试同一写操作，直接到 Audit Logs 查看结果。只有 Local Action `deny_with_ticket` 在批准后需要客户端精确重试原动作。
 - 本地模式默认请求者和审批者是同一身份。需要职责分离时，在后端设置至少 24 个字符的 `AGT_LOCAL_REVIEWER_TOKEN`，审批时只在 Console 的“本地独立审批令牌”输入框临时填写；前端不会持久化该值。
 - 审批列表和批准/拒绝响应只返回脱敏摘要及稳定错误，不返回冻结执行参数、原始 Secret、URL 私密部分或底层 Connector 错误。批准后的二次重验证会缩小 TOCTOU 窗口，但不构成 Store 与外部 Connector 的跨系统原子事务。
 - AgentToolGate 是工具治理网关，不是操作系统级强制沙箱；真实危险动作仍要配合最小权限和系统级隔离。
@@ -439,7 +439,7 @@ agenttoolgate.exe guard hook claude --input -
 agenttoolgate.exe guard hook codex --input -
 ```
 
-如果需要覆盖二进制路径，可设置 `AGENTTOOLGATE_EXE`。安装项目文件不等于启用保护。Full Access 模式本身不会禁用已加载的 Hook，但只有项目层已加载、Hook 已启用并信任、控制模式为 `live`、调用进入受支持的 `PreToolUse` 路径，且 Hook 成功返回有效 `deny` 或退出码 `2` 时才会实时阻断。Hook 被绕过、未覆盖工具以及 `off` / `dry-run` 都不受实时阻断；`live` 下无法解析的 Hook 输入会保守拒绝并提示异常输入。Codex Hook Bridge 是 opt-in guardrail，不是 OS sandbox / OS enforcement boundary；后端已支持一次性 `deny_with_ticket`、批准后精确重试和低/中风险 remembered allow；Codex 运行时仍没有完整 ask 交互，需要确认的动作会保守输出 deny，批准后由客户端重试。
+如果需要覆盖二进制路径，可设置 `AGENTTOOLGATE_EXE`。安装项目文件不等于启用保护。Full Access 模式本身不会禁用已加载的 Hook，但只有项目层已加载、Hook 已启用并信任、控制模式为 `live`、调用进入受支持的 `PreToolUse` 路径，且 Hook 成功返回有效 `deny` 或退出码 `2` 时才会实时阻断。Hook 被绕过、未覆盖工具以及 `off` / `dry-run` 都不受实时阻断；`live` 下无法解析的 Hook 输入会保守拒绝并提示异常输入。Codex Hook Bridge 是 opt-in guardrail，不是 OS sandbox / OS enforcement boundary；后端 Agent Guard 已支持一次性 `deny_with_ticket`、批准后精确重试和低/中风险 remembered allow；Codex 运行时仍没有完整 ask 交互，需要确认的本地动作会保守输出 deny，批准后由客户端重试。
 
 ## 备忘
 

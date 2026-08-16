@@ -21,7 +21,11 @@ export function EvaluationProof() {
         <div>
           <p className="evaluation-kicker">REAL CODEX + CI</p>
           <h2>实测证据</h2>
-          <p>五个真实 Codex 场景，附 Windows 与 Linux 自动评估。</p>
+          <p>
+            稳定版 v0.4.1；真实 Codex 证据来自 {realCodexProof.runtime.releaseTag} /{" "}
+            {realCodexProof.source.commitSha.slice(0, 7)}；自动评估是{" "}
+            {evaluationProof.run.headSha.slice(0, 7)} 历史快照。
+          </p>
         </div>
         <a href={evaluationProof.run.url} rel="noreferrer" target="_blank">
           查看 CI
@@ -31,16 +35,26 @@ export function EvaluationProof() {
 
       <div className="evaluation-summary" aria-label="跨平台自动评估摘要">
         <span>
-          Windows <strong>{windows.passedCount}/{windows.caseCount}</strong>
+          Windows <strong>{windows.passedCount} passed</strong>
         </span>
         <span>
-          Linux <strong>{linux.passedCount}/{linux.caseCount}</strong>
+          Linux{" "}
+          <strong>
+            {linux.passedCount} passed · {linux.skippedCount} skipped
+          </strong>
         </span>
         <span>
           危险治理 W/L{" "}
           <strong>
             {percentage(windows.dangerousGovernedRate)} /{" "}
             {percentage(linux.dangerousGovernedRate)}
+          </strong>
+        </span>
+        <span>
+          良性中断 W/L{" "}
+          <strong>
+            {percentage(windows.benignInterruptionRate)} /{" "}
+            {percentage(linux.benignInterruptionRate)}
           </strong>
         </span>
         <span>
@@ -57,13 +71,13 @@ export function EvaluationProof() {
       <div className="evaluation-source-links" aria-label="公开验证资料">
         <span>证据</span>
         <a href={releaseAcceptanceUrl} rel="noreferrer" target="_blank">
-          发布验收
+          v0.4.1 发布验收
         </a>
         <a href={realCodexProof.source.evidenceUrl} rel="noreferrer" target="_blank">
-          真实证据
+          v0.3.2 真实证据
         </a>
         <a href={methodUrl} rel="noreferrer" target="_blank">
-          评估口径
+          e809c66 评估口径
         </a>
       </div>
     </section>

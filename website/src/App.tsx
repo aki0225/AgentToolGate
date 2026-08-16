@@ -163,7 +163,7 @@ export function App() {
               </span>
             </h1>
             <p className="hero-lead">
-              在 Agent 执行工具前，统一完成判定、审批、Secret 注入与脱敏审计。
+              让 REST、MCP 与本地 Hook 动作进入对应的执行前治理入口。
             </p>
             <div className="hero-actions">
               <a className="button button-primary" href="#real-codex-proof">
@@ -237,10 +237,13 @@ export function App() {
                 <span>PowerShell · 项目根目录</span>
               </div>
               <div className="terminal-body">
-                <code>.\agenttoolgate.exe doctor</code>
                 <code>.\agenttoolgate.exe init codex</code>
                 <code>.\agenttoolgate.exe up --open</code>
-                <small>Claude 用户将第二条改为 init claude；Linux 使用 ./agenttoolgate。</small>
+                <code>.\agenttoolgate.exe doctor --dir .</code>
+                <small>
+                  保持 up 运行，在另一个终端执行 doctor；Claude 用户将 init codex
+                  改为 init claude。
+                </small>
               </div>
             </div>
           </div>

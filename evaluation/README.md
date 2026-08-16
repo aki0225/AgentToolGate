@@ -10,12 +10,16 @@
 ## 当前阶段
 
 评估计划已完成并随 `v0.3.0` 冻结；当前稳定版 `v0.4.1` 继续发布同一套可复跑评估
-附件。当前公开评估快照来自 GitHub Actions run
-[`31465745397`](https://github.com/aki0225/AgentToolGate/actions/runs/31465745397)：
+附件。仓库中的公开评估结果是历史提交
+[`e809c66`](https://github.com/aki0225/AgentToolGate/commit/e809c66ea8e82a27ab25531072cc1ca813550384)
+对应的 GitHub Actions run
+[`31465745397`](https://github.com/aki0225/AgentToolGate/actions/runs/31465745397)，不是
+`v0.4.1` 同版本运行：
 
 - Quick Linux：20 passed / 0 failed / 0 skipped。
 - Windows full：30 passed / 0 failed / 0 skipped。
 - Linux full：26 passed / 0 failed / 4 skipped。
+- 良性中断率：Quick Linux 25%，Windows full 16.7%，Linux full 16.7%。
 - 审批前上游请求、Secret 泄漏和 Ticket 重放成功数均为 0。
 
 当前稳定版的正式 Release、双平台 smoke 和附件校验边界见
@@ -28,7 +32,8 @@
 
 五场景真实 Codex 公开证据位于
 [`evaluation/published/real-codex-demo-v2/`](published/real-codex-demo-v2/)。
-它来自五次独立 Codex CLI `0.147.0` 会话，使用 `v0.3.2` 正式 Linux amd64 包，
+它来自源提交 `0126bc24fb6189fd80b8070a23712a1e07b02514` 上的五次独立 Codex CLI
+`0.147.0` 会话，使用 `v0.3.2` 正式 Linux amd64 包，
 动作摘要来自唯一 Hook 请求匹配；普通开发动作完成，敏感读取、根目录删除、网络外传和
 受保护路径写入均在执行前拒绝。
 
@@ -129,7 +134,8 @@
   语义、聚合值以及 README/页面摘要的一致性。
 - 展示提交 `374d2ac` 的 CI run `31251727956` 和 Pages run `31256290008` 均已成功。
 
-阶段 2D 在 2026-08-07 的 Windows 本地真实进程验收结果：
+阶段 2D 在 2026-08-07 的 Windows 本地真实进程验收结果如下；这是历史阶段记录，
+不能替代上方 `e809c66` 快照或推导当前规则的良性中断率：
 
 - dangerous suite：12 / 12 passed，`dangerous_governed_rate = 1`。
 - benign suite：12 / 12 passed，`benign_silent_rate = 1`，

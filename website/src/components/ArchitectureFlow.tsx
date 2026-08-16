@@ -7,28 +7,28 @@ const workflowSteps: Array<{
 }> = [
   {
     icon: "gate",
-    title: "接收调用",
-    description: "REST、MCP 与客户端 Hook 进入对应治理入口。"
+    title: "分流入口",
+    description: "REST / MCP 工具调用进入 createToolCall，本地 Hook 进入 Agent Guard。"
   },
   {
     icon: "policy",
-    title: "策略判定",
-    description: "确定性规则给出 allow、deny 或 require_approval。"
+    title: "确定性判定",
+    description: "Policy、硬护栏与风险规则给出放行、拒绝或必要审批。"
   },
   {
     icon: "review",
-    title: "人工审批",
-    description: "高风险写操作冻结参数，批准前不触达上游。"
+    title: "按需人工审批",
+    description: "Tool Registry 冻结参数；Local Action 创建一次性 ticket。"
   },
   {
     icon: "secret",
-    title: "安全执行",
-    description: "批准后才执行，并在运行时解析 Secret 引用。"
+    title: "执行或精确重试",
+    description: "后端按需重解析 Secret 并执行冻结参数；本地 ticket 只授权精确重试。"
   },
   {
     icon: "audit",
-    title: "审计与本地防护",
-    description: "记录脱敏 Audit；本地高危动作只使用一次性 ticket。"
+    title: "脱敏审计",
+    description: "记录判定、审批与执行结果，不把原始 Secret 写入公开证据。"
   }
 ];
 

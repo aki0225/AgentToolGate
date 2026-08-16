@@ -5,19 +5,19 @@ import { Icon } from "./Icon";
 const pipelineStages = [
   {
     name: "Agent Request",
-    detail: "Codex · Claude · MCP"
+    detail: "REST · MCP · Hook"
   },
   {
-    name: "Policy",
-    detail: "allow · deny · approval"
+    name: "Guardrails",
+    detail: "Policy · 硬护栏"
   },
   {
-    name: "Approval",
-    detail: "高风险先暂停"
+    name: "Decision",
+    detail: "放行 · 拒绝 · 必要审批"
   },
   {
-    name: "Runtime",
-    detail: "批准后才执行"
+    name: "Runtime / Retry",
+    detail: "后端执行 · 本地精确重试"
   },
   {
     name: "Audit",
@@ -31,7 +31,7 @@ export function HeroPipeline() {
       <div className="pipeline-heading">
         <div>
           <span>治理路径</span>
-          <h2 id="hero-pipeline-title">一次调用，五个检查点</h2>
+          <h2 id="hero-pipeline-title">请求进入对应治理入口</h2>
         </div>
         <Icon name="gate" />
       </div>

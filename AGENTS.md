@@ -4,7 +4,7 @@
 
 ## 项目一句话
 
-AgentToolGate(ATG)是跑在本地的 AI Agent 工具调用治理网关:工具调用在真正执行之前,先过 policy、审批、密钥注入和审计。
+AgentToolGate(ATG)是跑在本地的 AI Agent 工具调用治理网关:REST/MCP 工具调用与本地 Hook 动作分别进入对应治理入口,按需经过 policy、硬护栏、审批和 Secret 解析,并留下脱敏审计。
 
 ## 目录地图
 

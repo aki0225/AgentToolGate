@@ -1,15 +1,15 @@
 # MCP 治理
 
-MCP 是 AgentToolGate 的一等治理面，不是附带功能，也不是旁路。ATG 同时治理 inbound MCP client 和 outbound MCP connector，并让两者都进入和 REST tool call 一致的 policy、approval、secret、rate limit、audit 链路。
+MCP 是 AgentToolGate 的一等治理面，不是附带功能，也不是工具调用旁路。MCP Inbound 的 `tools/call` 和同步后的 MCP Outbound 工具调用都会进入与 REST tool call 相同的治理链；Connector sync 本身则是独立的控制面操作。
 
 ## MCP 在 ATG 里的角色
 
 MCP 有两个方向：
 
 - **MCP Inbound**：AI client 把 ATG 当成 MCP Server，并调用 ATG 暴露的工具。
-- **MCP Outbound**：ATG 把外部 MCP Server 当成 Connector，同步其 remote tools，再作为本地工具治理调用。
+- **MCP Outbound**：ATG 把外部 MCP Server 当成 Connector，由控制面同步其 remote tools，再作为本地工具治理调用。
 
-两个方向都保持 workspace-scoped、auditable，并受 policy / approval / secret / rate-limit 控制。
+MCP Inbound 和同步后的 `mcp_<connector>.<tool>` 调用保持 workspace-scoped、auditable，并受 policy / approval / secret / rate-limit 控制。同步操作不使用这条 Tool Call 链。
 
 ## MCP Inbound：`/mcp` 和 `/mcp/sse`
 
@@ -49,9 +49,19 @@ Inbound 请求必须是单个 JSON 对象，拒绝尾随 JSON。`/mcp` 与 `/mcp
 请求和生成的 JSON-RPC 响应都限制为 1 MiB；超限响应会替换为稳定的内部错误，不把
 部分结果继续写给客户端。
 
+## Connector Sync：控制面操作
+
+`POST /api/connectors/{id}/sync` 只允许 `owner/admin`。它不调用 `createToolCall`，
+也不进入 Tool Call policy、approval、rate limit 或 Audit 链；其职责是校验 Connector、
+解析同步所需的 Secret、发现远端工具，并原子更新 Tool Registry。同步阶段仍会执行
+workspace 隔离、部署级 host ceiling、SSRF、payload 上限和响应脱敏等硬校验。
+
+只有同步完成后的 `mcp_<connector>.<tool>` 被实际调用时，才进入完整治理链。
+
 ## MCP Outbound：`mcp_<connector>.<tool>`
 
-外部 MCP Server 配置为 `type=mcp` Connector。当前 outbound 实现支持旧版 HTTP + SSE transport。同步流程包括：
+外部 MCP Server 配置为 `type=mcp` Connector。当前 outbound 配置只接受
+`transport=sse`，实现旧式 SSE transport over HTTP(S)。同步流程包括：
 
 - 校验 connector config。
 - 解析 `headerSecretRefs` 指向的 workspace Secret，再从 Secret 的 env-backed `valueRef` 读取后端运行时值。
@@ -122,13 +132,13 @@ MCP Connector config 示例：
 - SSE 单行限制 64 KiB，单事件、POST 请求、POST 响应和 JSON-RPC result 均限制
   1 MiB；单次最多同步 256 个工具，单个 input schema 限制 64 KiB。
 - JSON-RPC 响应必须是 `2.0`、ID 必须匹配当前请求，且 result/error 必须二选一。
-- 后端只在 sync/call 执行时解析 env value。
+- sync 会解析完成远端发现所需的 Secret；工具调用在审批创建前解析引用做 fail-closed 校验，真正执行时再次解析并注入。
 - Secret 缺失、禁用或后端 runtime env 未配置时 fail closed，不触达外部 MCP Server。
 - 解析后的 secret value 不进入 API response、audit、log、telemetry 或 frontend state。
 
 对于 write/unknown/destructive MCP 工具，approval 创建在 outbound `tools/call` 之前。审批成功前，外部 MCP Server 不会收到真实调用。
 
-批准动作完成状态转换后，后端会在实际调用 Connector 前再次读取当前工具、策略和冻结参数。二次重验证失败时不会触达上游，工具调用标记为失败并清空冻结执行参数。该检查缩小了审批与执行之间的 TOCTOU 窗口，但不是 Store 与外部 Connector 之间的跨系统原子事务。
+批准动作完成状态转换后，后端会在同一批准请求中再次读取当前工具、策略和冻结参数，再执行 Connector；客户端不应重试同一工具调用。二次重验证失败时不会触达上游，工具调用标记为失败并清空冻结执行参数。该检查缩小了审批与执行之间的 TOCTOU 窗口，但不是 Store 与外部 Connector 之间的跨系统原子事务。
 
 审批列表和批准/拒绝响应是安全投影：只返回脱敏摘要和稳定错误，不返回冻结执行参数、原始 Secret、URL 私密部分或底层 Connector 错误。
 
@@ -151,7 +161,7 @@ MCP call 可能在触达上游前被 deny 或 failed：
 ## 当前支持范围和限制
 
 - MCP Inbound 支持最小 Streamable HTTP endpoint 和 SSE fallback，不是完整 resumability、OAuth 或 Dynamic Client Registration。
-- MCP Outbound 当前支持 HTTP + SSE，不支持 stdio、OAuth、resources、prompts、sampling 或完整 Streamable HTTP outbound。
+- MCP Outbound 当前只支持旧式 SSE transport over HTTP(S)，配置值只接受 `sse`；不支持 stdio、OAuth、resources、prompts、sampling 或完整 Streamable HTTP outbound。
 - payload 使用固定技术上限，不支持按 connector、workspace 或工具配置分级额度。
 - 显式 allowlist authority 可解析到普通 RFC1918、IPv6 ULA 或 CGNAT 私网地址；
   当前没有独立的公网/私网目标分区策略。

@@ -34,6 +34,8 @@ Linux：
 
 Linux 使用无扩展名二进制和 `/` 路径分隔符。运行目录中必须保留附件自带的
 `.codex/hooks/` 与 `.claude/hooks/`，否则治理不变量会保守失败。
+评估器还要求 `PATH` 中存在 `python` 或 `python3`；当前不会把仅有 Windows
+`py -3` 启动器的环境识别为可用 Python。
 
 ## 运行完整评估
 
