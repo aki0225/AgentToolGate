@@ -245,7 +245,7 @@ function Invoke-EvaluatorRunSmoke {
         Get-Content -LiteralPath $SuitePath |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     ).Count
-    $runToken = [Guid]::NewGuid().ToString("N")
+    $runToken = "{0}-p{1}" -f [DateTimeOffset]::UtcNow.ToString("yyyyMMddTHHmmssfffZ"), $PID
     $runRoot = Join-Path $WorkingRoot $runToken
     $output = Join-Path $runRoot "quick-output"
     $sandbox = Join-Path $runRoot "quick-sandbox"
