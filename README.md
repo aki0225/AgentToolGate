@@ -137,12 +137,13 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 
 - 当前稳定版是 [`v0.3.2`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.3.2)，
   产品提交为 `60dd6dbd5dc7e59defd83cbad5f2508d11f4ec98`。
-- `v0.3.2` 已冻结；此后的 `main` 提交主要维护公开证据、展示站、测试门禁和文档，
-  不会改变已发布附件。
+- `v0.4` 日常使用加固已完成本地候选验收，但在分支 CI、合并和正式 Release 完成前
+  仍不是稳定版，也不会改变 `v0.3.2` 已发布附件。
 - 最新状态、已验证能力和维护边界见
   [当前项目状态](docs/current-status.md)；发布级证据见
   [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)，稳定版、开发门禁和历史
-  快照的统一入口见 [证据索引](docs/evidence-index.md)。
+  快照的统一入口见 [证据索引](docs/evidence-index.md)。`v0.4` 候选的本地验证范围见
+  [v0.4 发布候选验收](docs/v0.4-release-acceptance.md)。
 
 ## 生产部署前必读
 
@@ -218,7 +219,9 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 - Codex hook bridge 没有完整的交互式 ask 体验，需要确认的动作目前按保守 `deny` / no-op 处理，不能当成完整的审批弹窗。
 - ATG 管理的 Connector Secret 目前是 env-backed `valueRef`，不是 KMS、Vault 或云 Secret Manager。
 - GitHub 集成适合 PAT / demo token，不是 GitHub App installation token 的生产闭环。
-- HTTP 的 SSRF guard 还没覆盖 DNS rebinding、解析后私网网段判定和 redirect 后的 DNS 复检。
+- HTTP / MCP 出站已按请求和重定向重新解析 DNS、拒绝 metadata/link-local/非显式
+  loopback，并固定拨号到已校验 IP；但显式 allowlist authority 仍可解析到普通
+  RFC1918、ULA 或 CGNAT 私网地址，因此不是完整的私网隔离或 DNS rebinding 防护。
 - 项目规则只覆盖 Hook 暴露的显式目标及当前可静态解析的已知命令、解释器和脚本后缀；动态命令、未知解释器或绕过 Hook 的进程不保证命中。
 - 当前只有基础 role/workspace 隔离；职责分离、版本化迁移、备份、告警、SLO、灾备和组织级策略发布/回滚等生产化前提都还没有。
 
@@ -233,6 +236,8 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 - [演示剧本](docs/demo-playbook.md)：产品化演示路径。
 - [安全评审说明](docs/security-review-notes.md)：安全评审视角的控制与剩余风险。
 - [Daily Use Acceptance](docs/daily-use-acceptance.md)：日常开发低噪音验收证据。
+- [v0.4 发布候选验收](docs/v0.4-release-acceptance.md)：日常使用加固的本地真实验收、
+  安全边界复核和远端待验证项。
 - [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)：当前稳定版的双平台 Release、正式附件和五场景真实 Codex 证据。
 - [v0.3.1 发布验收](docs/v0.3.1-release-acceptance.md)：上一稳定版的双平台 Release、正式附件和真实 Codex 接入证据。
 - [v0.3.0 发布验收](docs/v0.3.0-release-acceptance.md)：项目保护规则、跨平台评估附件和正式 Release 的可追溯验收记录。
