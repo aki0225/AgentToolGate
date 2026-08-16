@@ -2244,7 +2244,7 @@ func TestPrepareProjectUpDoesNotWriteHookControlBeforeStart(t *testing.T) {
 	if !openBrowser {
 		t.Fatalf("openBrowser should follow project config")
 	}
-	if !strings.Contains(summary, "Hook mode: dry-run") || !strings.Contains(summary, projectConfigPath(project)) {
+	if !strings.Contains(summary, "Hook mode: dry-run") || !strings.Contains(summary, projectConfigPath(expectedRoot)) {
 		t.Fatalf("up summary missing config or dry-run mode:\n%s", summary)
 	}
 	if !strings.Contains(summary, "Codex / Claude Code 默认使用 /mcp") || !strings.Contains(summary, ".agenttoolgate/clients/") {
