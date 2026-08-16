@@ -137,8 +137,11 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 
 - 当前稳定版是 [`v0.3.2`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.3.2)，
   产品提交为 `60dd6dbd5dc7e59defd83cbad5f2508d11f4ec98`。
-- `v0.4` 日常使用加固已完成本地候选验收，但在分支 CI、合并和正式 Release 完成前
-  仍不是稳定版，也不会改变 `v0.3.2` 已发布附件。
+- `v0.4` 日常使用加固的候选实现提交
+  `eac8fe07f55187f7c688f553cc64a81b95d5712a` 已通过
+  [CI run 31933630479](https://github.com/aki0225/AgentToolGate/actions/runs/31933630479)；
+  审查与合并状态以 [PR #22](https://github.com/aki0225/AgentToolGate/pull/22) 为准。
+- 在正式 `v0.4` Release 及附件验收完成前，稳定版仍是 `v0.3.2`。
 - 最新状态、已验证能力和维护边界见
   [当前项目状态](docs/current-status.md)；发布级证据见
   [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)，稳定版、开发门禁和历史

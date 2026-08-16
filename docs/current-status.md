@@ -7,6 +7,13 @@
 > 稳定版产品提交：`60dd6dbd5dc7e59defd83cbad5f2508d11f4ec98`
 >
 > 本页更新前的 `main` 基线：`aa9efe7a95d1c9ad3d33430c0d9ecd2412cf540d`
+>
+> `v0.4` 候选实现提交：`eac8fe07f55187f7c688f553cc64a81b95d5712a`
+>
+> 候选 CI：
+> [`31933630479`](https://github.com/aki0225/AgentToolGate/actions/runs/31933630479)
+>
+> 候选 PR：[`#22`](https://github.com/aki0225/AgentToolGate/pull/22)
 
 ## 1. 版本状态
 
@@ -15,8 +22,10 @@ Release workflow、原生 runner smoke，以及使用正式 Linux 包完成的�
 CLI 验收见 [`v0.3.2 发布验收`](v0.3.2-release-acceptance.md)。
 
 统一的稳定版、开发门禁和历史快照入口见
-[`证据索引`](evidence-index.md)。`v0.4` 日常使用加固已完成本地候选验收，但远端
-CI、分支合并和正式 Release 尚未完成，因此当前稳定版仍是 `v0.3.2`。
+[`证据索引`](evidence-index.md)。`v0.4` 日常使用加固的候选实现已经完成本地验收，
+并通过精确提交对应的远端 CI。审查与合并状态以
+[`PR #22`](https://github.com/aki0225/AgentToolGate/pull/22) 为准；正式 `v0.4`
+Release 尚未创建，因此当前稳定版仍是 `v0.3.2`。
 
 `v0.4` 候选包含本地运行与 Hook 生命周期、Secret/HTTP/MCP 出站边界、项目规则
 校验与解释、审批可用性、跨平台 CI/Release 门禁和发布文档更新。完整本地证据与未完成
@@ -39,6 +48,11 @@ CI、分支合并和正式 Release 尚未完成，因此当前稳定版仍是 `v
 - **v0.4 本地候选**：三套 evaluator、Hook 延迟、独立嵌套仓库 off/dry-run/live、
   Secret/SSRF/MCP 边界、前端 40 项核心 Playwright、展示站 8 项 Playwright、后端
   全量测试、`go vet` 和 Windows amd64 release smoke。
+- **v0.4 远端候选**：实现提交 `eac8fe07f55187f7c688f553cc64a81b95d5712a`
+  的 [CI run 31933630479](https://github.com/aki0225/AgentToolGate/actions/runs/31933630479)
+  已通过 Linux/Windows Go、PostgreSQL、多 Actor、Agent Safety Evaluation、前端、
+  展示站和 Connector smoke；Windows job 还实际执行了本地缓存与 PostgreSQL 生命周期
+  两组 PowerShell 回归。
 
 以下运行记录保留为 `bf0bb9d` 阶段的历史快照，不用于证明当前 `main` 或尚未合入的
 `v0.4` 开发分支：
@@ -59,8 +73,9 @@ CI、分支合并和正式 Release 尚未完成，因此当前稳定版仍是 `v
 
 当前产品加固工作按
 [`v0.4 日常使用加固计划`](v0.4-daily-use-hardening-plan.md)
-执行。本地候选验收已经完成；下一步只处理远端 CI、合并和正式 Release，不继续扩展
-企业级功能。
+执行。候选实现和对应远端 CI 已完成；后续状态以
+[`PR #22`](https://github.com/aki0225/AgentToolGate/pull/22) 与 GitHub Releases
+为准，不继续扩展企业级功能。
 
 历史实施计划和 handoff 只用于保留实施过程与证据来源，不再作为当前开发恢复入口：
 
