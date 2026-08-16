@@ -392,26 +392,26 @@ jobs:
           if ($env:REQUESTED_RELEASE_TAG -ne "v0.4.1") {
             throw "当前证据任务只允许复跑 v0.4.1"
           }
-          $arguments = @(
-            "-Platform", "${{ matrix.platform }}",
-            "-ReleaseTag", $env:REQUESTED_RELEASE_TAG,
-            "-ReleaseCommit", $env:RELEASE_COMMIT,
-            "-ReleaseId", $env:RELEASE_ID,
-            "-AssetId", $env:RELEASE_ASSET_ID,
-            "-AssetSHA256", $env:RELEASE_ASSET_SHA256,
-            "-AssetSizeBytes", $env:RELEASE_ASSET_SIZE,
-            "-ChecksumsSHA256", $env:RELEASE_CHECKSUMS_SHA256,
-            "-WorkingRoot", (Join-Path $env:GITHUB_WORKSPACE ".tmp/release-evaluation/${{ matrix.platform }}"),
-            "-ArtifactRoot", (Join-Path $env:GITHUB_WORKSPACE ".tmp/release-proof-artifacts/${{ matrix.platform }}"),
-            "-WorkflowRunId", $env:GITHUB_RUN_ID,
-            "-WorkflowRunAttempt", $env:GITHUB_RUN_ATTEMPT,
-            "-WorkflowHeadSha", $env:GITHUB_SHA,
-            "-WorkflowRef", $env:GITHUB_REF
-          )
-          if ($env:RELEASE_INCLUDE_QUICK -eq "true") {
-            $arguments += "-IncludeQuick"
+          $parameters = @{
+            Platform = "${{ matrix.platform }}"
+            ReleaseTag = $env:REQUESTED_RELEASE_TAG
+            ReleaseCommit = $env:RELEASE_COMMIT
+            ReleaseId = $env:RELEASE_ID
+            AssetId = $env:RELEASE_ASSET_ID
+            AssetSHA256 = $env:RELEASE_ASSET_SHA256
+            AssetSizeBytes = $env:RELEASE_ASSET_SIZE
+            ChecksumsSHA256 = $env:RELEASE_CHECKSUMS_SHA256
+            WorkingRoot = Join-Path $env:GITHUB_WORKSPACE ".tmp/release-evaluation/${{ matrix.platform }}"
+            ArtifactRoot = Join-Path $env:GITHUB_WORKSPACE ".tmp/release-proof-artifacts/${{ matrix.platform }}"
+            WorkflowRunId = $env:GITHUB_RUN_ID
+            WorkflowRunAttempt = $env:GITHUB_RUN_ATTEMPT
+            WorkflowHeadSha = $env:GITHUB_SHA
+            WorkflowRef = $env:GITHUB_REF
           }
-          & ./scripts/run-release-evaluation.ps1 @arguments
+          if ($env:RELEASE_INCLUDE_QUICK -eq "true") {
+            $parameters.IncludeQuick = $true
+          }
+          & ./scripts/run-release-evaluation.ps1 @parameters
 
       - name: Upload formal Release full Proof Pack
         if: always()
