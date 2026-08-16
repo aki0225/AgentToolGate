@@ -48,7 +48,7 @@ npm run real-codex:check
 - ATG 管理的 Connector Secret 只以 `valueRef` 元数据出现在展示内容中，不包含 Secret value。
 - 录制使用隔离的 synthetic 目标，不包含可执行恶意脚本，也不写入真实 Startup、Hook 或凭据路径。
 - Audit 与 OTel 使用脱敏口径；审批内部暂存冻结参数的事实会明确披露。
-- 证据区分自动评估、`v0.4.0` 正式发布验收、`v0.3.2` 正式包五场景真实 Codex 验收和
+- 证据区分自动评估、`v0.4.1` 正式发布验收、`v0.3.2` 正式包五场景真实 Codex 验收和
   历史双客户端媒体验收，不把不同提交、不同层级的结果混写成同一次验证。
 - 所有外部链接都指向公开 GitHub 源码、文档、CI 或 Release，并使用安全的 `rel` 属性。
 

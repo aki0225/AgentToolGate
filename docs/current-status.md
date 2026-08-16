@@ -2,31 +2,32 @@
 
 > 状态日期：2026-08-16
 >
-> 当前稳定版：`v0.4.0`
+> 当前稳定版：`v0.4.1`
 >
-> 稳定版产品提交：`a059e9f2c9c97fe2afb0cbceead710d623799b5c`
+> 稳定版产品提交：`43868521e56c85cf074e92f572daff49121651b9`
 >
 > 产品 CI：
-> [`31934019158`](https://github.com/aki0225/AgentToolGate/actions/runs/31934019158)
+> [`31946327893`](https://github.com/aki0225/AgentToolGate/actions/runs/31946327893)
 >
 > 正式 Release：
-> [`v0.4.0`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.0)
+> [`v0.4.1`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.1)
 >
 > Release workflow：
-> [`31941172465`](https://github.com/aki0225/AgentToolGate/actions/runs/31941172465)
+> [`31946508434`](https://github.com/aki0225/AgentToolGate/actions/runs/31946508434)
 >
-> 本页更新依据的 `main` 基线：`032cf2f22e0a51e0f685b767d1300d0888f58f59`
+> 本页更新依据的 `main` 基线：`43868521e56c85cf074e92f572daff49121651b9`
 
 ## 1. 版本状态
 
-`v0.4.0` 已正式发布，annotated tag 与产品提交
-`a059e9f2c9c97fe2afb0cbceead710d623799b5c` 保持一致。该提交的 CI、双平台
-Release workflow、原生 runner smoke、正式附件和独立 SHA256 验证见
-[`v0.4.0 发布验收`](v0.4-release-acceptance.md)。
+`v0.4.1` 已正式发布，annotated tag 与产品提交
+`43868521e56c85cf074e92f572daff49121651b9` 保持一致。该补丁完善新安装运行态忽略、
+绝对仓库根目录删除的 `dry-run` 预览和 OTLP 默认配置。产品 CI、双平台 Release
+workflow、正式附件及当前验证边界见
+[`v0.4.1 发布验收`](v0.4.1-release-acceptance.md)。
 
-`PR #23` 与 `PR #24` 在标签创建后只修复 Release 自动化的草稿可见性竞态和
-PowerShell 上传 URI 解析；最终 workflow 从 `main` 运行，但检出、构建和打包的仍是
-标签固定的产品提交，没有移动标签，也没有改变 `v0.4.0` 二进制内容。
+`v0.4.0` 的产品 CI、Release 自动化修复过程和独立附件复核继续保存在
+[`v0.4.0 发布验收`](v0.4-release-acceptance.md)，不回写其历史 run、附件或结论。
+旧标签 `v0.4.0` 未移动。
 
 统一的稳定版、发布门禁和历史快照入口见 [`证据索引`](evidence-index.md)。
 
@@ -47,18 +48,19 @@ PowerShell 上传 URI 解析；最终 workflow 从 `main` 运行，但检出、�
 - **v0.4 本地验收**：三套 evaluator、Hook 延迟、独立嵌套仓库 off/dry-run/live、
   Secret/SSRF/MCP 边界、前端 40 项核心 Playwright、展示站 8 项 Playwright、后端
   全量测试、`go vet` 和 Windows amd64 release smoke。
-- **v0.4 产品 CI**：产品提交 `a059e9f2c9c97fe2afb0cbceead710d623799b5c`
-  的 [CI run 31934019158](https://github.com/aki0225/AgentToolGate/actions/runs/31934019158)
+- **v0.4.1 产品 CI**：产品提交 `43868521e56c85cf074e92f572daff49121651b9`
+  的 [CI run 31946327893](https://github.com/aki0225/AgentToolGate/actions/runs/31946327893)
   已通过 Linux/Windows Go、PostgreSQL、多 Actor、Agent Safety Evaluation、前端、
   展示站和 Connector smoke；Windows job 还实际执行了本地缓存与 PostgreSQL 生命周期
   两组 PowerShell 回归。
-- **v0.4 正式 Release**：
-  [Release run 31941172465](https://github.com/aki0225/AgentToolGate/actions/runs/31941172465)
+- **v0.4.1 正式 Release**：
+  [Release run 31946508434](https://github.com/aki0225/AgentToolGate/actions/runs/31946508434)
   已完成 Windows/Linux 主程序包和评估包构建、smoke、统一 `SHA256SUMS`、附件上传与
-  正式发布；五个附件已重新下载并核对大小、SHA256 和归档可读性。
+  正式发布；GitHub 已发布五个附件的大小和 digest。本轮没有在 workflow 外独立重新
+  下载归档，因此不声称再次验证归档可读性。
 
 以下运行记录保留为 `bf0bb9d` 阶段的历史快照，不用于证明当前 `main` 或
-`v0.4.0` 稳定版：
+`v0.4.1` 稳定版：
 
 - CI run
   [`31818092277`](https://github.com/aki0225/AgentToolGate/actions/runs/31818092277)。
@@ -75,8 +77,8 @@ PowerShell 上传 URI 解析；最终 workflow 从 `main` 运行，但检出、�
 - 在线展示：<https://aki0225.github.io/AgentToolGate/>。
 
 [`v0.4 日常使用加固计划`](v0.4-daily-use-hardening-plan.md) 已完成并形成
-`v0.4.0` 稳定版。后续行为变化应建立新的任务和验收证据，不在该历史计划上继续追加，
-也不借稳定版发布扩展企业级功能。
+`v0.4.0` 基线，随后由 `v0.4.1` 补丁完善新安装运行态与预览一致性。后续行为变化应
+建立新的任务和验收证据，不在该历史计划上继续追加，也不借稳定版发布扩展企业级功能。
 
 历史实施计划和 handoff 只用于保留实施过程与证据来源，不再作为当前开发恢复入口：
 
@@ -103,7 +105,8 @@ PowerShell 上传 URI 解析；最终 workflow 从 `main` 运行，但检出、�
 
 ## 5. 维护规则
 
-- 不移动或覆盖 `v0.4.0`、`v0.3.2`、`v0.3.1`、`v0.3.0`、`v0.2.0` 及其候选标签。
+- 不移动或覆盖 `v0.4.1`、`v0.4.0`、`v0.3.2`、`v0.3.1`、`v0.3.0`、`v0.2.0`
+  及其候选标签。
 - 新增 Guard 规则、客户端、平台或产品行为时，重新生成对应评估与发布证据。
 - 证据、展示或文档维护不能被描述成稳定 Release 产品能力变化。
 - 发现安全缺陷时保留失败证据并单独修复，不通过放宽 expected decision 或跳过校验换取绿色结果。

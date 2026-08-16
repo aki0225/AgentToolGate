@@ -8,7 +8,7 @@
   <a href="https://github.com/aki0225/AgentToolGate/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/aki0225/AgentToolGate/ci.yml?branch=main&style=for-the-badge&label=CI" alt="CI"></a>
   <img src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=for-the-badge&logo=go&logoColor=white" alt="Go 1.26+">
   <img src="https://img.shields.io/badge/Platforms-Windows%20%7C%20Linux-8B5CF6?style=for-the-badge" alt="Windows / Linux">
-  <a href="https://aki0225.github.io/AgentToolGate/"><img src="https://img.shields.io/badge/在线展示-v0.4.0-5EEAD4?style=for-the-badge" alt="AgentToolGate 在线展示"></a>
+  <a href="https://aki0225.github.io/AgentToolGate/"><img src="https://img.shields.io/badge/在线展示-v0.4.1-5EEAD4?style=for-the-badge" alt="AgentToolGate 在线展示"></a>
   <a href="https://github.com/aki0225/AgentToolGate/releases"><img src="https://img.shields.io/badge/Release-amd64%20%2B%20SHA256-22C55E?style=for-the-badge" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-F8FAFC?style=for-the-badge" alt="MIT License"></a>
 </p>
@@ -69,7 +69,7 @@ flowchart TD
 
 从 [GitHub Release](https://github.com/aki0225/AgentToolGate/releases) 下载 Windows amd64 或 Linux amd64 包，解压后在要保护的项目根目录运行：
 
-当前稳定版 `v0.4.0` 已提供 `init codex`、配套 `doctor` 检查、项目 TOML、自包含
+当前稳定版 `v0.4.1` 已提供 `init codex`、配套 `doctor` 检查、项目 TOML、自包含
 Hook 和项目内保护规则。请从 GitHub Release 下载正式包；`v0.3.0` 的旧接入方式只保留用于历史版本。
 
 如果普通 serve 已通过 `agenttoolgate.exe --open` 等方式运行，先在原终端按 `Ctrl+C` 停止，再执行下面的项目初始化流程；否则 `up` 会与原进程争用默认 `8080` 端口。
@@ -135,18 +135,18 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 
 ## 当前状态
 
-- 当前稳定版是 [`v0.4.0`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.0)，
-  产品提交为 `a059e9f2c9c97fe2afb0cbceead710d623799b5c`。
+- 当前稳定版是 [`v0.4.1`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.1)，
+  产品提交为 `43868521e56c85cf074e92f572daff49121651b9`。
 - 产品提交的
-  [CI run 31934019158](https://github.com/aki0225/AgentToolGate/actions/runs/31934019158)
+  [CI run 31946327893](https://github.com/aki0225/AgentToolGate/actions/runs/31946327893)
   和双平台
-  [Release run 31941172465](https://github.com/aki0225/AgentToolGate/actions/runs/31941172465)
+  [Release run 31946508434](https://github.com/aki0225/AgentToolGate/actions/runs/31946508434)
   均已成功。
-- 正式 Release 包含 Windows / Linux 主程序包、对应评估包和 `SHA256SUMS`；下载后的
-  文件大小、SHA256 与归档可读性已独立复核。
+- 正式 Release 包含 Windows / Linux 主程序包、对应评估包和 `SHA256SUMS`；workflow
+  已完成构建、smoke、上传和 GitHub digest 校验。
 - 最新状态、已验证能力和维护边界见
   [当前项目状态](docs/current-status.md)；发布级证据见
-  [v0.4.0 发布验收](docs/v0.4-release-acceptance.md)，稳定版、发布门禁和历史
+  [v0.4.1 发布验收](docs/v0.4.1-release-acceptance.md)，稳定版、发布门禁和历史
   快照的统一入口见 [证据索引](docs/evidence-index.md)。
 
 ## 生产部署前必读
@@ -179,9 +179,11 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 
 - **统一索引**：[证据索引](docs/evidence-index.md)区分当前稳定版证据、现行发布门禁和
   历史版本快照。
-- **正式发布验收**：[v0.4.0 发布验收](docs/v0.4-release-acceptance.md)记录正式标签、
-  产品提交 CI、双平台 Release workflow、五个附件及独立 SHA256 验证。
-- **上一稳定版验收**：[v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)保留
+- **正式发布验收**：[v0.4.1 发布验收](docs/v0.4.1-release-acceptance.md)记录正式标签、
+  产品提交 CI、双平台 Release workflow、五个附件及当前验证边界。
+- **上一版本验收**：[v0.4.0 发布验收](docs/v0.4-release-acceptance.md)保留
+  `v0.4.0` 的产品 CI、双平台 Release 和独立附件验证。
+- **历史稳定版验收**：[v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)保留
   `v0.3.2` 的双平台 Release、正式附件和五场景真实 Codex CLI 验收。
 - **候选发布验收**：[v0.3.1-rc1 发布验收](docs/v0.3.1-rc1-release-acceptance.md)
   记录新版 Codex 项目 Hook 接入、真实附件 SHA256、Windows allow/deny 后置条件和
@@ -193,7 +195,7 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 - **真实客户端验收**：[Codex CLI 与 Claude Code 验收](evaluation/client-acceptance/README.md)
   保存 MCP Audit、Hook 生命周期、文件系统后置条件和同步脱敏录屏。该证据来自历史源提交
   `0ee86ef`，用于证明历史双客户端集成路径，不冒充 `v0.3.1` Release 二进制重跑。
-- **可重复评估**：`v0.4.0` Release 同时提供 Windows / Linux 评估附件，可在
+- **可重复评估**：`v0.4.1` Release 同时提供 Windows / Linux 评估附件，可在
   disposable 目录复跑 quick 或完整 suite。
 
 ## 防护范围
@@ -239,7 +241,8 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 - [演示剧本](docs/demo-playbook.md)：产品化演示路径。
 - [安全评审说明](docs/security-review-notes.md)：安全评审视角的控制与剩余风险。
 - [Daily Use Acceptance](docs/daily-use-acceptance.md)：日常开发低噪音验收证据。
-- [v0.4.0 发布验收](docs/v0.4-release-acceptance.md)：当前稳定版的产品 CI、双平台 Release、正式附件 SHA256 和日常使用加固验收。
+- [v0.4.1 发布验收](docs/v0.4.1-release-acceptance.md)：当前稳定版的产品 CI、双平台 Release、正式附件 digest 和补丁范围。
+- [v0.4.0 发布验收](docs/v0.4-release-acceptance.md)：上一版本的产品 CI、双平台 Release、正式附件 SHA256 和日常使用加固验收。
 - [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)：上一稳定版的双平台 Release、正式附件和五场景真实 Codex 证据。
 - [v0.3.1 发布验收](docs/v0.3.1-release-acceptance.md)：上一稳定版的双平台 Release、正式附件和真实 Codex 接入证据。
 - [v0.3.0 发布验收](docs/v0.3.0-release-acceptance.md)：项目保护规则、跨平台评估附件和正式 Release 的可追溯验收记录。
