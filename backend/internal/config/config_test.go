@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -56,5 +57,35 @@ func TestLoadReadsMCPAllowedHosts(t *testing.T) {
 		cfg.MCPAllowedHosts[0] != "mcp.example.com:443" ||
 		cfg.MCPAllowedHosts[1] != "127.0.0.1:18081" {
 		t.Fatalf("unexpected MCP allowed hosts: %+v", cfg.MCPAllowedHosts)
+	}
+}
+
+func TestLoadDisablesOTLPWhenEndpointUnset(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	if err := os.Unsetenv("OTEL_EXPORTER_OTLP_ENDPOINT"); err != nil {
+		t.Fatalf("unset OTEL exporter endpoint: %v", err)
+	}
+
+	cfg := Load()
+	if cfg.OTelExporterOTLPEndpoint != "" {
+		t.Fatalf("expected OTLP exporter disabled by default, got %q", cfg.OTelExporterOTLPEndpoint)
+	}
+}
+
+func TestLoadDisablesOTLPWhenEndpointEmpty(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	cfg := Load()
+	if cfg.OTelExporterOTLPEndpoint != "" {
+		t.Fatalf("expected empty OTLP exporter endpoint, got %q", cfg.OTelExporterOTLPEndpoint)
+	}
+}
+
+func TestLoadKeepsExplicitOTLPEndpoint(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "127.0.0.1:4317")
+
+	cfg := Load()
+	if cfg.OTelExporterOTLPEndpoint != "127.0.0.1:4317" {
+		t.Fatalf("unexpected OTLP exporter endpoint: %q", cfg.OTelExporterOTLPEndpoint)
 	}
 }

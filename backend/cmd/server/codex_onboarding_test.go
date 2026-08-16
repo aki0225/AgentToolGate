@@ -238,7 +238,7 @@ func TestInitCodexAddsProjectRuntimeToLocalGitExclude(t *testing.T) {
 	project := t.TempDir()
 	initTestGitRepository(t, project)
 	excludePath := testGitExcludePath(t, project)
-	original := "# 用户本地规则\n/local-only.txt\n"
+	original := "# 用户本地规则\n/local-only.txt\n" + projectRuntimeExclude + "\n"
 	if err := os.WriteFile(excludePath, []byte(original), 0o600); err != nil {
 		t.Fatalf("write existing exclude: %v", err)
 	}
@@ -249,8 +249,13 @@ func TestInitCodexAddsProjectRuntimeToLocalGitExclude(t *testing.T) {
 		t.Fatalf("init codex returned %d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 	raw := readTestFile(t, excludePath)
-	if !strings.Contains(raw, original) || strings.Count(raw, projectRuntimeExclude) != 1 {
-		t.Fatalf("local exclude did not preserve content or add one ATG rule:\n%s", raw)
+	if !strings.HasPrefix(raw, original) {
+		t.Fatalf("local exclude did not preserve existing content:\n%s", raw)
+	}
+	for _, pattern := range [...]string{projectRuntimeExclude, projectPendingAuditExclude} {
+		if strings.Count(raw, pattern) != 1 {
+			t.Fatalf("local exclude did not contain exactly one %q rule:\n%s", pattern, raw)
+		}
 	}
 	if err := writeProjectHookControl(project, projectHookModeDryRun); err != nil {
 		t.Fatalf("write hook control: %v", err)
@@ -258,8 +263,9 @@ func TestInitCodexAddsProjectRuntimeToLocalGitExclude(t *testing.T) {
 	if err := ensureProjectRuntimeGitExclude(project); err != nil {
 		t.Fatalf("repeat exclude update: %v", err)
 	}
-	if raw = readTestFile(t, excludePath); strings.Count(raw, projectRuntimeExclude) != 1 {
-		t.Fatalf("local exclude rule is not idempotent:\n%s", raw)
+	repeated := readTestFile(t, excludePath)
+	if repeated != raw {
+		t.Fatalf("local exclude update is not idempotent:\nbefore=%s\nafter=%s", raw, repeated)
 	}
 	assertProjectRuntimeIgnored(t, project)
 }
@@ -1222,19 +1228,26 @@ func testGitExcludePath(t *testing.T, repository string) string {
 
 func assertProjectRuntimeIgnored(t *testing.T, repository string) {
 	t.Helper()
-	control := projectHookControlPath(repository)
-	if err := os.MkdirAll(filepath.Dir(control), 0o700); err != nil {
-		t.Fatalf("create project runtime: %v", err)
+	runtimeFiles := []string{
+		projectHookControlPath(repository),
+		filepath.Join(repository, ".tmp", "local-action-firewall", "pending-audit.jsonl"),
 	}
-	if err := os.WriteFile(control, []byte("{}\n"), 0o600); err != nil {
-		t.Fatalf("write project runtime fixture: %v", err)
+	for _, path := range runtimeFiles {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("create project runtime for %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("write project runtime fixture %s: %v", path, err)
+		}
 	}
 	command := exec.Command("git", "-C", repository, "status", "--porcelain", "--untracked-files=all")
 	output, err := command.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git status: %v: %s", err, output)
 	}
-	if strings.Contains(string(output), ".tmp/agenttoolgate/") {
-		t.Fatalf("project runtime leaked into git status:\n%s", output)
+	for _, pattern := range []string{".tmp/agenttoolgate/", ".tmp/local-action-firewall/"} {
+		if strings.Contains(string(output), pattern) {
+			t.Fatalf("project runtime %q leaked into git status:\n%s", pattern, output)
+		}
 	}
 }

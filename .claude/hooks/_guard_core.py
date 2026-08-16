@@ -302,8 +302,18 @@ def is_project_code_execution(payload: dict[str, Any]) -> bool:
     return any(pattern.search(candidate) for candidate in candidates for pattern in PROJECT_CODE_EXECUTION_PATTERNS)
 
 
+def _is_project_root_delete(repo_root: str, payload: dict[str, Any]) -> bool:
+    working_directory = str(payload.get("workingDirectory") or "")
+    for target, operation in _project_target_operations(payload):
+        if operation != "delete":
+            continue
+        if _project_relative_path(repo_root, target, working_directory) == ".":
+            return True
+    return False
+
+
 def local_guard_preview(repo_root: str, payload: dict[str, Any]) -> dict[str, Any]:
-    high_risk = is_high_risk_offline_target(payload)
+    high_risk = is_high_risk_offline_target(payload) or _is_project_root_delete(repo_root, payload)
     project_code_execution = is_project_code_execution(payload)
     if high_risk:
         decision = "deny"

@@ -121,7 +121,7 @@ agenttoolgate.exe up --dir <project> --open
 agenttoolgate.exe up --dir <project> --port 8090
 ```
 
-`init` 默认不覆盖已有文件，重复执行会跳过用户已修改的文件。项目已有 `.codex/hooks.json` 时，普通 `init codex` / `init all` 会在写入前停止，避免 JSON 与 TOML Hook 同层重复执行；请先人工保留一种来源。继续使用 JSON，或升级后 `doctor` 显示 adapter/Core 为 `modified` 时，先审查差异，再用 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 只安装或刷新 adapter/Core。ATG 会在目标 Git 仓库的本地 `info/exclude` 中按需追加 `/.tmp/agenttoolgate/`，保留用户已有规则且不改项目 `.gitignore`；普通仓库和 linked worktree 都不会把 control、SQLite 或 recovery 暴露到 `git status`。旧运行文件会保留到 `.tmp/agenttoolgate/recovery/` 并打印路径；确认新 Hook 稳定后再手工清理。刷新后重新运行 `up`，才能把非默认 endpoint 和当前 executable 写回 control。`up` 会读取 `.agenttoolgate/config.json`，服务启动成功后写入 repo-local `.tmp/agenttoolgate/hook-control.json`，默认 hook mode 是 `dry-run`。这一步不会修改用户全局 Codex / Claude Code 配置、系统策略或注册表。
+`init` 默认不覆盖已有文件，重复执行会跳过用户已修改的文件。项目已有 `.codex/hooks.json` 时，普通 `init codex` / `init all` 会在写入前停止，避免 JSON 与 TOML Hook 同层重复执行；请先人工保留一种来源。继续使用 JSON，或升级后 `doctor` 显示 adapter/Core 为 `modified` 时，先审查差异，再用 `agenttoolgate.exe init codex --refresh-hooks --dir <project>` 只安装或刷新 adapter/Core。ATG 会在目标 Git 仓库的本地 `info/exclude` 中按需追加 `/.tmp/agenttoolgate/` 和 `/.tmp/local-action-firewall/`，保留用户已有规则且不改项目 `.gitignore`；普通仓库和 linked worktree 都不会把 control、recovery 或 pending audit 暴露到 `git status`。旧运行文件会保留到 `.tmp/agenttoolgate/recovery/` 并打印路径；确认新 Hook 稳定后再手工清理。刷新后重新运行 `up`，才能把非默认 endpoint 和当前 executable 写回 control。`up` 会读取 `.agenttoolgate/config.json`，服务启动成功后写入 repo-local `.tmp/agenttoolgate/hook-control.json`，默认 hook mode 是 `dry-run`。这一步不会修改用户全局 Codex / Claude Code 配置、系统策略或注册表。
 
 `hook control` 支持 `--dir <project>`。同时维护多个仓库时应显式传入目标目录，避免
 依赖当前工作目录：
@@ -224,6 +224,7 @@ go -C backend vet ./...
 - `STORE_DRIVER=memory` 仍可保留给测试或临时演示。
 - `STORE_DRIVER=postgres` 仍可继续用于团队、CI 和 Postgres 集成测试。
 - 后端监听默认只绑定 `127.0.0.1:8080`。
+- OTLP trace export 默认关闭，仅在显式配置 `OTEL_EXPORTER_OTLP_ENDPOINT` 时启用。
 - `--open` 会在服务启动后打开默认浏览器。
 
 ## 端口和地址

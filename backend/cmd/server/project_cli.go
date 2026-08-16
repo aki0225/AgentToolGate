@@ -21,17 +21,18 @@ import (
 )
 
 const (
-	projectInitModeAll    = "all"
-	projectInitModeCodex  = "codex"
-	projectInitModeClaude = "claude"
-	projectHookModeOff    = "off"
-	projectHookModeDryRun = "dry-run"
-	projectHookModeLive   = "live"
-	maxProjectConfigSize  = 64 << 10
-	projectRuntimeExclude = "/.tmp/agenttoolgate/"
-	codexUnixHookCommand  = `python3 "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
-	codexWinHookCommand   = `python "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
-	codexWinPyHookCommand = `py -3 "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
+	projectInitModeAll         = "all"
+	projectInitModeCodex       = "codex"
+	projectInitModeClaude      = "claude"
+	projectHookModeOff         = "off"
+	projectHookModeDryRun      = "dry-run"
+	projectHookModeLive        = "live"
+	maxProjectConfigSize       = 64 << 10
+	projectRuntimeExclude      = "/.tmp/agenttoolgate/"
+	projectPendingAuditExclude = "/.tmp/local-action-firewall/"
+	codexUnixHookCommand       = `python3 "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
+	codexWinHookCommand        = `python "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
+	codexWinPyHookCommand      = `py -3 "$(git rev-parse --show-toplevel)/.codex/hooks/agent-guard-pretool.py"`
 )
 
 type projectRunConfig struct {
@@ -245,7 +246,13 @@ func ensureProjectRuntimeGitExclude(root string) error {
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("读取 Git 本地 exclude 失败：%w", err)
 	}
-	if gitExcludeContainsPattern(raw, projectRuntimeExclude) {
+	missing := make([]string, 0, 2)
+	for _, pattern := range [...]string{projectRuntimeExclude, projectPendingAuditExclude} {
+		if !gitExcludeContainsPattern(raw, pattern) {
+			missing = append(missing, pattern)
+		}
+	}
+	if len(missing) == 0 {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -258,7 +265,9 @@ func ensureProjectRuntimeGitExclude(root string) error {
 	if len(updated) > 0 && updated[len(updated)-1] != '\n' {
 		updated = append(updated, '\n')
 	}
-	updated = append(updated, []byte(projectRuntimeExclude+"\n")...)
+	for _, pattern := range missing {
+		updated = append(updated, []byte(pattern+"\n")...)
+	}
 	if err := writeFileAtomicallyOutsideProject(path, updated, 0o600); err != nil {
 		return fmt.Errorf("写入 Git 本地 exclude 失败：%w", err)
 	}

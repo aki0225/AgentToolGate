@@ -82,7 +82,7 @@ func Load() Config {
 		RateLimitIdleTimeoutSec:    parsePositiveInt(getEnv("RATE_LIMIT_IDLE_TIMEOUT_SEC", "600"), 600),
 		PolicyConfigPath:           getEnv("POLICY_CONFIG_PATH", "configs/policies.yaml"),
 		PolicyReloadIntervalMs:     parsePositiveInt(getEnv("POLICY_RELOAD_INTERVAL_MS", "5000"), 5000),
-		OTelExporterOTLPEndpoint:   getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317"),
+		OTelExporterOTLPEndpoint:   getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 		AuthMode:                   strings.ToLower(getEnv("AUTH_MODE", "")),
 		OIDCIssuerURL:              getEnv("OIDC_ISSUER_URL", ""),
 		OIDCClientID:               getEnv("OIDC_CLIENT_ID", ""),
