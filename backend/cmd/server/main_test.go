@@ -2234,7 +2234,7 @@ func TestPrepareProjectUpDoesNotWriteHookControlBeforeStart(t *testing.T) {
 	if cfg.Port != "18082" || cfg.DefaultWorkspaceOrgID != "demo-org" || cfg.DefaultWorkspaceSlug != "demo" {
 		t.Fatalf("project config not applied: %+v", cfg)
 	}
-	expectedRoot, err := filepath.Abs(project)
+	expectedRoot, err := resolveProjectRoot(project)
 	if err != nil {
 		t.Fatalf("resolve expected project root: %v", err)
 	}
@@ -2317,14 +2317,14 @@ func TestRunUpFailureRestoresPreviousHookControl(t *testing.T) {
 	}
 	// 使用系统分配的临时端口，确保本测试稳定进入启动后钩子失败与清理分支。
 	cfg.Port = "0"
-	if err := writeProjectHookControlAtPath(repo, hookControlPath, projectHookModeOff); err != nil {
+	if err := writeProjectHookControlAtPath(cfg.ProjectRoot, hookControlPath, projectHookModeOff); err != nil {
 		t.Fatalf("write previous hook control: %v", err)
 	}
 	previous, err := os.ReadFile(hookControlPath)
 	if err != nil {
 		t.Fatalf("read previous hook control: %v", err)
 	}
-	activation := projectHookControlActivation{root: repo, path: hookControlPath, mode: hookControlMode}
+	activation := projectHookControlActivation{root: cfg.ProjectRoot, path: hookControlPath, mode: hookControlMode}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

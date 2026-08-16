@@ -321,10 +321,14 @@ func TestInitCodexRefreshHooksReplacesOnlyRuntimeFiles(t *testing.T) {
 	if code := run([]string{"init", "codex", "--refresh-hooks", "--dir", project}, &stdout, &stderr); code != 0 {
 		t.Fatalf("refresh hooks returned %d stderr=%s", code, stderr.String())
 	}
+	resolvedProject, err := resolveProjectRoot(project)
+	if err != nil {
+		t.Fatalf("resolve project root: %v", err)
+	}
 	bundle := hookassets.Codex()
 	for path, want := range map[string][]byte{
-		projectCodexHookAdapterPath(project): bundle.Adapter,
-		projectCodexHookCorePath(project):    bundle.Core,
+		projectCodexHookAdapterPath(resolvedProject): bundle.Adapter,
+		projectCodexHookCorePath(resolvedProject):    bundle.Core,
 	} {
 		got, err := os.ReadFile(path)
 		if err != nil {

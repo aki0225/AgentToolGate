@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,7 +14,61 @@ import (
 	"agenttoolgate/backend/internal/model"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
+
+type postgresSchemaLockQueryStub struct {
+	results []bool
+	queries []string
+}
+
+func (s *postgresSchemaLockQueryStub) QueryRow(_ context.Context, query string, _ ...any) pgx.Row {
+	s.queries = append(s.queries, strings.TrimSpace(query))
+	if len(s.results) == 0 {
+		return postgresSchemaLockRow{err: errors.New("unexpected schema lock query")}
+	}
+	acquired := s.results[0]
+	s.results = s.results[1:]
+	return postgresSchemaLockRow{acquired: acquired}
+}
+
+type postgresSchemaLockRow struct {
+	acquired bool
+	err      error
+}
+
+func (r postgresSchemaLockRow) Scan(destinations ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	if len(destinations) != 1 {
+		return fmt.Errorf("unexpected scan destination count %d", len(destinations))
+	}
+	acquired, ok := destinations[0].(*bool)
+	if !ok {
+		return errors.New("schema lock scan destination must be bool")
+	}
+	*acquired = r.acquired
+	return nil
+}
+
+func TestAcquirePostgresSchemaAdvisoryLockUsesNonBlockingRetry(t *testing.T) {
+	stub := &postgresSchemaLockQueryStub{results: []bool{false, true}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := acquirePostgresSchemaAdvisoryLock(ctx, stub); err != nil {
+		t.Fatalf("acquire schema lock: %v", err)
+	}
+	if len(stub.queries) != 2 {
+		t.Fatalf("expected two non-blocking lock attempts, got %d", len(stub.queries))
+	}
+	for _, query := range stub.queries {
+		if query != `SELECT pg_try_advisory_lock($1)` {
+			t.Fatalf("schema lock must use non-blocking advisory lock, got %q", query)
+		}
+	}
+}
 
 func TestPostgresStoreConcurrentSchemaInitialization(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")

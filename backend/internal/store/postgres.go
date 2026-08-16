@@ -70,9 +70,16 @@ const (
 	`
 )
 
-const postgresSchemaAdvisoryLockKey int64 = 41740320240609
+const (
+	postgresSchemaAdvisoryLockKey           int64 = 41740320240609
+	postgresSchemaAdvisoryLockRetryInterval       = 25 * time.Millisecond
+)
 
 var postgresSchemaInitMu sync.Mutex
+
+type postgresSchemaLockQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
 
 func NewPostgresStore(ctx context.Context, dsn string) (*PostgresStore, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
@@ -1017,8 +1024,8 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) (err error) {
 	}
 	defer conn.Release()
 
-	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, postgresSchemaAdvisoryLockKey); err != nil {
-		return fmt.Errorf("acquire postgres schema advisory lock: %w", err)
+	if err := acquirePostgresSchemaAdvisoryLock(ctx, conn); err != nil {
+		return err
 	}
 	defer func() {
 		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1201,6 +1208,26 @@ func (s *PostgresStore) ensureSchema(ctx context.Context) (err error) {
 		return fmt.Errorf("backfill postgres approval call id: %w", err)
 	}
 	return nil
+}
+
+func acquirePostgresSchemaAdvisoryLock(ctx context.Context, conn postgresSchemaLockQuerier) error {
+	retry := time.NewTicker(postgresSchemaAdvisoryLockRetryInterval)
+	defer retry.Stop()
+
+	for {
+		var acquired bool
+		if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, postgresSchemaAdvisoryLockKey).Scan(&acquired); err != nil {
+			return fmt.Errorf("acquire postgres schema advisory lock: %w", err)
+		}
+		if acquired {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("acquire postgres schema advisory lock: %w", ctx.Err())
+		case <-retry.C:
+		}
+	}
 }
 
 func ensurePostgresIndexConcurrently(ctx context.Context, conn *pgxpool.Conn, indexName, statement string) error {

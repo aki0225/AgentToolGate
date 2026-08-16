@@ -30,7 +30,7 @@ func TestPrepareProjectUpUsesResolvedDirectoryAsTrustedRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare project up: %v", err)
 	}
-	expected, err := filepath.Abs(project)
+	expected, err := resolveProjectRoot(project)
 	if err != nil {
 		t.Fatalf("resolve project path: %v", err)
 	}

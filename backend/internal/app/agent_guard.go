@@ -406,7 +406,7 @@ func (a *App) agentGuardProjectProtectionFloor(req agentGuardEvaluateRequest, de
 		return guard.Decision{}, false, badRequest("networkUrl must match target")
 	}
 
-	trustedRoot := normalizeAgentGuardTarget(a.cfg.ProjectRoot)
+	trustedRoot := canonicalAgentGuardWorkspaceRoot(a.cfg.ProjectRoot)
 	if trustedRoot == "" {
 		return guard.Decision{}, false, nil
 	}
