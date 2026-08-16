@@ -243,8 +243,8 @@ ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex 
 - [Daily Use Acceptance](docs/daily-use-acceptance.md)：日常开发低噪音验收证据。
 - [v0.4.1 发布验收](docs/v0.4.1-release-acceptance.md)：当前稳定版的产品 CI、双平台 Release、正式附件 digest 和补丁范围。
 - [v0.4.0 发布验收](docs/v0.4-release-acceptance.md)：上一版本的产品 CI、双平台 Release、正式附件 SHA256 和日常使用加固验收。
-- [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)：上一稳定版的双平台 Release、正式附件和五场景真实 Codex 证据。
-- [v0.3.1 发布验收](docs/v0.3.1-release-acceptance.md)：上一稳定版的双平台 Release、正式附件和真实 Codex 接入证据。
+- [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)：历史稳定版的双平台 Release、正式附件和五场景真实 Codex 证据。
+- [v0.3.1 发布验收](docs/v0.3.1-release-acceptance.md)：历史稳定版的双平台 Release、正式附件和真实 Codex 接入证据。
 - [v0.3.0 发布验收](docs/v0.3.0-release-acceptance.md)：项目保护规则、跨平台评估附件和正式 Release 的可追溯验收记录。
 - [v0.3.1-rc1 发布验收](docs/v0.3.1-rc1-release-acceptance.md)：Codex 项目 Hook 接入候选版的真实下载、运行和评估记录。
 - [Agent Guard Synthetic Demo](examples/agent-demo/windows-startup-poisoning.md)：Windows Startup poisoning synthetic demo。
