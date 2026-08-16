@@ -5,31 +5,31 @@
 
 ## 1. 当前稳定版
 
-当前稳定版是 [`v0.4.0`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.0)，
-产品提交为 `a059e9f2c9c97fe2afb0cbceead710d623799b5c`。
+当前稳定版是 [`v0.4.1`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.1)，
+产品提交为 `43868521e56c85cf074e92f572daff49121651b9`。
 
-- [v0.4.0 正式发布验收](v0.4-release-acceptance.md)：产品提交 CI、双平台 Release、
-  正式附件、独立 SHA256 与归档可读性验证。
+- [v0.4.1 正式发布验收](v0.4.1-release-acceptance.md)：产品提交 CI、双平台
+  Release、正式附件 digest、补丁范围和独立下载验证边界。
 - [当前项目状态](current-status.md)：稳定版本、现行能力、限制和维护规则。
 - [公开安全评估快照](../evaluation/published/agent-safety-proof.json)：逐 case
   Windows / Linux 评估结果及来源 Artifact。
 - [真实 Codex 五场景公开证据](../evaluation/published/real-codex-demo-v2/)：
   脱敏录制、Audit、Hook trust、后置条件、清理结果和 manifest。
 
-## 2. v0.4 发布证据与门禁
+## 2. v0.4.1 发布证据与门禁
 
 - 产品提交 CI：
-  [`31934019158`](https://github.com/aki0225/AgentToolGate/actions/runs/31934019158)，
+  [`31946327893`](https://github.com/aki0225/AgentToolGate/actions/runs/31946327893)，
   `completed/success`。
 - 正式 Release workflow：
-  [`31941172465`](https://github.com/aki0225/AgentToolGate/actions/runs/31941172465)，
+  [`31946508434`](https://github.com/aki0225/AgentToolGate/actions/runs/31946508434)，
   Windows/Linux 构建、smoke、附件上传和发布全部成功。
 - 正式 Release：
-  [`v0.4.0`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.0)，
+  [`v0.4.1`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.1)，
   `draft=false`、`prerelease=false`，`releases/latest` 指向该版本。
 - 正式附件：Windows/Linux 主程序包、Windows/Linux 评估包和 `SHA256SUMS`。
-  五个附件已下载到仓库忽略目录独立复核；文件大小和 GitHub digest 一致，四个归档的
-  SHA256 同时匹配 `SHA256SUMS`，且归档目录可读取。
+  GitHub 已发布五个附件的文件大小和 digest。本轮未在 workflow 外独立重新下载四个
+  归档，因此不把归档可读性写成当前版本的独立验证结论。
 
 Release workflow 只允许带 `v` 前缀的严格 SemVer 标签。tag push 会从标签解析预期
 提交；手动触发则必须显式提供完整 commit SHA。两种路径都会校验标签提交与实际打包
@@ -43,6 +43,7 @@ Release job 先拒绝既有同标签 Release，再创建本轮 draft，按返回
 
 以下文档记录各版本冻结时的事实，不代表它们仍是当前稳定版：
 
+- [v0.4.0 正式发布验收](v0.4-release-acceptance.md)。
 - [v0.3.2 正式发布与真实 Codex 验收](v0.3.2-release-acceptance.md)。
 - [v0.3.1 正式发布验收](v0.3.1-release-acceptance.md)。
 - [v0.3.1-rc1 候选发布验收](v0.3.1-rc1-release-acceptance.md)。

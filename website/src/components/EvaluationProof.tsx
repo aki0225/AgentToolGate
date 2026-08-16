@@ -5,7 +5,7 @@ import { RealCodexProof } from "./RealCodexProof";
 
 const githubRoot = "https://github.com/aki0225/AgentToolGate";
 const methodUrl = `${githubRoot}/blob/main/evaluation/README.md`;
-const releaseAcceptanceUrl = `${githubRoot}/blob/main/docs/v0.4-release-acceptance.md`;
+const releaseAcceptanceUrl = `${githubRoot}/blob/main/docs/v0.4.1-release-acceptance.md`;
 
 function percentage(value: number) {
   return `${Math.round(value * 100)}%`;
