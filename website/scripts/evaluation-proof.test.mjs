@@ -5,17 +5,23 @@ import { fileURLToPath } from "node:url";
 
 import {
   aggregateMetrics,
+  buildPublicSummary,
   expectedQuickSuites,
   renderReadmeBlock,
   summarizeEvaluation,
-  validateProof
+  validateProof,
+  validateReleaseProof
 } from "./evaluation-proof.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const quickSuitePath = path.resolve(scriptDirectory, "../../evaluation/suites/pr-quick-v1.jsonl");
+const historicalProofPath = path.resolve(
+  scriptDirectory,
+  "../../evaluation/published/agent-safety-proof.json"
+);
 
 function fixture() {
-    const cases = [
+  const cases = [
     {
       id: "dangerous.example",
       suite: "dangerous-actions-v1",
@@ -47,6 +53,82 @@ function fixture() {
       { id: "full-windows", kind: "full", platform: "windows", artifactId: 2, sources: [], cases },
       { id: "full-linux", kind: "full", platform: "linux", artifactId: 3, sources: [], cases }
     ]
+  };
+}
+
+async function releaseFixture() {
+  const historical = JSON.parse(await readFile(historicalProofPath, "utf8"));
+  const runId = 123;
+  const artifactIds = {
+    "quick-linux": 101,
+    "full-windows": 102,
+    "full-linux": 103
+  };
+  return {
+    schemaVersion: "v2",
+    publishedAt: "2026-08-16",
+    subject: {
+      type: "github-release",
+      releaseId: 371316925,
+      releaseTag: "v0.4.1",
+      commitSha: "43868521e56c85cf074e92f572daff49121651b9",
+      releaseUrl: "https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.1",
+      checksums: {
+        name: "SHA256SUMS",
+        sha256: "b203ec978d7da9b4add09c80e41cdef4971be8d590f601131f75012a65763e6e",
+        url: "https://github.com/aki0225/AgentToolGate/releases/download/v0.4.1/SHA256SUMS"
+      },
+      assets: [
+        {
+          platform: "windows",
+          id: 516783373,
+          name: "agenttoolgate-evaluation-windows-amd64.zip",
+          sizeBytes: 29876035,
+          sha256: "cc39b6af9dfde8c9958bdf012d6bfdd9ec7a093b212760557f83e040321da246"
+        },
+        {
+          platform: "linux",
+          id: 516783402,
+          name: "agenttoolgate-evaluation-linux-amd64.tar.gz",
+          sizeBytes: 29129053,
+          sha256: "dcd4d2f85a499036cead94611d7209f9166c29ffbb61fd3431fa4e111216bfbc"
+        }
+      ]
+    },
+    run: {
+      id: runId,
+      attempt: 1,
+      url: `https://github.com/aki0225/AgentToolGate/actions/runs/${runId}`,
+      headSha: "b".repeat(40),
+      ref: "refs/heads/codex/v041-evidence-refresh"
+    },
+    artifacts: [
+      {
+        id: artifactIds["quick-linux"],
+        name: `agent-safety-release-proof-pack-quick-v0.4.1-${runId}`,
+        kind: "quick",
+        platform: "linux",
+        provenanceSha256: "1".repeat(64)
+      },
+      {
+        id: artifactIds["full-windows"],
+        name: `agent-safety-release-proof-pack-full-windows-v0.4.1-${runId}`,
+        kind: "full",
+        platform: "windows",
+        provenanceSha256: "2".repeat(64)
+      },
+      {
+        id: artifactIds["full-linux"],
+        name: `agent-safety-release-proof-pack-full-linux-v0.4.1-${runId}`,
+        kind: "full",
+        platform: "linux",
+        provenanceSha256: "3".repeat(64)
+      }
+    ],
+    evaluations: historical.evaluations.map((evaluation) => ({
+      ...evaluation,
+      artifactId: artifactIds[evaluation.id]
+    }))
   };
 }
 
@@ -124,5 +206,23 @@ describe("公开评估快照", () => {
     expect(block).toContain("GitHub Actions run 123");
     expect(block).toContain("公开评估快照");
     expect(block).toContain("不替代真实 Codex / Claude Code 客户端验收");
+  });
+
+  it("Release 证据绑定正式附件与 workflow provenance", async () => {
+    const proof = await releaseFixture();
+
+    expect(validateReleaseProof(proof)).toBe(proof);
+    expect(buildPublicSummary(proof).subject.releaseTag).toBe("v0.4.1");
+    const block = renderReadmeBlock(proof);
+    expect(block).toContain("v0.4.1");
+    expect(block).toContain("正式评估附件");
+    expect(block).toContain("版本化公开证据");
+  });
+
+  it("拒绝 Release 附件摘要漂移", async () => {
+    const proof = await releaseFixture();
+    proof.subject.assets[0].sha256 = "f".repeat(64);
+
+    expect(() => validateReleaseProof(proof)).toThrow("冻结契约");
   });
 });

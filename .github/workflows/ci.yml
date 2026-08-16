@@ -8,6 +8,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      release_evidence_tag:
+        description: "复跑正式 Release 评估附件；留空则只运行常规手动 CI"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -337,6 +343,99 @@ jobs:
           path: |
             .tmp/ci-proof-packs/full/${{ matrix.platform }}
             .tmp/ci-logs/full/${{ matrix.platform }}
+
+  release-evaluation:
+    name: Release Evaluation (${{ matrix.platform }})
+    if: github.event_name == 'workflow_dispatch' && inputs.release_evidence_tag != ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-amd64
+            proof_platform: windows
+            asset_id: 516783373
+            asset_size: 29876035
+            asset_sha256: cc39b6af9dfde8c9958bdf012d6bfdd9ec7a093b212760557f83e040321da246
+            include_quick: "false"
+          - os: ubuntu-latest
+            platform: linux-amd64
+            proof_platform: linux
+            asset_id: 516783402
+            asset_size: 29129053
+            asset_sha256: dcd4d2f85a499036cead94611d7209f9166c29ffbb61fd3431fa4e111216bfbc
+            include_quick: "true"
+    env:
+      REQUESTED_RELEASE_TAG: ${{ inputs.release_evidence_tag }}
+      RELEASE_COMMIT: 43868521e56c85cf074e92f572daff49121651b9
+      RELEASE_ID: "371316925"
+      RELEASE_CHECKSUMS_SHA256: b203ec978d7da9b4add09c80e41cdef4971be8d590f601131f75012a65763e6e
+      RELEASE_ASSET_ID: ${{ matrix.asset_id }}
+      RELEASE_ASSET_SIZE: ${{ matrix.asset_size }}
+      RELEASE_ASSET_SHA256: ${{ matrix.asset_sha256 }}
+      RELEASE_INCLUDE_QUICK: ${{ matrix.include_quick }}
+    steps:
+      - name: Checkout evidence tooling
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Run formal Release evaluation package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:REQUESTED_RELEASE_TAG -ne "v0.4.1") {
+            throw "当前证据任务只允许复跑 v0.4.1"
+          }
+          $parameters = @{
+            Platform = "${{ matrix.platform }}"
+            ReleaseTag = $env:REQUESTED_RELEASE_TAG
+            ReleaseCommit = $env:RELEASE_COMMIT
+            ReleaseId = $env:RELEASE_ID
+            AssetId = $env:RELEASE_ASSET_ID
+            AssetSHA256 = $env:RELEASE_ASSET_SHA256
+            AssetSizeBytes = $env:RELEASE_ASSET_SIZE
+            ChecksumsSHA256 = $env:RELEASE_CHECKSUMS_SHA256
+            WorkingRoot = Join-Path $env:GITHUB_WORKSPACE ".tmp/release-evaluation/${{ matrix.platform }}"
+            ArtifactRoot = Join-Path $env:GITHUB_WORKSPACE ".tmp/release-proof-artifacts/${{ matrix.platform }}"
+            WorkflowRunId = $env:GITHUB_RUN_ID
+            WorkflowRunAttempt = $env:GITHUB_RUN_ATTEMPT
+            WorkflowHeadSha = $env:GITHUB_SHA
+            WorkflowRef = $env:GITHUB_REF
+          }
+          if ($env:RELEASE_INCLUDE_QUICK -eq "true") {
+            $parameters.IncludeQuick = $true
+          }
+          & ./scripts/run-release-evaluation.ps1 @parameters
+
+      - name: Upload formal Release full Proof Pack
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-safety-release-proof-pack-full-${{ matrix.proof_platform }}-v0.4.1-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            .tmp/release-proof-artifacts/${{ matrix.platform }}/provenance.json
+            .tmp/release-proof-artifacts/${{ matrix.platform }}/ci-proof-packs/full/${{ matrix.proof_platform }}
+            .tmp/release-proof-artifacts/${{ matrix.platform }}/ci-logs/full/${{ matrix.proof_platform }}
+
+      - name: Upload formal Release quick Proof Pack
+        if: always() && matrix.include_quick == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-safety-release-proof-pack-quick-v0.4.1-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            .tmp/release-proof-artifacts/${{ matrix.platform }}/provenance.json
+            .tmp/release-proof-artifacts/${{ matrix.platform }}/ci-proof-packs/quick
+            .tmp/release-proof-artifacts/${{ matrix.platform }}/ci-logs/quick
 
   frontend:
     name: Node

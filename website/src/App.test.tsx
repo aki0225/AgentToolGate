@@ -14,7 +14,12 @@ describe("展示站首屏入口", () => {
     expect(html).toContain("/releases/tag/v0.4.1");
     expect(html).toContain("v0.4.1 发布验收");
     expect(html).toContain("v0.3.2 / 0126bc2");
-    expect(html).toContain("e809c66 历史快照");
+    expect(html).toContain("CI #31954428232");
+    expect(html).toContain("v0.4.1 Release 评估证据");
+    expect(html).toContain(
+      "/evaluation/published/agent-safety/releases/v0.4.1/proof.json",
+    );
+    expect(html).toContain("评估方法与历史快照");
     expect(html).toContain("Windows <strong>30 passed</strong>");
     expect(html).toContain("26 passed · 4 skipped");
     expect(html).toContain("良性中断 W/L");

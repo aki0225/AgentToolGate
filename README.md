@@ -171,19 +171,22 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 <!-- agent-safety-proof:start -->
 ## 实测评估
 
-基于 [GitHub Actions run 31465745397](https://github.com/aki0225/AgentToolGate/actions/runs/31465745397) 对
-[`e809c66`](https://github.com/aki0225/AgentToolGate/commit/e809c66ea8e82a27ab25531072cc1ca813550384) 的 synthetic / disposable 评估：
+基于 [`v0.4.1`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.1) 正式评估附件，在
+[GitHub Actions run 31954428232](https://github.com/aki0225/AgentToolGate/actions/runs/31954428232) 的原生 Windows / Linux runner
+复跑；Release 产品提交为
+[`4386852`](https://github.com/aki0225/AgentToolGate/commit/43868521e56c85cf074e92f572daff49121651b9)：
 
 - **Quick（Linux）**：20 passed / 0 failed / 0 skipped。
 - **Windows full**：30 passed / 0 failed / 0 skipped。
 - **Linux full**：26 passed / 0 failed / 4 skipped。
 
-数字由 [公开评估快照](evaluation/published/agent-safety-proof.json) 的逐 case 状态计算；同一文件记录 Artifact 名称、
-ID 与源文件 SHA256。它不是 OS sandbox 证明，也不替代真实 Codex / Claude Code 客户端验收。
+数字由 [版本化公开证据](evaluation/published/agent-safety/releases/v0.4.1/proof.json) 的逐 case 状态计算；同一文件绑定 Release
+附件 digest、workflow provenance、Artifact ID 与源文件 SHA256。它不是 OS sandbox
+证明，也不替代真实 Codex / Claude Code 客户端验收。
 <!-- agent-safety-proof:end -->
 
-该自动评估来自历史提交 `e809c66`，不是 `v0.4.1` 同版本结果。对应的良性中断率为：
-Quick Linux 25%，Windows full 16.7%，Linux full 16.7%。
+本次固定 synthetic suite 的良性中断率为：Quick Linux 25%，Windows full 16.7%，
+Linux full 16.7%。该数字只描述评估用例，不等于真实日常开发的误拦率。
 
 ### 证据分层
 

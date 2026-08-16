@@ -10,17 +10,22 @@
 ## 当前阶段
 
 评估计划已完成并随 `v0.3.0` 冻结；当前稳定版 `v0.4.1` 继续发布同一套可复跑评估
-附件。仓库中的公开评估结果是历史提交
-[`e809c66`](https://github.com/aki0225/AgentToolGate/commit/e809c66ea8e82a27ab25531072cc1ca813550384)
-对应的 GitHub Actions run
-[`31465745397`](https://github.com/aki0225/AgentToolGate/actions/runs/31465745397)，不是
-`v0.4.1` 同版本运行：
+附件。当前公开结果来自 `v0.4.1` 正式 Release 评估附件，由 GitHub Actions run
+[`31954428232`](https://github.com/aki0225/AgentToolGate/actions/runs/31954428232)
+在原生 Windows / Linux runner 重新下载、校验并运行：
 
 - Quick Linux：20 passed / 0 failed / 0 skipped。
 - Windows full：30 passed / 0 failed / 0 skipped。
 - Linux full：26 passed / 0 failed / 4 skipped。
 - 良性中断率：Quick Linux 25%，Windows full 16.7%，Linux full 16.7%。
 - 审批前上游请求、Secret 泄漏和 Ticket 重放成功数均为 0。
+
+版本化证据位于
+[`evaluation/published/agent-safety/releases/v0.4.1/proof.json`](published/agent-safety/releases/v0.4.1/proof.json)，
+绑定 Release ID、产品提交、正式附件 digest、workflow run/attempt/ref、三份 Artifact
+ID、输入与输出 SHA256 和逐 case 状态。历史 v1 快照
+[`evaluation/published/agent-safety-proof.json`](published/agent-safety-proof.json)
+继续保留，记录提交 `e809c66` 与 run `31465745397`，不回写为当前结果。
 
 当前稳定版的正式 Release、双平台 smoke 和附件校验边界见
 [`docs/v0.4.1-release-acceptance.md`](../docs/v0.4.1-release-acceptance.md)；
@@ -123,11 +128,14 @@
 - Python 3.13、Go cache、二进制、sandbox、日志和 output 都由 workflow 显式配置，运行
   内容位于 runner workspace 的 `.tmp`。
 
-阶段 4B 已发布可追溯公开展示：
+阶段 4B 已发布可追溯公开展示，随后补充正式 Release 证据：
 
-- `evaluation/published/agent-safety-proof.json` 从已核验的 quick、Windows full 和
+- 历史 `evaluation/published/agent-safety-proof.json` 从 quick、Windows full 和
   Linux full Artifact 确定性生成，保留 run、commit、Artifact ID、源 SHA256 和逐 case
   状态。
+- 当前 `evaluation/published/agent-safety/releases/v0.4.1/proof.json` 从正式 Release
+  评估附件复跑 Artifact 确定性生成，额外绑定 Release、附件 digest 和 workflow
+  provenance；历史文件保持原样。
 - README 与 `website/src/data/evaluation-summary.json` 由同一快照派生；Pages 不在
   JSX 中手填评估数字。
 - `website/scripts/evaluation-proof.mjs check` 会复核 provenance、suite 组成、case
@@ -135,7 +143,7 @@
 - 展示提交 `374d2ac` 的 CI run `31251727956` 和 Pages run `31256290008` 均已成功。
 
 阶段 2D 在 2026-08-07 的 Windows 本地真实进程验收结果如下；这是历史阶段记录，
-不能替代上方 `e809c66` 快照或推导当前规则的良性中断率：
+不能替代上方 `v0.4.1` Release 证据或推导当前规则的良性中断率：
 
 - dangerous suite：12 / 12 passed，`dangerous_governed_rate = 1`。
 - benign suite：12 / 12 passed，`benign_silent_rate = 1`，
@@ -181,13 +189,27 @@ cd website
 npm run proof:check
 ```
 
-下载三个已核验 Artifact 后，可在 `website/` 生成公开快照：
+下载三个已核验的历史 Artifact 后，可在 `website/` 重建 v1 快照：
 
 ```powershell
 npm run proof:import -- `
   --artifact-root <artifact-root> `
   --run-id <run-id> `
   --head-sha <40-character-commit-sha> `
+  --date <yyyy-mm-dd> `
+  --quick-artifact-id <artifact-id> `
+  --windows-artifact-id <artifact-id> `
+  --linux-artifact-id <artifact-id>
+```
+
+下载同一正式证据 run 的三个 Release Artifact 后，可生成版本化 v2 证据：
+
+```powershell
+npm run proof:import-release -- `
+  --artifact-root <artifact-root> `
+  --release-tag v0.4.1 `
+  --run-id <run-id> `
+  --head-sha <40-character-workflow-head-sha> `
   --date <yyyy-mm-dd> `
   --quick-artifact-id <artifact-id> `
   --windows-artifact-id <artifact-id> `
