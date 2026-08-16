@@ -220,6 +220,12 @@ try {
             -Condition $Workflow.Contains("Assert-OnlyOwnedRelease") `
             -Message "创建后必须按 returned release id 验证本轮所有权。"
         Assert-True `
+            -Condition $Workflow.Contains('-Uri "$repositoryUri/releases/$ExpectedReleaseId"') `
+            -Message "本轮 Release 必须按 ID 直接查询，不能依赖列表接口立即可见。"
+        Assert-True `
+            -Condition (-not $Workflow.Contains('$owned.Count -ne 1')) `
+            -Message "Release 所有权校验不得要求新草稿立即出现在分页列表中。"
+        Assert-True `
             -Condition (
                 $Workflow.Contains('$currentRelease.draft -and') -and
                 $Workflow.Contains('[string]$currentRelease.tag_name')

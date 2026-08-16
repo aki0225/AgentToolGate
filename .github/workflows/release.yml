@@ -358,17 +358,29 @@ jobs:
           function Assert-OnlyOwnedRelease {
             param([Parameter(Mandatory = $true)][long]$ExpectedReleaseId)
 
+            # 按 ID 确认本轮 Release，避免列表接口的短暂一致性延迟。
+            $owned = Invoke-RestMethod `
+              -Method Get `
+              -Uri "$repositoryUri/releases/$ExpectedReleaseId" `
+              -Headers $headers
+            if (
+              [long]$owned.id -ne $ExpectedReleaseId -or
+              -not [string]::Equals(
+                [string]$owned.tag_name,
+                $env:RELEASE_TAG,
+                [StringComparison]::Ordinal
+              )
+            ) {
+              throw "本轮 Release 与创建结果不一致：$ExpectedReleaseId"
+            }
+
             $matches = @(Get-ExactTagReleases)
             $foreign = @($matches | Where-Object { [long]$_.id -ne $ExpectedReleaseId })
-            $owned = @($matches | Where-Object { [long]$_.id -eq $ExpectedReleaseId })
             if ($foreign.Count -gt 0) {
               $foreignIds = $foreign | ForEach-Object { [string]$_.id }
               throw "检测到非本轮创建的同标签 Release，禁止继续：$($foreignIds -join ', ')"
             }
-            if ($owned.Count -ne 1) {
-              throw "本轮 Release 未能在分页列表中唯一确认：$ExpectedReleaseId"
-            }
-            return $owned[0]
+            return $owned
           }
 
           try {
