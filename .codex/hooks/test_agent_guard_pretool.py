@@ -619,6 +619,30 @@ class CodexHookBridgeTest(unittest.TestCase):
             self.assertEqual(preview["decisionPreview"], "deny")
             self.assertNotIn("ssh-rsa", json.dumps(preview, ensure_ascii=False))
 
+    def test_dry_run_previews_absolute_project_root_delete_as_deny_high(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            (repo / ".git").mkdir()
+            self.set_hook_control(repo, "dry-run")
+            raw = self.invoke_raw(
+                json.dumps(
+                    {
+                        "tool_name": "shell",
+                        "tool_input": {"command": f'Remove-Item -Recurse -Force "{repo}"'},
+                        "cwd": str(repo),
+                    },
+                    ensure_ascii=False,
+                ),
+                go_cli=lambda _payload: self.fail("dry-run 模式不应调用 Go CLI"),
+                post_json=lambda *_args, **_kwargs: self.fail("dry-run 模式不应调用 fallback HTTP"),
+                enable_live_control=False,
+            )
+            self.assertEqual(raw, "")
+            preview_path = repo / ".tmp" / "agenttoolgate" / "hook-dry-run.jsonl"
+            preview = json.loads(preview_path.read_text(encoding="utf-8").strip())
+            self.assertEqual(preview["decisionPreview"], "deny")
+            self.assertEqual(preview["riskLevel"], "high")
+
     def test_dry_run_previews_project_code_execution_as_approval(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
