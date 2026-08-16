@@ -98,6 +98,15 @@ try {
     git -C $TestRepo add release.txt
     git -C $TestRepo commit --quiet -m "second"
     $SecondCommit = (git -C $TestRepo rev-parse HEAD).Trim()
+    git -C $TestRepo remote add origin $TestRepo
+    git -C $TestRepo update-ref refs/remotes/origin/main $SecondCommit
+
+    git -C $TestRepo checkout --quiet --detach $FirstCommit
+    "feature" | Set-Content -LiteralPath (Join-Path $TestRepo "release.txt") -Encoding UTF8
+    git -C $TestRepo add release.txt
+    git -C $TestRepo commit --quiet -m "feature outside main"
+    $NonMainCommit = (git -C $TestRepo rev-parse HEAD).Trim()
+    git -C $TestRepo tag v1.2.6
     git -C $TestRepo checkout --quiet --detach $FirstCommit
 
     Invoke-Case -Name "accepts a strict SemVer lightweight tag" -Body {
@@ -116,6 +125,11 @@ try {
         $Result = Invoke-Validator -TagName "v1.2.5+linux-amd64" -ExpectedCommitSha $FirstCommit
         Assert-Equal -Expected 0 -Actual $Result.ExitCode -Message $Result.Output
         Assert-Equal -Expected "false" -Actual $Result.Outputs["is_prerelease"] -Message "build metadata classification"
+    }
+
+    Invoke-Case -Name "accepts a commit that is an ancestor of origin/main" -Body {
+        $Result = Invoke-Validator -TagName "v1.2.3" -ExpectedCommitSha $FirstCommit
+        Assert-Equal -Expected 0 -Actual $Result.ExitCode -Message $Result.Output
     }
 
     foreach ($InvalidTag in @(
@@ -171,6 +185,20 @@ try {
         Assert-Equal -Expected 1 -Actual $Result.ExitCode -Message $Result.Output
     }
 
+    Invoke-Case -Name "rejects a valid tag on a commit outside origin/main" -Body {
+        git -C $TestRepo checkout --quiet --detach $NonMainCommit
+        try {
+            $Result = Invoke-Validator -TagName "v1.2.6" -ExpectedCommitSha $NonMainCommit
+            Assert-Equal -Expected 1 -Actual $Result.ExitCode -Message $Result.Output
+            Assert-True `
+                -Condition $Result.Output.Contains("origin/main") `
+                -Message "非 origin/main 祖先提交必须由祖先门禁拒绝。"
+        }
+        finally {
+            git -C $TestRepo checkout --quiet --detach $FirstCommit
+        }
+    }
+
     Invoke-Case -Name "release workflow scans all releases instead of tag lookup" -Body {
         $Workflow = Get-Content -Raw -LiteralPath $ReleaseWorkflow
         Assert-True `
@@ -200,6 +228,65 @@ try {
         Assert-True `
             -Condition (-not $Workflow.Contains("softprops/action-gh-release")) `
             -Message "Release workflow 不得重新引入会复用既有 Release 的 softprops action。"
+
+        $ValidateJob = [regex]::Match(
+            $Workflow,
+            '(?ms)^  validate-release:\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\r?$|\z)'
+        ).Groups["body"].Value
+        $ReleaseJob = [regex]::Match(
+            $Workflow,
+            '(?ms)^  release:\r?\n(?<body>.*?)(?=\z)'
+        ).Groups["body"].Value
+        $ValidatePermissions = [regex]::Match(
+            $ValidateJob,
+            '(?ms)^    permissions:\r?\n(?<body>(?:^      [A-Za-z0-9_-]+: [^\r\n]+\r?\n?)+)'
+        )
+        $ValidatePermissionLines = @(
+            $ValidatePermissions.Groups["body"].Value -split '\r?\n' |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        Assert-True `
+            -Condition $ValidatePermissions.Success `
+            -Message "validate-release job 必须显式声明权限。"
+        Assert-Equal `
+            -Expected 2 `
+            -Actual $ValidatePermissionLines.Count `
+            -Message "validate-release job 只能声明两项只读权限。"
+        Assert-True `
+            -Condition (
+                $ValidatePermissionLines -contains "      actions: read" -and
+                $ValidatePermissionLines -contains "      contents: read"
+            ) `
+            -Message "validate-release job 只能声明 actions: read 与 contents: read。"
+        Assert-True `
+            -Condition (-not ($ValidateJob -match '(?m)^      [A-Za-z0-9_-]+: write\r?$')) `
+            -Message "validate-release job 不得拥有写权限。"
+        Assert-True `
+            -Condition ($ReleaseJob -match '(?m)^    permissions:\r?\n      actions: read\r?\n      contents: write\r?$') `
+            -Message "最终 release job 必须保留发布所需的写权限。"
+        Assert-Equal `
+            -Expected 1 `
+            -Actual ([regex]::Matches(
+                $Workflow,
+                '(?m)^      [A-Za-z0-9_-]+: write\r?$'
+            ).Count) `
+            -Message "只有最终 release job 可以声明写权限。"
+        Assert-True `
+            -Condition (
+                $ValidateJob.Contains("/actions/workflows/ci.yml/runs?head_sha=") -and
+                $ValidateJob.Contains("status=completed") -and
+                $ValidateJob.Contains('[string]$run.head_sha') -and
+                $ValidateJob.Contains('[string]$run.status') -and
+                $ValidateJob.Contains('[string]$run.conclusion') -and
+                $ValidateJob.Contains('"success"')
+            ) `
+            -Message "validate-release job 必须按精确 SHA 检查 ci.yml 的 completed/success run。"
+        Assert-True `
+            -Condition ($Workflow -match '(?m)^  workflow_dispatch:\r?$') `
+            -Message "Release workflow 必须继续支持 workflow_dispatch。"
+        Assert-True `
+            -Condition ($Workflow -match '(?ms)^  push:\r?\n    tags:\r?\n      - "v\*"\r?$') `
+            -Message "Release workflow 必须继续支持 v* tag push。"
     }
 
     if ($Failures.Count -gt 0) {

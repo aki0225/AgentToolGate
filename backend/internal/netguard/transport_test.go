@@ -313,6 +313,88 @@ func TestTransportRevalidatesRedirectResolution(t *testing.T) {
 	}
 }
 
+func TestTransportRejectsCrossOriginRedirectEvenWhenBothAuthoritiesAreAllowlisted(t *testing.T) {
+	t.Parallel()
+
+	var targetCount atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetCount.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(target.Close)
+
+	var sourceCount atomic.Int32
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sourceCount.Add(1)
+		http.Redirect(w, r, target.URL+"/final", http.StatusFound)
+	}))
+	t.Cleanup(source.Close)
+
+	sourceURL, err := url.Parse(source.URL)
+	if err != nil {
+		t.Fatalf("parse source URL: %v", err)
+	}
+	targetURL, err := url.Parse(target.URL)
+	if err != nil {
+		t.Fatalf("parse target URL: %v", err)
+	}
+	client := NewClient(ClientOptions{
+		AllowedAuthorities: []string{sourceURL.Host, targetURL.Host},
+		Timeout:            time.Second,
+	})
+
+	_, err = client.Get(source.URL + "/start")
+	if !errors.Is(err, ErrRedirectTargetNotAllowed) {
+		t.Fatalf("expected cross-origin redirect rejection, got %v", err)
+	}
+	if got := sourceCount.Load(); got != 1 {
+		t.Fatalf("expected source endpoint to be called once, got %d", got)
+	}
+	if got := targetCount.Load(); got != 0 {
+		t.Fatalf("cross-origin redirect target must not be called, got %d", got)
+	}
+}
+
+func TestTransportAllowsSameOriginRedirect(t *testing.T) {
+	t.Parallel()
+
+	var finalCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		if r.URL.Path == "/final" {
+			finalCount.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	client := NewClient(ClientOptions{
+		AllowedAuthorities: []string{parsed.Host},
+		Timeout:            time.Second,
+	})
+
+	resp, err := client.Get(server.URL + "/start")
+	if err != nil {
+		t.Fatalf("same-origin redirect should be allowed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected final response status %d, got %d", http.StatusNoContent, resp.StatusCode)
+	}
+	if got := finalCount.Load(); got != 1 {
+		t.Fatalf("expected same-origin final endpoint once, got %d", got)
+	}
+}
+
 func TestTransportDisablesEnvironmentProxy(t *testing.T) {
 	t.Parallel()
 

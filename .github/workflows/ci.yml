@@ -59,6 +59,16 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Test local cache environment
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/tests/local-cache-env.tests.ps1
+
+      - name: Test local PostgreSQL lifecycle
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/tests/verify-local-postgres.tests.ps1
+
   backend-postgres:
     name: Go Postgres
     runs-on: ubuntu-latest

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -60,9 +61,12 @@ func NewClient(options ClientOptions) *http.Client {
 	return &http.Client{
 		Timeout:   options.Timeout,
 		Transport: NewTransport(options),
-		CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= redirectLimit {
 				return ErrRedirectLimitExceeded
+			}
+			if len(via) == 0 || !sameOrigin(via[0].URL, req.URL) {
+				return ErrRedirectTargetNotAllowed
 			}
 			return nil
 		},
@@ -256,6 +260,43 @@ func normalizedAuthoritySet(values []string) map[string]struct{} {
 
 func normalizeAuthority(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func sameOrigin(base, candidate *url.URL) bool {
+	if base == nil || candidate == nil || base.User != nil || candidate.User != nil {
+		return false
+	}
+
+	baseScheme := strings.ToLower(strings.TrimSpace(base.Scheme))
+	candidateScheme := strings.ToLower(strings.TrimSpace(candidate.Scheme))
+	if baseScheme != candidateScheme || (baseScheme != "http" && baseScheme != "https") {
+		return false
+	}
+
+	return normalizeOriginAuthority(base) == normalizeOriginAuthority(candidate)
+}
+
+func normalizeOriginAuthority(value *url.URL) string {
+	if value == nil {
+		return ""
+	}
+
+	hostname := strings.ToLower(strings.TrimSpace(value.Hostname()))
+	if hostname == "" {
+		return ""
+	}
+	port := value.Port()
+	if port == "" {
+		switch strings.ToLower(strings.TrimSpace(value.Scheme)) {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return ""
+		}
+	}
+	return net.JoinHostPort(hostname, port)
 }
 
 func cloneDefaultTransportWithoutProxy() *http.Transport {

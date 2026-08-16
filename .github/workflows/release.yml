@@ -33,7 +33,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
+      actions: read
+      contents: read
     outputs:
       commit_sha: ${{ steps.validate.outputs.commit_sha }}
       is_prerelease: ${{ steps.validate.outputs.is_prerelease }}
@@ -57,6 +58,87 @@ jobs:
             -TagName $env:RELEASE_TAG `
             -ExpectedCommitSha $expectedCommit `
             -GitHubOutputPath $env:GITHUB_OUTPUT
+
+      - name: 确认精确提交已有成功 CI
+        shell: pwsh
+        env:
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+          VALIDATED_COMMIT_SHA: ${{ steps.validate.outputs.commit_sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $expectedCommit = ([string]$env:VALIDATED_COMMIT_SHA).Trim().ToLowerInvariant()
+          if ($expectedCommit -notmatch '^[0-9a-f]{40}$') {
+            throw "校验步骤未输出完整的 commit SHA。"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+            throw "GITHUB_TOKEN 不可用，拒绝在未完成 CI 校验时继续。"
+          }
+
+          $headers = @{
+            Accept = "application/vnd.github+json"
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $repositoryUri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY"
+          $encodedCommit = [Uri]::EscapeDataString($expectedCommit)
+          $successfulRun = $null
+          $scanCompleted = $false
+
+          for ($page = 1; $page -le 10; $page++) {
+            $runsUri = "$repositoryUri/actions/workflows/ci.yml/runs?head_sha=$encodedCommit&status=completed&per_page=100&page=$page"
+            $response = Invoke-RestMethod -Method Get -Uri $runsUri -Headers $headers
+            if ($null -eq $response) {
+              throw "GitHub Actions API 返回空响应，拒绝在未完成 CI 校验时继续。"
+            }
+
+            $workflowRunsProperty = $response.PSObject.Properties["workflow_runs"]
+            if ($null -eq $workflowRunsProperty) {
+              throw "GitHub Actions API 响应缺少 workflow_runs，拒绝继续。"
+            }
+
+            $runs = @($workflowRunsProperty.Value | Where-Object { $null -ne $_ })
+            foreach ($run in $runs) {
+              if (
+                [string]::Equals(
+                  [string]$run.head_sha,
+                  $expectedCommit,
+                  [StringComparison]::OrdinalIgnoreCase
+                ) -and
+                [string]::Equals(
+                  [string]$run.status,
+                  "completed",
+                  [StringComparison]::OrdinalIgnoreCase
+                ) -and
+                [string]::Equals(
+                  [string]$run.conclusion,
+                  "success",
+                  [StringComparison]::OrdinalIgnoreCase
+                )
+              ) {
+                $successfulRun = $run
+                break
+              }
+            }
+
+            if ($null -ne $successfulRun) {
+              break
+            }
+            if ($runs.Count -lt 100) {
+              $scanCompleted = $true
+              break
+            }
+          }
+
+          if ($null -eq $successfulRun) {
+            if (-not $scanCompleted) {
+              throw "GitHub Actions CI run 列表达到 API 的 1000 条搜索上限，拒绝在未完成扫描时继续：commit=$expectedCommit"
+            }
+            throw "未找到 ci.yml 对精确提交 $expectedCommit 的 completed/success workflow run。"
+          }
+
+          Write-Host "CI workflow passed for commit=$expectedCommit run_id=$($successfulRun.id)"
 
       - name: 拒绝覆盖已有 GitHub Release
         shell: pwsh

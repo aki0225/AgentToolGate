@@ -50,6 +50,17 @@ if ($NormalizedCheckoutCommit -ne $NormalizedExpectedCommit) {
     throw "当前打包提交是 $NormalizedCheckoutCommit，但预期提交是 $NormalizedExpectedCommit。"
 }
 
+$MainCommit = & git -C $ResolvedRepositoryRoot rev-parse --verify --quiet "refs/remotes/origin/main^{commit}" 2>$null
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace(($MainCommit -join ""))) {
+    throw "origin/main 不存在或不能解析为 commit，拒绝发布。"
+}
+$NormalizedMainCommit = ($MainCommit -join "").Trim().ToLowerInvariant()
+
+& git -C $ResolvedRepositoryRoot merge-base --is-ancestor $NormalizedExpectedCommit $NormalizedMainCommit 2>$null
+if ($LASTEXITCODE -ne 0) {
+    throw "预期提交 $NormalizedExpectedCommit 不是 origin/main ($NormalizedMainCommit) 的祖先，拒绝发布。"
+}
+
 $IsPrerelease = $SemVerMatch.Groups["prerelease"].Success
 if (-not [string]::IsNullOrWhiteSpace($GitHubOutputPath)) {
     $ResolvedOutputPath = [IO.Path]::GetFullPath($GitHubOutputPath)

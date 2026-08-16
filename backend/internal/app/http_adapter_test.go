@@ -520,6 +520,90 @@ func TestHTTPRequestRejectsRedirectToNonAllowlistHost(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestRejectsCrossOriginRedirectWithoutLeakingSecretHeader(t *testing.T) {
+	const (
+		secretName  = "http_redirect_secret"
+		secretValue = "redirect-api-key-secret"
+	)
+	t.Setenv("HTTP_REDIRECT_SECRET_ENV", secretValue)
+
+	var targetCount atomic.Int32
+	var targetHeader atomic.Value
+	targetHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetCount.Add(1)
+		targetHeader.Store(r.Header.Get("X-Api-Key"))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(targetHTTP.Close)
+
+	var redirectCount atomic.Int32
+	redirectHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectCount.Add(1)
+		if r.Header.Get("X-Api-Key") != secretValue {
+			t.Errorf("source endpoint did not receive resolved Secret header: %q", r.Header.Get("X-Api-Key"))
+		}
+		http.Redirect(w, r, targetHTTP.URL+"/secret", http.StatusFound)
+	}))
+	t.Cleanup(redirectHTTP.Close)
+
+	srv, st, workspace := newHTTPTestApp(t, httpTestConfig{
+		allowedHosts: []string{mustURLHost(t, redirectHTTP.URL), mustURLHost(t, targetHTTP.URL)},
+	})
+	if _, err := st.CreateSecret(context.Background(), model.CreateSecretInput{
+		WorkspaceID:    workspace.ID,
+		WorkspaceOrgID: workspace.ZitadelOrganizationID,
+		Name:           secretName,
+		Description:    "HTTP redirect header Secret",
+		Enabled:        true,
+		SecretType:     "token",
+		ValueSource:    "env",
+		ValueRef:       "HTTP_REDIRECT_SECRET_ENV",
+		Metadata:       json.RawMessage(`{"scope":"http"}`),
+	}); err != nil {
+		t.Fatalf("create redirect Secret: %v", err)
+	}
+
+	body := fmt.Sprintf(`{
+		"tool":"http.request",
+		"arguments":{
+			"method":"GET",
+			"url":%q,
+			"headerSecretRefs":{"X-Api-Key":%q}
+		}
+	}`, redirectHTTP.URL+"/start", secretName)
+	resp := postJSON(t, srv, "/api/tool-calls", body)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected stable 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if strings.Contains(resp.Body.String(), secretValue) {
+		t.Fatalf("HTTP error response leaked resolved Secret: %s", resp.Body.String())
+	}
+	if got := redirectCount.Load(); got != 1 {
+		t.Fatalf("expected initial redirect endpoint once, got %d", got)
+	}
+	if got := targetCount.Load(); got != 0 {
+		t.Fatalf("cross-origin redirect target must not receive the Secret header, got %d requests", got)
+	}
+	if value := targetHeader.Load(); value != nil && value.(string) != "" {
+		t.Fatalf("unexpected target header value: %q", value)
+	}
+
+	call := singleHTTPTestCall(t, st, workspace.ID)
+	if call.Status != "failed" || call.ErrorMessage != "bad request: http redirect target is not allowed" {
+		t.Fatalf("unexpected failed audit: %+v", call)
+	}
+	for _, field := range []string{
+		string(call.InputRedactedJSON),
+		string(call.InputExecutionJSON),
+		string(call.OutputRedactedJSON),
+		call.ErrorMessage,
+	} {
+		if strings.Contains(field, secretValue) {
+			t.Fatalf("HTTP redirect audit leaked resolved Secret: %s", field)
+		}
+	}
+}
+
 func TestHTTPRequestRejectsRedirectToMetadataAddress(t *testing.T) {
 	t.Parallel()
 
