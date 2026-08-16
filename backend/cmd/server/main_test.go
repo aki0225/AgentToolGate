@@ -2253,7 +2253,7 @@ func TestPrepareProjectUpDoesNotWriteHookControlBeforeStart(t *testing.T) {
 	if _, err := os.Stat(hookControlPath); !os.IsNotExist(err) {
 		t.Fatalf("hook control should not exist before server start, got err=%v", err)
 	}
-	if err := writeProjectHookControlAtPath(project, hookControlPath, hookControlMode); err != nil {
+	if err := writeProjectHookControlAtPath(cfg.ProjectRoot, hookControlPath, hookControlMode); err != nil {
 		t.Fatalf("write hook control after simulated start: %v", err)
 	}
 	raw, err := os.ReadFile(hookControlPath)
