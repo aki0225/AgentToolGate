@@ -2,34 +2,33 @@
 
 > 状态日期：2026-08-16
 >
-> 当前稳定版：`v0.3.2`
+> 当前稳定版：`v0.4.0`
 >
-> 稳定版产品提交：`60dd6dbd5dc7e59defd83cbad5f2508d11f4ec98`
+> 稳定版产品提交：`a059e9f2c9c97fe2afb0cbceead710d623799b5c`
 >
-> 本页更新前的 `main` 基线：`aa9efe7a95d1c9ad3d33430c0d9ecd2412cf540d`
+> 产品 CI：
+> [`31934019158`](https://github.com/aki0225/AgentToolGate/actions/runs/31934019158)
 >
-> `v0.4` 候选实现提交：`eac8fe07f55187f7c688f553cc64a81b95d5712a`
+> 正式 Release：
+> [`v0.4.0`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.0)
 >
-> 候选 CI：
-> [`31933630479`](https://github.com/aki0225/AgentToolGate/actions/runs/31933630479)
+> Release workflow：
+> [`31941172465`](https://github.com/aki0225/AgentToolGate/actions/runs/31941172465)
 >
-> 候选 PR：[`#22`](https://github.com/aki0225/AgentToolGate/pull/22)
+> 本页更新依据的 `main` 基线：`032cf2f22e0a51e0f685b767d1300d0888f58f59`
 
 ## 1. 版本状态
 
-`v0.3.2` 已冻结，Release 标签与验收过的产品提交保持一致。正式附件、双平台
-Release workflow、原生 runner smoke，以及使用正式 Linux 包完成的五场景真实 Codex
-CLI 验收见 [`v0.3.2 发布验收`](v0.3.2-release-acceptance.md)。
+`v0.4.0` 已正式发布，annotated tag 与产品提交
+`a059e9f2c9c97fe2afb0cbceead710d623799b5c` 保持一致。该提交的 CI、双平台
+Release workflow、原生 runner smoke、正式附件和独立 SHA256 验证见
+[`v0.4.0 发布验收`](v0.4-release-acceptance.md)。
 
-统一的稳定版、开发门禁和历史快照入口见
-[`证据索引`](evidence-index.md)。`v0.4` 日常使用加固的候选实现已经完成本地验收，
-并通过精确提交对应的远端 CI。审查与合并状态以
-[`PR #22`](https://github.com/aki0225/AgentToolGate/pull/22) 为准；正式 `v0.4`
-Release 尚未创建，因此当前稳定版仍是 `v0.3.2`。
+`PR #23` 与 `PR #24` 在标签创建后只修复 Release 自动化的草稿可见性竞态和
+PowerShell 上传 URI 解析；最终 workflow 从 `main` 运行，但检出、构建和打包的仍是
+标签固定的产品提交，没有移动标签，也没有改变 `v0.4.0` 二进制内容。
 
-`v0.4` 候选包含本地运行与 Hook 生命周期、Secret/HTTP/MCP 出站边界、项目规则
-校验与解释、审批可用性、跨平台 CI/Release 门禁和发布文档更新。完整本地证据与未完成
-项见 [`v0.4 发布候选验收`](v0.4-release-acceptance.md)。
+统一的稳定版、发布门禁和历史快照入口见 [`证据索引`](evidence-index.md)。
 
 ## 2. 已验证能力
 
@@ -45,17 +44,21 @@ Release 尚未创建，因此当前稳定版仍是 `v0.3.2`。
 - **现行展示结构**：Hero、工作方式、实测证据、安全边界和下载；首页只保留真实
   Codex 五场景回放，不再展示早期 synthetic 交互状态机。
 - **展示站门禁**：类型检查、静态证据校验、Vitest、生产构建和 Playwright 浏览器交互。
-- **v0.4 本地候选**：三套 evaluator、Hook 延迟、独立嵌套仓库 off/dry-run/live、
+- **v0.4 本地验收**：三套 evaluator、Hook 延迟、独立嵌套仓库 off/dry-run/live、
   Secret/SSRF/MCP 边界、前端 40 项核心 Playwright、展示站 8 项 Playwright、后端
   全量测试、`go vet` 和 Windows amd64 release smoke。
-- **v0.4 远端候选**：实现提交 `eac8fe07f55187f7c688f553cc64a81b95d5712a`
-  的 [CI run 31933630479](https://github.com/aki0225/AgentToolGate/actions/runs/31933630479)
+- **v0.4 产品 CI**：产品提交 `a059e9f2c9c97fe2afb0cbceead710d623799b5c`
+  的 [CI run 31934019158](https://github.com/aki0225/AgentToolGate/actions/runs/31934019158)
   已通过 Linux/Windows Go、PostgreSQL、多 Actor、Agent Safety Evaluation、前端、
   展示站和 Connector smoke；Windows job 还实际执行了本地缓存与 PostgreSQL 生命周期
   两组 PowerShell 回归。
+- **v0.4 正式 Release**：
+  [Release run 31941172465](https://github.com/aki0225/AgentToolGate/actions/runs/31941172465)
+  已完成 Windows/Linux 主程序包和评估包构建、smoke、统一 `SHA256SUMS`、附件上传与
+  正式发布；五个附件已重新下载并核对大小、SHA256 和归档可读性。
 
-以下运行记录保留为 `bf0bb9d` 阶段的历史快照，不用于证明当前 `main` 或尚未合入的
-`v0.4` 开发分支：
+以下运行记录保留为 `bf0bb9d` 阶段的历史快照，不用于证明当前 `main` 或
+`v0.4.0` 稳定版：
 
 - CI run
   [`31818092277`](https://github.com/aki0225/AgentToolGate/actions/runs/31818092277)。
@@ -65,17 +68,15 @@ Release 尚未创建，因此当前稳定版仍是 `v0.3.2`。
 ## 3. 当前使用入口
 
 - 安装和日常运行：[`README.md`](../README.md)。
-- 稳定版、开发门禁和历史快照：[`evidence-index.md`](evidence-index.md)。
+- 稳定版、发布门禁和历史快照：[`evidence-index.md`](evidence-index.md)。
 - 本地开发与 Hook control：[`local-daily-use.md`](local-daily-use.md)。
 - Codex / Claude 接入：[`ai-client-integration.md`](ai-client-integration.md)。
 - 项目内保护规则：[`project-protection-rules-live-dogfood.md`](project-protection-rules-live-dogfood.md)。
 - 在线展示：<https://aki0225.github.io/AgentToolGate/>。
 
-当前产品加固工作按
-[`v0.4 日常使用加固计划`](v0.4-daily-use-hardening-plan.md)
-执行。候选实现和对应远端 CI 已完成；后续状态以
-[`PR #22`](https://github.com/aki0225/AgentToolGate/pull/22) 与 GitHub Releases
-为准，不继续扩展企业级功能。
+[`v0.4 日常使用加固计划`](v0.4-daily-use-hardening-plan.md) 已完成并形成
+`v0.4.0` 稳定版。后续行为变化应建立新的任务和验收证据，不在该历史计划上继续追加，
+也不借稳定版发布扩展企业级功能。
 
 历史实施计划和 handoff 只用于保留实施过程与证据来源，不再作为当前开发恢复入口：
 
@@ -102,7 +103,7 @@ Release 尚未创建，因此当前稳定版仍是 `v0.3.2`。
 
 ## 5. 维护规则
 
-- 不移动或覆盖 `v0.3.2`、`v0.3.1`、`v0.3.0`、`v0.2.0` 及其候选标签。
+- 不移动或覆盖 `v0.4.0`、`v0.3.2`、`v0.3.1`、`v0.3.0`、`v0.2.0` 及其候选标签。
 - 新增 Guard 规则、客户端、平台或产品行为时，重新生成对应评估与发布证据。
 - 证据、展示或文档维护不能被描述成稳定 Release 产品能力变化。
 - 发现安全缺陷时保留失败证据并单独修复，不通过放宽 expected decision 或跳过校验换取绿色结果。
