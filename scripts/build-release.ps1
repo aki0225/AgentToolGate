@@ -245,18 +245,20 @@ function Invoke-EvaluatorRunSmoke {
         Get-Content -LiteralPath $SuitePath |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
     ).Count
-    $output = Join-Path $WorkingRoot "quick-output"
-    $sandbox = Join-Path $WorkingRoot "quick-sandbox"
-    $stdoutPath = Join-Path $WorkingRoot "quick.stdout.json"
-    $stderrPath = Join-Path $WorkingRoot "quick.stderr.log"
-    New-Item -ItemType Directory -Force -Path $WorkingRoot | Out-Null
+    $runToken = [Guid]::NewGuid().ToString("N")
+    $runRoot = Join-Path $WorkingRoot $runToken
+    $output = Join-Path $runRoot "quick-output"
+    $sandbox = Join-Path $runRoot "quick-sandbox"
+    $stdoutPath = Join-Path $runRoot "quick.stdout.json"
+    $stderrPath = Join-Path $runRoot "quick.stderr.log"
+    New-Item -ItemType Directory -Force -Path $runRoot | Out-Null
     $oldRequirePython = [Environment]::GetEnvironmentVariable("ATG_EVAL_REQUIRE_PYTHON", "Process")
     try {
         [Environment]::SetEnvironmentVariable("ATG_EVAL_REQUIRE_PYTHON", "1", "Process")
         & $EvaluatorPath run `
             --input $SuitePath `
             --atg $ProductPath `
-            --run-id "release-smoke-$TargetPlatform" `
+            --run-id "release-smoke-$TargetPlatform-$runToken" `
             --output $output `
             --sandbox-base $sandbox `
             --guard-timeout 30s `
