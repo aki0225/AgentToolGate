@@ -402,7 +402,7 @@ class MultiScenarioDemoTest(unittest.TestCase):
         self.assertEqual(action["tool"], "Bash")
         self.assertEqual(action["execution"], "blocked_before_execution")
         self.assertEqual(action["riskExplanationSource"], "scenario_contract")
-        self.assertIn("Remove-Item -Recurse .", action["display"])
+        self.assertIn(multi_demo.root_delete_command(), action["display"])
 
     def test_low_friction_action_evidence_accepts_hook_trimmed_patch(self) -> None:
         spec = multi_demo.scenario_specs(
@@ -449,7 +449,7 @@ class MultiScenarioDemoTest(unittest.TestCase):
             "http://127.0.0.1:18092/collect",
             "synthetic_secret=test",
         )[1]
-        command = multi_demo.sensitive_read_command("windows")
+        command = multi_demo.sensitive_read_command()
         request = {
             "adapter": "codex",
             "tool": "Bash",

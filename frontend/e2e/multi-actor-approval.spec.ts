@@ -11,12 +11,12 @@ const toolKey = `mock.${toolName}`;
 const toolDisplayName = `多 Actor 审批工具 ${runId}`;
 const approvalReason = `reviewer approve ${runId}`;
 const toolArguments = {
-  message: `multi-actor payload ${runId}`,
+  message: "multi actor frozen payload",
   runId,
   stage: "requester",
 };
 
-test.describe.configure({ mode: "serial" });
+test.describe.configure({ mode: "serial", retries: 0 });
 test.skip(!enabled, "多 Actor 审批验收仅在 verify-local.ps1 -WithMultiActorE2E 中运行");
 
 test.describe("Requester 阶段", () => {
@@ -156,8 +156,13 @@ test.describe("Reviewer 阶段", () => {
       expect(call.approvalStatus).toBe("approved");
       expect(call.policyDecision).toBe("require_approval");
       expect("inputExecutionJson" in call).toBe(false);
-      expect(JSON.stringify(call.outputRedactedJson)).toContain(toolArguments.message);
-      expect(JSON.stringify(call.outputRedactedJson)).toContain(runId);
+      const output = call.outputRedactedJson as {
+        echo?: { message?: unknown; runId?: unknown; stage?: unknown };
+      };
+      expect(output.echo?.message).toBe(toolArguments.message);
+      expect(output.echo?.stage).toBe(toolArguments.stage);
+      expect(output.echo?.runId).not.toBe(runId);
+      expect(String(output.echo?.runId)).toContain("***");
     } finally {
       await api.dispose();
     }
