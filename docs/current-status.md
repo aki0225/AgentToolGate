@@ -36,9 +36,12 @@ workflow、正式附件及当前验证边界见
 当前公开仓已有以下分层证据：
 
 - **稳定 Release**：Windows amd64 和 Linux amd64 正式包、SHA256、原生 runner smoke。
-- **自动安全评估**：公开快照来自历史提交
-  `e809c66ea8e82a27ab25531072cc1ca813550384`，包含 Quick、Windows full、Linux
-  full 的逐 case Proof Pack；Linux 平台不适用项保持 skipped，不冒充 passed。
+- **自动安全评估**：当前版本化证据来自 `v0.4.1` 正式评估附件和
+  [CI run 31954428232](https://github.com/aki0225/AgentToolGate/actions/runs/31954428232)，
+  包含 Quick 20 passed、Windows full 30 passed、Linux full 26 passed + 4 个固定平台
+  skipped；Release、workflow、Artifact 和逐 case SHA256 均写入
+  [`proof.json`](../evaluation/published/agent-safety/releases/v0.4.1/proof.json)。
+  提交 `e809c66` 的 v1 快照继续作为历史证据保留。
 - **真实客户端**：历史 Codex CLI / Claude Code 双客户端链路验收，以及
   `v0.3.2` 正式 Linux 包、源提交
   `0126bc24fb6189fd80b8070a23712a1e07b02514` 上的五次独立 Codex CLI 会话。
@@ -58,8 +61,8 @@ workflow、正式附件及当前验证边界见
 - **v0.4.1 正式 Release**：
   [Release run 31946508434](https://github.com/aki0225/AgentToolGate/actions/runs/31946508434)
   已完成 Windows/Linux 主程序包和评估包构建、smoke、统一 `SHA256SUMS`、附件上传与
-  正式发布；GitHub 已发布五个附件的大小和 digest。本轮没有在 workflow 外独立重新
-  下载归档，因此不声称再次验证归档可读性。
+  正式发布；后续 run `31954428232` 已在原生双平台 runner 重新下载并验证两个正式
+  评估包。主程序归档没有在 Release workflow 外再次独立下载，因此不扩大该部分结论。
 
 以下运行记录保留为 `bf0bb9d` 阶段的历史快照，不用于证明当前 `main` 或
 `v0.4.1` 稳定版：

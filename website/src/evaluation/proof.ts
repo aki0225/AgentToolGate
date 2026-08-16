@@ -17,11 +17,33 @@ export interface EvaluationSummary {
 }
 
 interface EvaluationProofDocument {
+  schemaVersion: "v2";
   publishedAt: string;
+  subject: {
+    type: "github-release";
+    releaseId: number;
+    releaseTag: string;
+    commitSha: string;
+    releaseUrl: string;
+    checksums: {
+      name: string;
+      sha256: string;
+      url: string;
+    };
+    assets: Array<{
+      platform: "windows" | "linux";
+      id: number;
+      name: string;
+      sizeBytes: number;
+      sha256: string;
+    }>;
+  };
   run: {
     id: number;
+    attempt: number;
     url: string;
     headSha: string;
+    ref: string;
   };
   evaluations: EvaluationSummary[];
 }

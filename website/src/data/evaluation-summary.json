@@ -1,10 +1,12 @@
 {
-  "schemaVersion": "v1",
-  "publishedAt": "2026-08-11",
+  "schemaVersion": "v2",
+  "publishedAt": "2026-08-16",
   "run": {
-    "id": 31465745397,
-    "url": "https://github.com/aki0225/AgentToolGate/actions/runs/31465745397",
-    "headSha": "e809c66ea8e82a27ab25531072cc1ca813550384"
+    "id": 31954428232,
+    "attempt": 1,
+    "url": "https://github.com/aki0225/AgentToolGate/actions/runs/31954428232",
+    "headSha": "0a5c42176b7979e66fb6c1cda924b6f8eb9ce554",
+    "ref": "refs/heads/codex/v041-evidence-refresh"
   },
   "evaluations": [
     {
@@ -22,7 +24,7 @@
       "benignInterruptedCount": 2,
       "benignInterruptionRate": 0.25,
       "decisionLatencySampleCount": 20,
-      "decisionLatencyP95Ms": 236.43429985000057,
+      "decisionLatencyP95Ms": 239.92227295000058,
       "approvalPreUpstreamCalls": 0,
       "secretLeakCount": 0,
       "ticketReplaySuccessCount": 0
@@ -42,7 +44,7 @@
       "benignInterruptedCount": 2,
       "benignInterruptionRate": 0.16666666666666666,
       "decisionLatencySampleCount": 30,
-      "decisionLatencyP95Ms": 665.1654049999977,
+      "decisionLatencyP95Ms": 705.0264449999978,
       "approvalPreUpstreamCalls": 0,
       "secretLeakCount": 0,
       "ticketReplaySuccessCount": 0
@@ -62,10 +64,38 @@
       "benignInterruptedCount": 2,
       "benignInterruptionRate": 0.16666666666666666,
       "decisionLatencySampleCount": 26,
-      "decisionLatencyP95Ms": 567.70625,
+      "decisionLatencyP95Ms": 693.57418375,
       "approvalPreUpstreamCalls": 0,
       "secretLeakCount": 0,
       "ticketReplaySuccessCount": 0
     }
-  ]
+  ],
+  "subject": {
+    "type": "github-release",
+    "releaseId": 371316925,
+    "releaseTag": "v0.4.1",
+    "commitSha": "43868521e56c85cf074e92f572daff49121651b9",
+    "releaseUrl": "https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.1",
+    "checksums": {
+      "name": "SHA256SUMS",
+      "sha256": "b203ec978d7da9b4add09c80e41cdef4971be8d590f601131f75012a65763e6e",
+      "url": "https://github.com/aki0225/AgentToolGate/releases/download/v0.4.1/SHA256SUMS"
+    },
+    "assets": [
+      {
+        "platform": "windows",
+        "id": 516783373,
+        "name": "agenttoolgate-evaluation-windows-amd64.zip",
+        "sizeBytes": 29876035,
+        "sha256": "cc39b6af9dfde8c9958bdf012d6bfdd9ec7a093b212760557f83e040321da246"
+      },
+      {
+        "platform": "linux",
+        "id": 516783402,
+        "name": "agenttoolgate-evaluation-linux-amd64.tar.gz",
+        "sizeBytes": 29129053,
+        "sha256": "dcd4d2f85a499036cead94611d7209f9166c29ffbb61fd3431fa4e111216bfbc"
+      }
+    ]
+  }
 }
