@@ -154,11 +154,8 @@ jobs:
       - name: Verify Python
         run: python --version
 
-      - name: Test Codex Hook Bridge
-        run: python .codex/hooks/test_agent_guard_pretool.py
-
-      - name: Test Claude Hook Bridge
-        run: python .claude/hooks/test_agent_guard_pretool.py
+      - name: Test Hook Bridges
+        run: python scripts/run-hook-compatibility-tests.py
 
   evaluation:
     name: Agent Safety Evaluation Contracts
