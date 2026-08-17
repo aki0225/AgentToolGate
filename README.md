@@ -173,23 +173,23 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-local.ps1
 <!-- agent-safety-proof:start -->
 ## 实测评估
 
-基于 [`v0.4.1`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.1) 正式评估附件，在
-[GitHub Actions run 31954428232](https://github.com/aki0225/AgentToolGate/actions/runs/31954428232) 的原生 Windows / Linux runner
+基于 [`v0.4.2`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.2) 正式评估附件，在
+[GitHub Actions run 31996457086](https://github.com/aki0225/AgentToolGate/actions/runs/31996457086) 的原生 Windows / Linux runner
 复跑；Release 产品提交为
-[`4386852`](https://github.com/aki0225/AgentToolGate/commit/43868521e56c85cf074e92f572daff49121651b9)：
+[`30be1cc`](https://github.com/aki0225/AgentToolGate/commit/30be1cc2c99bda7e7013ca7f70f30bae47ee8421)：
 
 - **Quick（Linux）**：20 passed / 0 failed / 0 skipped。
 - **Windows full**：30 passed / 0 failed / 0 skipped。
 - **Linux full**：26 passed / 0 failed / 4 skipped。
 
-数字由 [版本化公开证据](evaluation/published/agent-safety/releases/v0.4.1/proof.json) 的逐 case 状态计算；同一文件绑定 Release
+数字由 [版本化公开证据](evaluation/published/agent-safety/releases/v0.4.2/proof.json) 的逐 case 状态计算；同一文件绑定 Release
 附件 digest、workflow provenance、Artifact ID 与源文件 SHA256。它不是 OS sandbox
 证明，也不替代真实 Codex / Claude Code 客户端验收。
 <!-- agent-safety-proof:end -->
 
-上面是当前最新的完整 30-case 双平台版本化 Proof Pack，仍冻结在 `v0.4.1`。
-`v0.4.2` 已完成原生双平台 quick 和公开附件独立复验，但没有把 `v0.4.1` 的完整结果
-改名为新版本证据。
+上面是当前最新的完整 30-case 双平台版本化 Proof Pack，绑定 `v0.4.2` 的正式评估
+附件和独立的 Release 证据复跑。`v0.4.1` 的 Proof Pack 继续作为上一稳定版的冻结
+历史保留，不改名、不回写。
 
 本次固定 synthetic suite 的良性中断率为：Quick Linux 25%，Windows full 16.7%，
 Linux full 16.7%。该数字只描述评估用例，不等于真实日常开发的误拦率。
@@ -199,9 +199,9 @@ Linux full 16.7%。该数字只描述评估用例，不等于真实日常开发�
 - **统一索引**：[证据索引](docs/evidence-index.md)区分当前稳定版证据、现行发布门禁和
   历史版本快照。
 - **正式发布验收**：[v0.4.2 发布验收](docs/v0.4.2-release-acceptance.md)记录正式标签、
-  产品提交 CI、双平台 Release workflow、五个附件及当前验证边界。
-- **上一稳定版完整评估**：[v0.4.1 发布验收](docs/v0.4.1-release-acceptance.md)
-  保留正式附件的 Quick、Windows full、Linux full 复跑与版本化 Proof Pack。
+  产品提交 CI、双平台 Release workflow、五个附件、完整评估复跑及验证边界。
+- **上一稳定版历史评估**：[v0.4.1 发布验收](docs/v0.4.1-release-acceptance.md)
+  保留上一版正式附件的 Quick、Windows full、Linux full 与版本化 Proof Pack。
 - **上一版本验收**：[v0.4.0 发布验收](docs/v0.4-release-acceptance.md)保留
   `v0.4.0` 的产品 CI、双平台 Release 和独立附件验证。
 - **历史稳定版验收**：[v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)保留
@@ -264,7 +264,7 @@ Linux full 16.7%。该数字只描述评估用例，不等于真实日常开发�
 - [Daily Use Acceptance](docs/daily-use-acceptance.md)：2026-07 历史日常使用验收；当前
   `live` 基线对 `go test` / `npm run check` 的决策以
   [本地动作防火墙](docs/local-action-firewall.md)为准。
-- [v0.4.2 发布验收](docs/v0.4.2-release-acceptance.md)：当前稳定版的产品 CI、双平台 Release、正式附件 digest 和 Python 3.14 兼容补丁范围。
+- [v0.4.2 发布验收](docs/v0.4.2-release-acceptance.md)：当前稳定版的产品 CI、双平台 Release、正式附件 digest、Python 3.14 兼容补丁和完整版本化 Proof Pack。
 - [v0.4.1 发布验收](docs/v0.4.1-release-acceptance.md)：上一稳定版的完整双平台评估复跑与版本化 Proof Pack。
 - [v0.4.0 发布验收](docs/v0.4-release-acceptance.md)：上一版本的产品 CI、双平台 Release、正式附件 SHA256 和日常使用加固验收。
 - [v0.3.2 发布验收](docs/v0.3.2-release-acceptance.md)：历史稳定版的双平台 Release、正式附件和五场景真实 Codex 证据。

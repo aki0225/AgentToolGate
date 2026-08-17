@@ -15,6 +15,9 @@
 > Release workflow：
 > [`31991881698`](https://github.com/aki0225/AgentToolGate/actions/runs/31991881698)
 >
+> 正式附件完整评估：
+> [`31996457086`](https://github.com/aki0225/AgentToolGate/actions/runs/31996457086)
+>
 > 稳定版产品代码基线：`30be1cc2c99bda7e7013ca7f70f30bae47ee8421`
 
 ## 1. 版本状态
@@ -38,14 +41,14 @@ Hook 工作目录，并增加 Python 3.10 / 3.14 跨平台兼容矩阵，不改�
 当前公开仓已有以下分层证据：
 
 - **稳定 Release**：Windows amd64 和 Linux amd64 正式包、SHA256、原生 runner smoke。
-- **自动安全评估**：最新完整版本化证据仍来自 `v0.4.1` 正式评估附件和
-  [CI run 31954428232](https://github.com/aki0225/AgentToolGate/actions/runs/31954428232)，
+- **自动安全评估**：最新完整版本化证据来自 `v0.4.2` 正式评估附件和
+  [CI run 31996457086](https://github.com/aki0225/AgentToolGate/actions/runs/31996457086)，
   包含 Quick 20 passed、Windows full 30 passed、Linux full 26 passed + 4 个固定平台
   skipped；Release、workflow、Artifact 和逐 case SHA256 均写入
-  [`proof.json`](../evaluation/published/agent-safety/releases/v0.4.1/proof.json)。
-  `v0.4.2` Release workflow 已在原生 Windows / Linux runner 执行 quick suite，
-  并从正式 Windows 附件独立复跑 20 / 20；当前尚未为 `v0.4.2` 生成新的完整 30-case
-  双平台 Proof Pack。提交 `e809c66` 的 v1 快照继续作为历史证据保留。
+  [`proof.json`](../evaluation/published/agent-safety/releases/v0.4.2/proof.json)。
+  证据工具提交为 `31aac418a24ee0e9710ebe47f95f095092aa37cc`，评估主体仍是
+  `v0.4.2` 产品提交 `30be1cc2c99bda7e7013ca7f70f30bae47ee8421`。`v0.4.1`
+  版本化证据和提交 `e809c66` 的 v1 快照继续作为历史证据保留。
 - **真实客户端**：历史 Codex CLI / Claude Code 双客户端链路验收，以及
   `v0.3.2` 正式 Linux 包、源提交
   `0126bc24fb6189fd80b8070a23712a1e07b02514` 上的五次独立 Codex CLI 会话。
@@ -68,6 +71,11 @@ Hook 工作目录，并增加 Python 3.10 / 3.14 跨平台兼容矩阵，不改�
   正式发布；五个正式附件已从公开 Release 独立下载并核对 SHA256，Windows 主程序和
   quick 评估也已独立复跑。Linux 二进制的运行结论来自 Release workflow 的原生 Ubuntu
   runner，不用 Windows 解包检查冒充 Linux 运行。
+- **v0.4.2 完整 Release 评估**：
+  [CI run 31996457086](https://github.com/aki0225/AgentToolGate/actions/runs/31996457086)
+  在原生 Windows / Linux runner 重新下载正式评估附件并生成 Quick、Windows full、
+  Linux full 三个 Proof Pack；Artifact archive digest 已独立核对，公开快照由三份
+  provenance 和逐 case 结果确定性生成。
 
 以下运行记录保留为 `bf0bb9d` 阶段的历史快照，不用于证明当前 `main` 或
 `v0.4.2` 稳定版：
