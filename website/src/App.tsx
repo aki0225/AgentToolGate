@@ -9,7 +9,7 @@ import { SecurityBoundary } from "./components/SecurityBoundary";
 const githubRoot = "https://github.com/aki0225/AgentToolGate";
 const githubBlobRoot = `${githubRoot}/blob/main`;
 const latestDownloadRoot = `${githubRoot}/releases/latest/download`;
-const releaseAcceptanceUrl = `${githubBlobRoot}/docs/v0.4.1-release-acceptance.md`;
+const stableReleaseAcceptanceUrl = `${githubBlobRoot}/docs/v0.4.2-release-acceptance.md`;
 
 const navItems = [
   { label: "工作方式", href: "#workflow" },
@@ -152,7 +152,7 @@ export function App() {
           <div className="hero-copy">
             <div className="hero-brand">
               <span>AgentToolGate</span>
-              <ExternalLink href={releaseAcceptanceUrl}>Stable v0.4.1</ExternalLink>
+              <ExternalLink href={stableReleaseAcceptanceUrl}>Stable v0.4.2</ExternalLink>
             </div>
             <h1>
               让高危工具调用，
@@ -224,7 +224,7 @@ export function App() {
               </ExternalLink>
               <ExternalLink
                 className="release-index-link"
-                href={`${githubRoot}/releases/tag/v0.4.1`}
+                href={`${githubRoot}/releases/tag/v0.4.2`}
               >
                 下载可复跑评估附件
                 <Icon name="external" />
