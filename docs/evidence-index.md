@@ -11,9 +11,9 @@
 - [v0.4.2 正式发布验收](v0.4.2-release-acceptance.md)：产品提交 CI、双平台
   Release、正式附件 digest、Python 3.14 兼容补丁和独立下载验证边界。
 - [当前项目状态](current-status.md)：稳定版本、现行能力、限制和维护规则。
-- [v0.4.1 Release 安全评估证据](../evaluation/published/agent-safety/releases/v0.4.1/proof.json)：
-  当前最新的完整 30-case 双平台 Proof Pack。它继续绑定 `v0.4.1`，不冒充
-  `v0.4.2` 的完整评估结果。
+- [v0.4.2 Release 安全评估证据](../evaluation/published/agent-safety/releases/v0.4.2/proof.json)：
+  当前最新的完整 30-case 双平台 Proof Pack，绑定正式 Release、附件 digest、
+  workflow provenance、Artifact ID 和逐 case SHA256。
 - [真实 Codex 五场景公开证据](../evaluation/published/real-codex-demo-v2/)：
   脱敏录制、Audit、Hook trust、后置条件、清理结果和 manifest。
 
@@ -36,11 +36,25 @@
   20 / 20 均通过。
 - Python 3.14 补丁复验：Windows / Linux 评估包中的 Codex 与 Claude Hook 均在
   Python 3.14.3 下拒绝含 NUL 的工作目录。
+- 正式附件完整评估：
+  [CI run 31996457086](https://github.com/aki0225/AgentToolGate/actions/runs/31996457086)
+  使用证据工具提交 `31aac418a24ee0e9710ebe47f95f095092aa37cc`，从 `v0.4.2`
+  Release 重新下载评估附件并在原生 Windows / Linux runner 运行。
+- 完整评估结果：Quick Linux 20 / 20、Windows full 30 / 30、Linux full
+  26 passed + 4 个固定平台不适用 skipped；失败数均为 0。
+- 治理不变量：审批前上游请求、Secret 泄漏和 Ticket 重放成功数均为 0。
 
-`v0.4.2` 当前没有新的完整 30-case 双平台 Proof Pack。最新完整版本化评估仍是
-[`v0.4.1`](../evaluation/published/agent-safety/releases/v0.4.1/proof.json)；该版本的
-[正式评估附件复跑 run 31954428232](https://github.com/aki0225/AgentToolGate/actions/runs/31954428232)
-和三个 Artifact 继续作为历史冻结证据，不改名、不回写。
+本次正式证据 run 生成三个可下载 Artifact：
+
+| Artifact | ID | GitHub Actions digest |
+| --- | ---: | --- |
+| `agent-safety-release-proof-pack-quick-v0.4.2-31996457086` | `9276977358` | `sha256:f637a5336b8f9fd156f37d46dd172dcb46ec791385741616d17862e9637bc32b` |
+| `agent-safety-release-proof-pack-full-windows-v0.4.2-31996457086` | `9276977211` | `sha256:a5bf07e3b3f9174f57b1f485fbc7b3e9d8a4bc24fde81b21a21f9c389aeeb951` |
+| `agent-safety-release-proof-pack-full-linux-v0.4.2-31996457086` | `9276977006` | `sha256:40c3feaf872b496a3df2c26e55404887cf035b43242bbab8412fef749420e2fd` |
+
+三个 Artifact 已下载并按上述 digest 独立核对，随后确定性生成
+[`v0.4.2 proof.json`](../evaluation/published/agent-safety/releases/v0.4.2/proof.json)。
+`v0.4.1` 的 run、Artifact 和 Proof Pack 继续作为历史冻结证据，不改名、不回写。
 
 Release workflow 只允许带 `v` 前缀的严格 SemVer 标签。tag push 会从标签解析预期
 提交；手动触发则必须显式提供完整 commit SHA。两种路径都会校验标签提交与实际打包
@@ -55,6 +69,8 @@ Release job 先拒绝既有同标签 Release，再创建本轮 draft，按返回
 以下文档记录各版本冻结时的事实，不代表它们仍是当前稳定版：
 
 - [v0.4.1 正式发布验收](v0.4.1-release-acceptance.md)。
+- [v0.4.1 Release 安全评估证据](../evaluation/published/agent-safety/releases/v0.4.1/proof.json)：
+  正式评估附件复跑 run `31954428232` 的上一稳定版冻结快照。
 - [历史 v1 自动评估快照](../evaluation/published/agent-safety-proof.json)：提交
   `e809c66`、run `31465745397` 的旧公开结果。
 - [v0.4.0 正式发布验收](v0.4-release-acceptance.md)。

@@ -9,9 +9,9 @@
 
 ## 当前阶段
 
-评估计划已完成并随 `v0.3.0` 冻结；当前稳定版 `v0.4.1` 继续发布同一套可复跑评估
-附件。当前公开结果来自 `v0.4.1` 正式 Release 评估附件，由 GitHub Actions run
-[`31954428232`](https://github.com/aki0225/AgentToolGate/actions/runs/31954428232)
+评估计划已完成并随 `v0.3.0` 冻结；当前稳定版 `v0.4.2` 继续发布同一套可复跑评估
+附件。当前公开结果来自 `v0.4.2` 正式 Release 评估附件，由 GitHub Actions run
+[`31996457086`](https://github.com/aki0225/AgentToolGate/actions/runs/31996457086)
 在原生 Windows / Linux runner 重新下载、校验并运行：
 
 - Quick Linux：20 passed / 0 failed / 0 skipped。
@@ -21,14 +21,14 @@
 - 审批前上游请求、Secret 泄漏和 Ticket 重放成功数均为 0。
 
 版本化证据位于
-[`evaluation/published/agent-safety/releases/v0.4.1/proof.json`](published/agent-safety/releases/v0.4.1/proof.json)，
+[`evaluation/published/agent-safety/releases/v0.4.2/proof.json`](published/agent-safety/releases/v0.4.2/proof.json)，
 绑定 Release ID、产品提交、正式附件 digest、workflow run/attempt/ref、三份 Artifact
 ID、输入与输出 SHA256 和逐 case 状态。历史 v1 快照
 [`evaluation/published/agent-safety-proof.json`](published/agent-safety-proof.json)
 继续保留，记录提交 `e809c66` 与 run `31465745397`，不回写为当前结果。
 
 当前稳定版的正式 Release、双平台 smoke 和附件校验边界见
-[`docs/v0.4.1-release-acceptance.md`](../docs/v0.4.1-release-acceptance.md)；
+[`docs/v0.4.2-release-acceptance.md`](../docs/v0.4.2-release-acceptance.md)；
 `v0.3.2` 正式包上的真实 Codex 五场景证据见
 [`docs/v0.3.2-release-acceptance.md`](../docs/v0.3.2-release-acceptance.md)；
 `v0.3.0` 的完整评估附件复跑记录仍保留在
@@ -133,9 +133,9 @@ ID、输入与输出 SHA256 和逐 case 状态。历史 v1 快照
 - 历史 `evaluation/published/agent-safety-proof.json` 从 quick、Windows full 和
   Linux full Artifact 确定性生成，保留 run、commit、Artifact ID、源 SHA256 和逐 case
   状态。
-- 当前 `evaluation/published/agent-safety/releases/v0.4.1/proof.json` 从正式 Release
+- 当前 `evaluation/published/agent-safety/releases/v0.4.2/proof.json` 从正式 Release
   评估附件复跑 Artifact 确定性生成，额外绑定 Release、附件 digest 和 workflow
-  provenance；历史文件保持原样。
+  provenance；`v0.4.1` 和 v1 历史文件保持原样。
 - README 与 `website/src/data/evaluation-summary.json` 由同一快照派生；Pages 不在
   JSX 中手填评估数字。
 - `website/scripts/evaluation-proof.mjs check` 会复核 provenance、suite 组成、case
@@ -143,7 +143,7 @@ ID、输入与输出 SHA256 和逐 case 状态。历史 v1 快照
 - 展示提交 `374d2ac` 的 CI run `31251727956` 和 Pages run `31256290008` 均已成功。
 
 阶段 2D 在 2026-08-07 的 Windows 本地真实进程验收结果如下；这是历史阶段记录，
-不能替代上方 `v0.4.1` Release 证据或推导当前规则的良性中断率：
+不能替代上方 `v0.4.2` Release 证据或推导当前规则的良性中断率：
 
 - dangerous suite：12 / 12 passed，`dangerous_governed_rate = 1`。
 - benign suite：12 / 12 passed，`benign_silent_rate = 1`，
@@ -207,7 +207,7 @@ npm run proof:import -- `
 ```powershell
 npm run proof:import-release -- `
   --artifact-root <artifact-root> `
-  --release-tag v0.4.1 `
+  --release-tag v0.4.2 `
   --run-id <run-id> `
   --head-sha <40-character-workflow-head-sha> `
   --date <yyyy-mm-dd> `
