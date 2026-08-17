@@ -1,33 +1,35 @@
 # 当前项目状态
 
-> 状态日期：2026-08-16
+> 状态日期：2026-08-17
 >
-> 当前稳定版：`v0.4.1`
+> 当前稳定版：`v0.4.2`
 >
-> 稳定版产品提交：`43868521e56c85cf074e92f572daff49121651b9`
+> 稳定版产品提交：`30be1cc2c99bda7e7013ca7f70f30bae47ee8421`
 >
 > 产品 CI：
-> [`31946327893`](https://github.com/aki0225/AgentToolGate/actions/runs/31946327893)
+> [`31991113892`](https://github.com/aki0225/AgentToolGate/actions/runs/31991113892)
 >
 > 正式 Release：
-> [`v0.4.1`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.1)
+> [`v0.4.2`](https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.2)
 >
 > Release workflow：
-> [`31946508434`](https://github.com/aki0225/AgentToolGate/actions/runs/31946508434)
+> [`31991881698`](https://github.com/aki0225/AgentToolGate/actions/runs/31991881698)
 >
-> 稳定版产品代码基线：`43868521e56c85cf074e92f572daff49121651b9`
+> 稳定版产品代码基线：`30be1cc2c99bda7e7013ca7f70f30bae47ee8421`
 
 ## 1. 版本状态
 
-`v0.4.1` 已正式发布，annotated tag 与产品提交
-`43868521e56c85cf074e92f572daff49121651b9` 保持一致。该补丁完善新安装运行态忽略、
-绝对仓库根目录删除的 `dry-run` 预览和 OTLP 默认配置。产品 CI、双平台 Release
-workflow、正式附件及当前验证边界见
-[`v0.4.1 发布验收`](v0.4.1-release-acceptance.md)。
+`v0.4.2` 已正式发布，annotated tag 与产品提交
+`30be1cc2c99bda7e7013ca7f70f30bae47ee8421` 保持一致。该补丁显式拒绝包含 NUL 的
+Hook 工作目录，并增加 Python 3.10 / 3.14 跨平台兼容矩阵，不改变正常 Guard 决策、
+审批或审计语义。产品 CI、双平台 Release、正式附件及当前验证边界见
+[`v0.4.2 发布验收`](v0.4.2-release-acceptance.md)。
 
-`v0.4.0` 的产品 CI、Release 自动化修复过程和独立附件复核继续保存在
+`v0.4.1` 的日常使用可靠性补丁、正式 Release 和完整评估复跑继续保存在
+[`v0.4.1 发布验收`](v0.4.1-release-acceptance.md)。`v0.4.0` 的产品 CI、Release
+自动化修复过程和独立附件复核继续保存在
 [`v0.4.0 发布验收`](v0.4-release-acceptance.md)，不回写其历史 run、附件或结论。
-旧标签 `v0.4.0` 未移动。
+旧标签均未移动。
 
 统一的稳定版、发布门禁和历史快照入口见 [`证据索引`](evidence-index.md)。
 
@@ -36,12 +38,14 @@ workflow、正式附件及当前验证边界见
 当前公开仓已有以下分层证据：
 
 - **稳定 Release**：Windows amd64 和 Linux amd64 正式包、SHA256、原生 runner smoke。
-- **自动安全评估**：当前版本化证据来自 `v0.4.1` 正式评估附件和
+- **自动安全评估**：最新完整版本化证据仍来自 `v0.4.1` 正式评估附件和
   [CI run 31954428232](https://github.com/aki0225/AgentToolGate/actions/runs/31954428232)，
   包含 Quick 20 passed、Windows full 30 passed、Linux full 26 passed + 4 个固定平台
   skipped；Release、workflow、Artifact 和逐 case SHA256 均写入
   [`proof.json`](../evaluation/published/agent-safety/releases/v0.4.1/proof.json)。
-  提交 `e809c66` 的 v1 快照继续作为历史证据保留。
+  `v0.4.2` Release workflow 已在原生 Windows / Linux runner 执行 quick suite，
+  并从正式 Windows 附件独立复跑 20 / 20；当前尚未为 `v0.4.2` 生成新的完整 30-case
+  双平台 Proof Pack。提交 `e809c66` 的 v1 快照继续作为历史证据保留。
 - **真实客户端**：历史 Codex CLI / Claude Code 双客户端链路验收，以及
   `v0.3.2` 正式 Linux 包、源提交
   `0126bc24fb6189fd80b8070a23712a1e07b02514` 上的五次独立 Codex CLI 会话。
@@ -53,19 +57,20 @@ workflow、正式附件及当前验证边界见
 - **v0.4 本地验收**：三套 evaluator、Hook 延迟、独立嵌套仓库 off/dry-run/live、
   Secret/SSRF/MCP 边界、前端 40 项核心 Playwright、展示站 8 项 Playwright、后端
   全量测试、`go vet` 和 Windows amd64 release smoke。
-- **v0.4.1 产品 CI**：产品提交 `43868521e56c85cf074e92f572daff49121651b9`
-  的 [CI run 31946327893](https://github.com/aki0225/AgentToolGate/actions/runs/31946327893)
+- **v0.4.2 产品 CI**：产品提交 `30be1cc2c99bda7e7013ca7f70f30bae47ee8421`
+  的 [CI run 31991113892](https://github.com/aki0225/AgentToolGate/actions/runs/31991113892)
   已通过 Linux/Windows Go、PostgreSQL、多 Actor、Agent Safety Evaluation、前端、
-  展示站和 Connector smoke；Windows job 还实际执行了本地缓存与 PostgreSQL 生命周期
-  两组 PowerShell 回归。
-- **v0.4.1 正式 Release**：
-  [Release run 31946508434](https://github.com/aki0225/AgentToolGate/actions/runs/31946508434)
+  展示站和 Connector smoke，并新增 Ubuntu / Python 3.10、Ubuntu / Python 3.14、
+  Windows / Python 3.14 Hook 兼容矩阵。
+- **v0.4.2 正式 Release**：
+  [Release run 31991881698](https://github.com/aki0225/AgentToolGate/actions/runs/31991881698)
   已完成 Windows/Linux 主程序包和评估包构建、smoke、统一 `SHA256SUMS`、附件上传与
-  正式发布；后续 run `31954428232` 已在原生双平台 runner 重新下载并验证两个正式
-  评估包。主程序归档没有在 Release workflow 外再次独立下载，因此不扩大该部分结论。
+  正式发布；五个正式附件已从公开 Release 独立下载并核对 SHA256，Windows 主程序和
+  quick 评估也已独立复跑。Linux 二进制的运行结论来自 Release workflow 的原生 Ubuntu
+  runner，不用 Windows 解包检查冒充 Linux 运行。
 
 以下运行记录保留为 `bf0bb9d` 阶段的历史快照，不用于证明当前 `main` 或
-`v0.4.1` 稳定版：
+`v0.4.2` 稳定版：
 
 - CI run
   [`31818092277`](https://github.com/aki0225/AgentToolGate/actions/runs/31818092277)。
@@ -82,8 +87,9 @@ workflow、正式附件及当前验证边界见
 - 在线展示：<https://aki0225.github.io/AgentToolGate/>。
 
 [`v0.4 日常使用加固计划`](v0.4-daily-use-hardening-plan.md) 已完成并形成
-`v0.4.0` 基线，随后由 `v0.4.1` 补丁完善新安装运行态与预览一致性。后续行为变化应
-建立新的任务和验收证据，不在该历史计划上继续追加，也不借稳定版发布扩展企业级功能。
+`v0.4.0` 基线，随后由 `v0.4.1` 完善新安装运行态与预览一致性，再由 `v0.4.2`
+修复 Python 3.14 Hook 异常输入兼容。后续行为变化应建立新的任务和验收证据，不在
+历史计划上继续追加，也不借稳定版发布扩展企业级功能。
 
 历史实施计划和 handoff 只用于保留实施过程与证据来源，不再作为当前开发恢复入口：
 
@@ -110,7 +116,7 @@ workflow、正式附件及当前验证边界见
 
 ## 5. 维护规则
 
-- 不移动或覆盖 `v0.4.1`、`v0.4.0`、`v0.3.2`、`v0.3.1`、`v0.3.0`、`v0.2.0`
+- 不移动或覆盖 `v0.4.2`、`v0.4.1`、`v0.4.0`、`v0.3.2`、`v0.3.1`、`v0.3.0`、`v0.2.0`
   及其候选标签。
 - 新增 Guard 规则、客户端、平台或产品行为时，重新生成对应评估与发布证据。
 - 证据、展示或文档维护不能被描述成稳定 Release 产品能力变化。

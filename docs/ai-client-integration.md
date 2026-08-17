@@ -4,7 +4,7 @@
 
 > [!IMPORTANT]
 > 本文所述新版 `init codex`、配套 `doctor` 检查、项目 TOML 和自包含 Hook 已在
-> AgentToolGate 当前稳定版 `v0.4.1` 提供。请从 GitHub Release 下载正式包；
+> AgentToolGate 当前稳定版 `v0.4.2` 提供。请从 GitHub Release 下载正式包；
 > `v0.3.0` 的旧接入方式只保留用于历史版本。
 
 ## 1. 选择启动方式
