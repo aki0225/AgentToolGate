@@ -67,7 +67,11 @@ if sys.platform.startswith("win"):
 
 
 def find_repo_root(start_path: str) -> str | None:
-    current = Path(get_text(start_path) or os.getcwd()).resolve()
+    raw_path = get_text(start_path) or os.getcwd()
+    # Python 3.14 不再保证 Path.resolve() 会拒绝 NUL；Hook 输入边界必须显式拦截。
+    if "\x00" in raw_path:
+        raise ValueError("hook cwd contains NUL")
+    current = Path(raw_path).resolve()
     nearest_marker: str | None = None
     while True:
         has_marker = (current / ".git").exists() or (current / ".agenttoolgate").exists()

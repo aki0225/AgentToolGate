@@ -28,10 +28,10 @@ jobs:
         working-directory: backend
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
           cache-dependency-path: backend/go.sum
@@ -51,10 +51,10 @@ jobs:
         working-directory: backend
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
           cache-dependency-path: backend/go.sum
@@ -100,10 +100,10 @@ jobs:
       TEST_DATABASE_URL: postgres://agenttoolgate:agenttoolgate@127.0.0.1:5432/agenttoolgate?sslmode=disable
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
           cache-dependency-path: backend/go.sum
@@ -124,6 +124,39 @@ jobs:
       - name: Test Postgres coverage
         run: go test -count=1 -timeout 60s ./internal/store ./internal/app
 
+  hook-python-compatibility:
+    name: Hook Python ${{ matrix.python }} / ${{ matrix.os_name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 完整评估继续固定 Python 3.13；这里仅覆盖最低版本、最新版本和本次 Windows 回归。
+        include:
+          - os: ubuntu-latest
+            os_name: Linux
+            python: "3.10"
+          - os: ubuntu-latest
+            os_name: Linux
+            python: "3.14"
+          - os: windows-latest
+            os_name: Windows
+            python: "3.14"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Verify Python
+        run: python --version
+
+      - name: Test Hook Bridges
+        run: python scripts/run-hook-compatibility-tests.py
+
   evaluation:
     name: Agent Safety Evaluation Contracts
     runs-on: ubuntu-latest
@@ -135,16 +168,16 @@ jobs:
       GOPATH: ${{ github.workspace }}/.tmp/ci-gopath
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
           cache: false
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -236,7 +269,7 @@ jobs:
 
       - name: Upload PR quick Proof Pack
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: agent-safety-proof-pack-quick-${{ github.run_id }}
           if-no-files-found: warn
@@ -268,16 +301,16 @@ jobs:
       EVAL_EXE_SUFFIX: ${{ matrix.exe_suffix }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
           cache: false
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -336,7 +369,7 @@ jobs:
 
       - name: Upload full Proof Pack
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: agent-safety-proof-pack-full-${{ matrix.platform }}-${{ github.run_id }}
           if-no-files-found: warn
@@ -378,10 +411,10 @@ jobs:
       RELEASE_INCLUDE_QUICK: ${{ matrix.include_quick }}
     steps:
       - name: Checkout evidence tooling
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
@@ -415,7 +448,7 @@ jobs:
 
       - name: Upload formal Release full Proof Pack
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: agent-safety-release-proof-pack-full-${{ matrix.proof_platform }}-v0.4.1-${{ github.run_id }}
           if-no-files-found: error
@@ -427,7 +460,7 @@ jobs:
 
       - name: Upload formal Release quick Proof Pack
         if: always() && matrix.include_quick == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: agent-safety-release-proof-pack-quick-v0.4.1-${{ github.run_id }}
           if-no-files-found: error
@@ -446,10 +479,10 @@ jobs:
         working-directory: frontend
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
           cache: npm
@@ -502,7 +535,7 @@ jobs:
 
       - name: 失败时上传展示站 Playwright 诊断产物
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: website-playwright-artifacts
           path: |
@@ -547,16 +580,16 @@ jobs:
       VITE_AUTH_MODE: local
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 安装 Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
           cache-dependency-path: backend/go.sum
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
           cache: npm
@@ -623,7 +656,7 @@ jobs:
 
       - name: 失败时上传 Playwright 诊断产物
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: playwright-artifacts
           path: |
@@ -681,16 +714,16 @@ jobs:
       VITE_AUTH_MODE: local
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: 安装 Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
           cache-dependency-path: backend/go.sum
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
           cache: npm
@@ -805,7 +838,7 @@ jobs:
 
       - name: 失败时上传多 Actor 诊断产物
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: multi-actor-postgres-artifacts
           path: |
