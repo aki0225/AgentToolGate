@@ -361,7 +361,7 @@ class CodexHookBridgeTest(unittest.TestCase):
             nested = repo / "src" / "feature"
             (repo / ".agenttoolgate").mkdir()
             nested.mkdir(parents=True)
-            self.assertEqual(HOOK.find_repo_root(str(nested)), str(repo))
+            self.assertEqual(HOOK.find_repo_root(str(nested)), str(repo.resolve()))
 
     def test_repo_root_rejects_nul_before_path_resolution(self) -> None:
         with self.assertRaisesRegex(ValueError, "NUL"):
@@ -378,7 +378,7 @@ class CodexHookBridgeTest(unittest.TestCase):
             nested = inner / "src"
             nested.mkdir()
 
-            self.assertEqual(HOOK.find_repo_root(str(nested)), str(repo))
+            self.assertEqual(HOOK.find_repo_root(str(nested)), str(repo.resolve()))
 
     def test_nearest_explicit_control_defines_nested_project(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -389,7 +389,7 @@ class CodexHookBridgeTest(unittest.TestCase):
             (inner / ".agenttoolgate").mkdir(parents=True)
             self.set_hook_control(inner, "off")
 
-            self.assertEqual(HOOK.find_repo_root(str(inner / "src")), str(inner))
+            self.assertEqual(HOOK.find_repo_root(str(inner / "src")), str(inner.resolve()))
 
     def test_live_ordinary_repo_read_uses_local_fast_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
