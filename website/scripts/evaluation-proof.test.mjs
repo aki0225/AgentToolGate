@@ -19,6 +19,10 @@ const historicalProofPath = path.resolve(
   scriptDirectory,
   "../../evaluation/published/agent-safety-proof.json"
 );
+const v041ReleaseProofPath = path.resolve(
+  scriptDirectory,
+  "../../evaluation/published/agent-safety/releases/v0.4.1/proof.json"
+);
 
 function fixture() {
   const cases = [
@@ -66,32 +70,32 @@ async function releaseFixture() {
   };
   return {
     schemaVersion: "v2",
-    publishedAt: "2026-08-16",
+    publishedAt: "2026-08-17",
     subject: {
       type: "github-release",
-      releaseId: 371316925,
-      releaseTag: "v0.4.1",
-      commitSha: "43868521e56c85cf074e92f572daff49121651b9",
-      releaseUrl: "https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.1",
+      releaseId: 371515961,
+      releaseTag: "v0.4.2",
+      commitSha: "30be1cc2c99bda7e7013ca7f70f30bae47ee8421",
+      releaseUrl: "https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.2",
       checksums: {
         name: "SHA256SUMS",
-        sha256: "b203ec978d7da9b4add09c80e41cdef4971be8d590f601131f75012a65763e6e",
-        url: "https://github.com/aki0225/AgentToolGate/releases/download/v0.4.1/SHA256SUMS"
+        sha256: "6b59ab3b152a3b200393975012b30a159dbe82868f694942abc8c1197712a4e3",
+        url: "https://github.com/aki0225/AgentToolGate/releases/download/v0.4.2/SHA256SUMS"
       },
       assets: [
         {
           platform: "windows",
-          id: 516783373,
+          id: 517569003,
           name: "agenttoolgate-evaluation-windows-amd64.zip",
-          sizeBytes: 29876035,
-          sha256: "cc39b6af9dfde8c9958bdf012d6bfdd9ec7a093b212760557f83e040321da246"
+          sizeBytes: 29877143,
+          sha256: "b9ec5fde737f955c5989eba028e81c25862260c66f17d686b64ddb7b704b5325"
         },
         {
           platform: "linux",
-          id: 516783402,
+          id: 517569013,
           name: "agenttoolgate-evaluation-linux-amd64.tar.gz",
-          sizeBytes: 29129053,
-          sha256: "dcd4d2f85a499036cead94611d7209f9166c29ffbb61fd3431fa4e111216bfbc"
+          sizeBytes: 29130847,
+          sha256: "d7dec6e291ff046d9efda5b2e04f94b880dbaa6598d033deac6d224dcda9bfab"
         }
       ]
     },
@@ -100,26 +104,26 @@ async function releaseFixture() {
       attempt: 1,
       url: `https://github.com/aki0225/AgentToolGate/actions/runs/${runId}`,
       headSha: "b".repeat(40),
-      ref: "refs/heads/codex/v041-evidence-refresh"
+      ref: "refs/heads/main"
     },
     artifacts: [
       {
         id: artifactIds["quick-linux"],
-        name: `agent-safety-release-proof-pack-quick-v0.4.1-${runId}`,
+        name: `agent-safety-release-proof-pack-quick-v0.4.2-${runId}`,
         kind: "quick",
         platform: "linux",
         provenanceSha256: "1".repeat(64)
       },
       {
         id: artifactIds["full-windows"],
-        name: `agent-safety-release-proof-pack-full-windows-v0.4.1-${runId}`,
+        name: `agent-safety-release-proof-pack-full-windows-v0.4.2-${runId}`,
         kind: "full",
         platform: "windows",
         provenanceSha256: "2".repeat(64)
       },
       {
         id: artifactIds["full-linux"],
-        name: `agent-safety-release-proof-pack-full-linux-v0.4.1-${runId}`,
+        name: `agent-safety-release-proof-pack-full-linux-v0.4.2-${runId}`,
         kind: "full",
         platform: "linux",
         provenanceSha256: "3".repeat(64)
@@ -212,11 +216,17 @@ describe("公开评估快照", () => {
     const proof = await releaseFixture();
 
     expect(validateReleaseProof(proof)).toBe(proof);
-    expect(buildPublicSummary(proof).subject.releaseTag).toBe("v0.4.1");
+    expect(buildPublicSummary(proof).subject.releaseTag).toBe("v0.4.2");
     const block = renderReadmeBlock(proof);
-    expect(block).toContain("v0.4.1");
+    expect(block).toContain("v0.4.2");
     expect(block).toContain("正式评估附件");
     expect(block).toContain("版本化公开证据");
+  });
+
+  it("继续接受冻结的 v0.4.1 历史 Release 证据", async () => {
+    const proof = JSON.parse(await readFile(v041ReleaseProofPath, "utf8"));
+
+    expect(validateReleaseProof(proof)).toBe(proof);
   });
 
   it("拒绝 Release 附件摘要漂移", async () => {

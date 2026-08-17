@@ -9,10 +9,13 @@ const historicalProofPath = path.join(
   repositoryRoot,
   "evaluation/published/agent-safety-proof.json"
 );
-const currentReleaseProofPath = path.join(
-  repositoryRoot,
-  "evaluation/published/agent-safety/releases/v0.4.1/proof.json"
-);
+const currentReleaseTag = "v0.4.2";
+const releaseProofPath = (releaseTag) =>
+  path.join(
+    repositoryRoot,
+    `evaluation/published/agent-safety/releases/${releaseTag}/proof.json`
+  );
+const currentReleaseProofPath = releaseProofPath(currentReleaseTag);
 const summaryPath = path.join(repositoryRoot, "website/src/data/evaluation-summary.json");
 const readmePath = path.join(repositoryRoot, "README.md");
 const readmeStart = "<!-- agent-safety-proof:start -->";
@@ -56,6 +59,30 @@ const releaseContracts = {
         name: "agenttoolgate-evaluation-linux-amd64.tar.gz",
         sizeBytes: 29129053,
         sha256: "dcd4d2f85a499036cead94611d7209f9166c29ffbb61fd3431fa4e111216bfbc"
+      }
+    }
+  },
+  "v0.4.2": {
+    releaseId: 371515961,
+    commitSha: "30be1cc2c99bda7e7013ca7f70f30bae47ee8421",
+    releaseUrl: "https://github.com/aki0225/AgentToolGate/releases/tag/v0.4.2",
+    checksums: {
+      name: "SHA256SUMS",
+      sha256: "6b59ab3b152a3b200393975012b30a159dbe82868f694942abc8c1197712a4e3",
+      url: "https://github.com/aki0225/AgentToolGate/releases/download/v0.4.2/SHA256SUMS"
+    },
+    assets: {
+      windows: {
+        id: 517569003,
+        name: "agenttoolgate-evaluation-windows-amd64.zip",
+        sizeBytes: 29877143,
+        sha256: "b9ec5fde737f955c5989eba028e81c25862260c66f17d686b64ddb7b704b5325"
+      },
+      linux: {
+        id: 517569013,
+        name: "agenttoolgate-evaluation-linux-amd64.tar.gz",
+        sizeBytes: 29130847,
+        sha256: "d7dec6e291ff046d9efda5b2e04f94b880dbaa6598d033deac6d224dcda9bfab"
       }
     }
   }
@@ -957,7 +984,7 @@ async function importReleaseProof(args) {
   });
   const proofJSON = canonicalJSON(proof);
   const readme = await readFile(readmePath, "utf8");
-  await writeImmutableProof(currentReleaseProofPath, proofJSON);
+  await writeImmutableProof(releaseProofPath(releaseTag), proofJSON);
   await mkdir(path.dirname(summaryPath), { recursive: true });
   await writeFile(summaryPath, canonicalJSON(buildPublicSummary(proof)), "utf8");
   await writeFile(readmePath, updateReadme(readme, renderReadmeBlock(proof)), "utf8");

@@ -5,7 +5,8 @@ import { RealCodexProof } from "./RealCodexProof";
 
 const githubRoot = "https://github.com/aki0225/AgentToolGate";
 const methodUrl = `${githubRoot}/blob/main/evaluation/README.md`;
-const releaseAcceptanceUrl = `${githubRoot}/blob/main/docs/v0.4.1-release-acceptance.md`;
+const releaseAcceptanceUrl =
+  `${githubRoot}/blob/main/docs/${evaluationProof.subject.releaseTag}-release-acceptance.md`;
 const releaseProofUrl =
   `${githubRoot}/blob/main/evaluation/published/agent-safety/releases/` +
   `${evaluationProof.subject.releaseTag}/proof.json`;
@@ -78,7 +79,7 @@ export function EvaluationProof() {
           {evaluationProof.subject.releaseTag} Release 评估证据
         </a>
         <a href={releaseAcceptanceUrl} rel="noreferrer" target="_blank">
-          v0.4.1 发布验收
+          {evaluationProof.subject.releaseTag} 发布验收
         </a>
         <a href={realCodexProof.source.evidenceUrl} rel="noreferrer" target="_blank">
           v0.3.2 真实证据
