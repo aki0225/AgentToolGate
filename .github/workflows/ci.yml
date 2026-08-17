@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       release_evidence_tag:
-        description: "复跑正式 Release 评估附件；留空则只运行常规手动 CI"
+        description: "复跑符合当前五附件契约的正式 Release；留空则只运行常规手动 CI"
         required: false
         default: ""
         type: string
@@ -197,6 +197,10 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/tests/validate-release-tag.tests.ps1
 
+      - name: 测试 Release 证据解析
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/tests/resolve-release-evidence.tests.ps1
+
       - name: Test evaluation tool
         run: go -C tools/atg-eval test -count=1 -timeout 60s ./...
 
@@ -377,54 +381,120 @@ jobs:
             .tmp/ci-proof-packs/full/${{ matrix.platform }}
             .tmp/ci-logs/full/${{ matrix.platform }}
 
-  release-evaluation:
-    name: Release Evaluation (${{ matrix.platform }})
+  resolve-release-evidence:
+    name: 解析正式 Release 证据输入
     if: github.event_name == 'workflow_dispatch' && inputs.release_evidence_tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      release_commit: ${{ steps.resolve.outputs.release_commit }}
+      release_id: ${{ steps.resolve.outputs.release_id }}
+      checksums_sha256: ${{ steps.resolve.outputs.checksums_sha256 }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: 检出证据工具
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 解析已发布 Release 元数据
+        id: resolve
+        shell: pwsh
+        env:
+          REQUESTED_RELEASE_TAG: ${{ inputs.release_evidence_tag }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = [string]$env:REQUESTED_RELEASE_TAG
+          if ($tag -notmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$') {
+            throw "正式证据 tag 必须是带 v 前缀的稳定版 SemVer。"
+          }
+          if ([string]::IsNullOrWhiteSpace($env:GITHUB_TOKEN)) {
+            throw "GITHUB_TOKEN 不可用，拒绝在无法校验 Release 元数据时继续。"
+          }
+
+          git fetch --force --no-tags origin "+refs/tags/${tag}:refs/tags/${tag}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "无法获取 Release tag：$tag"
+          }
+          git fetch --force origin "+refs/heads/main:refs/remotes/origin/main"
+          if ($LASTEXITCODE -ne 0) {
+            throw "无法获取 origin/main。"
+          }
+
+          $releaseCommitOutput = @(git rev-parse --verify "refs/tags/$tag^{commit}" 2>$null)
+          if ($LASTEXITCODE -ne 0 -or $releaseCommitOutput.Count -eq 0) {
+            throw "Release tag 不能解析为完整 commit：$tag"
+          }
+          $releaseCommit = ($releaseCommitOutput -join "").Trim().ToLowerInvariant()
+          if ($releaseCommit -notmatch '^[a-f0-9]{40}$') {
+            throw "Release tag 解析结果不是完整 commit：$tag"
+          }
+          git merge-base --is-ancestor $releaseCommit "refs/remotes/origin/main"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release commit 不是 origin/main 的祖先，拒绝生成正式证据：$releaseCommit"
+          }
+
+          $headers = @{
+            Accept = "application/vnd.github+json"
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $encodedTag = [Uri]::EscapeDataString($tag)
+          $releaseUri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/releases/tags/$encodedTag"
+          $release = Invoke-RestMethod -Method Get -Uri $releaseUri -Headers $headers
+          if ($null -eq $release) {
+            throw "GitHub Release API 返回空响应。"
+          }
+
+          $releaseJsonPath = Join-Path $env:RUNNER_TEMP "release-evidence.json"
+          [IO.File]::WriteAllText(
+            $releaseJsonPath,
+            (($release | ConvertTo-Json -Depth 20) + "`n"),
+            [Text.UTF8Encoding]::new($false)
+          )
+          & ./scripts/resolve-release-evidence.ps1 `
+            -ReleaseTag $tag `
+            -ReleaseCommit $releaseCommit `
+            -ReleaseJsonPath $releaseJsonPath `
+            -GitHubOutputPath $env:GITHUB_OUTPUT
+
+  release-evaluation:
+    name: 正式 Release 评估 (${{ matrix.platform }})
+    needs: resolve-release-evidence
+    if: needs.resolve-release-evidence.result == 'success'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            platform: windows-amd64
-            proof_platform: windows
-            asset_id: 516783373
-            asset_size: 29876035
-            asset_sha256: cc39b6af9dfde8c9958bdf012d6bfdd9ec7a093b212760557f83e040321da246
-            include_quick: "false"
-          - os: ubuntu-latest
-            platform: linux-amd64
-            proof_platform: linux
-            asset_id: 516783402
-            asset_size: 29129053
-            asset_sha256: dcd4d2f85a499036cead94611d7209f9166c29ffbb61fd3431fa4e111216bfbc
-            include_quick: "true"
+        include: ${{ fromJSON(needs.resolve-release-evidence.outputs.matrix) }}
     env:
-      REQUESTED_RELEASE_TAG: ${{ inputs.release_evidence_tag }}
-      RELEASE_COMMIT: 43868521e56c85cf074e92f572daff49121651b9
-      RELEASE_ID: "371316925"
-      RELEASE_CHECKSUMS_SHA256: b203ec978d7da9b4add09c80e41cdef4971be8d590f601131f75012a65763e6e
+      REQUESTED_RELEASE_TAG: ${{ needs.resolve-release-evidence.outputs.release_tag }}
+      RELEASE_COMMIT: ${{ needs.resolve-release-evidence.outputs.release_commit }}
+      RELEASE_ID: ${{ needs.resolve-release-evidence.outputs.release_id }}
+      RELEASE_CHECKSUMS_SHA256: ${{ needs.resolve-release-evidence.outputs.checksums_sha256 }}
       RELEASE_ASSET_ID: ${{ matrix.asset_id }}
       RELEASE_ASSET_SIZE: ${{ matrix.asset_size }}
       RELEASE_ASSET_SHA256: ${{ matrix.asset_sha256 }}
       RELEASE_INCLUDE_QUICK: ${{ matrix.include_quick }}
     steps:
-      - name: Checkout evidence tooling
+      - name: 检出证据工具
         uses: actions/checkout@v6
 
-      - name: Setup Python
+      - name: 安装 Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
-      - name: Run formal Release evaluation package
+      - name: 运行正式 Release 评估附件
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          if ($env:REQUESTED_RELEASE_TAG -ne "v0.4.1") {
-            throw "当前证据任务只允许复跑 v0.4.1"
-          }
           $parameters = @{
             Platform = "${{ matrix.platform }}"
             ReleaseTag = $env:REQUESTED_RELEASE_TAG
@@ -446,11 +516,11 @@ jobs:
           }
           & ./scripts/run-release-evaluation.ps1 @parameters
 
-      - name: Upload formal Release full Proof Pack
+      - name: 上传正式 Release 完整 Proof Pack
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: agent-safety-release-proof-pack-full-${{ matrix.proof_platform }}-v0.4.1-${{ github.run_id }}
+          name: agent-safety-release-proof-pack-full-${{ matrix.proof_platform }}-${{ needs.resolve-release-evidence.outputs.release_tag }}-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
@@ -458,11 +528,11 @@ jobs:
             .tmp/release-proof-artifacts/${{ matrix.platform }}/ci-proof-packs/full/${{ matrix.proof_platform }}
             .tmp/release-proof-artifacts/${{ matrix.platform }}/ci-logs/full/${{ matrix.proof_platform }}
 
-      - name: Upload formal Release quick Proof Pack
+      - name: 上传正式 Release 快速 Proof Pack
         if: always() && matrix.include_quick == 'true'
         uses: actions/upload-artifact@v6
         with:
-          name: agent-safety-release-proof-pack-quick-v0.4.1-${{ github.run_id }}
+          name: agent-safety-release-proof-pack-quick-${{ needs.resolve-release-evidence.outputs.release_tag }}-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 30
           path: |
