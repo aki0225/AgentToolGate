@@ -1001,6 +1001,13 @@ class OfflineGuardPrecisionTest(unittest.TestCase):
             nested.mkdir(parents=True)
             self.assertEqual(HOOK.find_repo_root(str(nested)), str(repo))
 
+    def test_repo_root_rejects_nul_before_path_resolution(self) -> None:
+        for module in (HOOK, CODEX_HOOK):
+            with self.subTest(module=module.__name__):
+                with self.assertRaisesRegex(ValueError, "NUL"):
+                    module.find_repo_root("bad\x00cwd")
+                self.assertIsNone(module.find_repo_root_safely("bad\x00cwd"))
+
     def test_outer_controlled_project_is_not_shadowed_by_inner_marker(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
