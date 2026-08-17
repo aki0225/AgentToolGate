@@ -9,9 +9,9 @@ describe("展示站首屏入口", () => {
 
     expect(html).toContain('href="#real-codex-proof"');
     expect(html).toContain("查看真实 Codex 验收");
-    expect(html).toContain("Stable v0.4.1");
-    expect(html).toContain("/docs/v0.4.1-release-acceptance.md");
-    expect(html).toContain("/releases/tag/v0.4.1");
+    expect(html).toContain("Stable v0.4.2");
+    expect(html).toContain("/docs/v0.4.2-release-acceptance.md");
+    expect(html).toContain("/releases/tag/v0.4.2");
     expect(html).toContain("v0.4.1 发布验收");
     expect(html).toContain("v0.3.2 / 0126bc2");
     expect(html).toContain("CI #31954428232");
